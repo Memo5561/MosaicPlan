@@ -4,7 +4,7 @@ import { computeLayout, sectionsFor, type Layout, type LayoutParams, type Sectio
 import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
 import { renderFull } from '../../core/render';
 import { packMosaic, unpackMosaic, type StoredMosaic } from '../../core/serialize';
-import type { Stats } from '../../core/stats';
+import { progressOf, type Stats } from '../../core/stats';
 import type { ImageAdjust, Material, MosaicData, PaletteColor, ProjectSettings, Region } from '../../core/types';
 import { loadImage, loadMosaic, loadProgress, loadProject, saveImage, saveMosaic, saveProgress, saveProject, type ImageRecord, type ProjectRecord } from '../../storage/db';
 import { cancelChannel, runWorker } from '../../workers/client';
@@ -218,6 +218,15 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   const stale = !!rec && !!computed && rec.computedWith !== computeKey(rec);
 
+  /** Schneller Verlegefortschritt (ohne Geometrie) – gesamt und je Abschnitt. */
+  const progress = useMemo(() => {
+    if (!computed || !sections) return null;
+    const total = progressOf(computed.layout, computed.data);
+    const perSection = new Map(sections.sections.map((s) => [s.id, progressOf(computed.layout, computed.data, s)]));
+    return { total, perSection };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computed, sections, version, progressVersion]);
+
   /** Effektiver Zuschnitt (normiert) passend zum Seitenverhältnis der fertigen Mosaikfläche. */
   const effectiveCrop = useMemo(() => {
     if (!rec || !bitmap || !layoutInfo.layout) return null;
@@ -227,6 +236,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   // ---------- Statistik (im Worker)
   const statsReq = useRef(0);
+  const lastStatsVersion = useRef(-1);
   useEffect(() => {
     if (!computed || !rec) {
       setStats(null);
@@ -255,7 +265,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       } finally {
         if (my === statsReq.current) setStatsBusy(false);
       }
-    }, 250);
+    }, lastStatsVersion.current === version ? 1500 : 250);
+    lastStatsVersion.current = version;
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [computed, version, progressVersion, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
@@ -360,6 +371,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     progressVersion,
     stats,
     sectionStats,
+    progress,
     statsBusy,
     computing,
     computeError,

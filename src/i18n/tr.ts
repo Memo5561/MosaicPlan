@@ -361,6 +361,8 @@ export const tr: Record<keyof typeof de, string> = {
   'plan.cost': 'Maliyet',
   'plan.notFitting': 'Ham taştan büyük parçalar',
   'plan.yieldHint': 'Ham taş ihtiyacı kesim türüne göre verimden: tam taş 1, çapraz üçgen ham taş başına 2, dikdörtgenler sığdığı kadar, diğer biçimler 1.',
+  'plan.stockShort': 'Stok yetersiz',
+  'plan.stockHint': 'Kırmızı eksi değerler: atanan malzemenin kayıtlı stokuna göre eksik ham taş sayısı.',
   'plan.perColor': 'Renk başına ihtiyaç',
   'plan.cutShort': 'kesik',
   'plan.packs': 'paket',

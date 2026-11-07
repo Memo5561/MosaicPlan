@@ -58,8 +58,11 @@ export function StepPhoto({ api }: { api: ProjectApi }) {
     const h = afterRef.current;
     if (!h || !after) return;
     h.innerHTML = '';
-    after.style.width = '100%';
+    after.style.width = 'auto';
     after.style.height = 'auto';
+    after.style.maxWidth = '100%';
+    after.style.maxHeight = '520px';
+    after.style.display = 'block';
     after.dataset.testid = 'adjusted-preview';
     h.appendChild(after);
   }, [after]);

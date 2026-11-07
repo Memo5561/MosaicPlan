@@ -359,6 +359,8 @@ export const de = {
   'plan.cost': 'Kosten',
   'plan.notFitting': 'Teile größer als Rohstein',
   'plan.yieldHint': 'Rohsteinbedarf aus der Ausbeute je Schnittart: ganze Steine 1, Diagonal-Dreiecke 2 je Rohstein, Rechtecke so viele wie hineinpassen, sonstige Formen 1.',
+  'plan.stockShort': 'Bestand reicht nicht',
+  'plan.stockHint': 'Rote Minuswerte: so viele Rohsteine fehlen gegenüber dem erfassten Bestand des zugeordneten Materials.',
   'plan.perColor': 'Bedarf je Farbe',
   'plan.cutShort': 'geschn.',
   'plan.packs': 'Pack.',

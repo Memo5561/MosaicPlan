@@ -35,6 +35,38 @@ export interface RenderOptions {
   background?: string;
 }
 
+const glazeCache = new Map<string, CanvasImageSource>();
+
+/** Vorgerenderte Glasur (Glanzlicht + Kantenschatten) für realistische Steine. */
+function glaze(surface: 'glass' | 'ceramic'): CanvasImageSource | null {
+  const hit = glazeCache.get(surface);
+  if (hit) return hit;
+  if (typeof OffscreenCanvas === 'undefined') return null;
+  const S = 64;
+  const c = new OffscreenCanvas(S, S);
+  const g = c.getContext('2d')!;
+  const glass = surface === 'glass';
+  const lin = g.createLinearGradient(0, 0, S, S);
+  lin.addColorStop(0, `rgba(255,255,255,${glass ? 0.32 : 0.14})`);
+  lin.addColorStop(0.45, 'rgba(255,255,255,0)');
+  lin.addColorStop(1, `rgba(0,0,0,${glass ? 0.22 : 0.14})`);
+  g.fillStyle = lin;
+  g.fillRect(0, 0, S, S);
+  if (glass) {
+    const rad = g.createRadialGradient(S * 0.3, S * 0.25, 1, S * 0.3, S * 0.25, S * 0.45);
+    rad.addColorStop(0, 'rgba(255,255,255,0.35)');
+    rad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = rad;
+    g.fillRect(0, 0, S, S);
+  }
+  // feine Kante
+  g.strokeStyle = `rgba(0,0,0,${glass ? 0.25 : 0.18})`;
+  g.lineWidth = 2;
+  g.strokeRect(1, 1, S - 2, S - 2);
+  glazeCache.set(surface, c);
+  return c;
+}
+
 function hash(i: number): number {
   let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
   h ^= h >>> 13;
@@ -138,7 +170,7 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
     const variants = colorVariants(palette, opt.realistic && pitchPx >= 4);
     const drawHighlights = opt.realistic && pitchPx >= 9;
     const hiA = opt.surface === 'glass' ? 0.22 : 0.1;
-    const loA = opt.surface === 'glass' ? 0.16 : 0.1;
+    const gl = drawHighlights ? glaze(opt.surface) : null;
     const codeFont = opt.showCodes && pitchPx >= 18;
     const dim = opt.focusColor !== undefined && opt.focusColor !== null;
     for (let row = vr.r0; row < vr.r1; row++) {
@@ -155,13 +187,7 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
           const h = layout.rowH[row] * scale;
           ctx.fillStyle = vs[Math.floor(hash(idx) * vs.length)];
           ctx.fillRect(x, y, w, h);
-          if (drawHighlights) {
-            ctx.fillStyle = `rgba(255,255,255,${hiA})`;
-            ctx.fillRect(x, y, w, h * 0.16);
-            ctx.fillRect(x, y, w * 0.12, h);
-            ctx.fillStyle = `rgba(0,0,0,${loA})`;
-            ctx.fillRect(x, y + h * 0.86, w, h * 0.14);
-          }
+          if (gl) ctx.drawImage(gl, x, y, w, h);
           if (dim && ci !== opt.focusColor) {
             ctx.fillStyle = 'rgba(255,255,255,0.78)';
             ctx.fillRect(x, y, w, h);
@@ -183,9 +209,14 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
             ctx.closePath();
             ctx.fillStyle = vs[Math.floor(hash(idx * 16 + i) * vs.length)];
             ctx.fill();
-            if (drawHighlights) {
-              ctx.strokeStyle = `rgba(255,255,255,${hiA * 0.8})`;
-              ctx.lineWidth = Math.max(0.5, pitchPx * 0.04);
+            if (gl) {
+              const pb = bbox(p.poly);
+              ctx.save();
+              ctx.clip();
+              ctx.drawImage(gl, ox + pb.minX * scale, oy + pb.minY * scale, pb.w * scale, pb.h * scale);
+              ctx.restore();
+              ctx.strokeStyle = `rgba(255,255,255,${hiA * 0.6})`;
+              ctx.lineWidth = Math.max(0.5, pitchPx * 0.03);
               ctx.stroke();
             }
             const b = bbox(p.poly);

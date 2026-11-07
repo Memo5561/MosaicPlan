@@ -25,11 +25,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const G = api.sections;
   const sec = useMemo(() => G?.sections.find((x) => x.id === selected) ?? null, [G, selected]);
   if (!c || !G) return <p className="muted">{t('preview.notComputed')}</p>;
-  const total = api.stats;
-  const pct = total && total.pieces ? total.placed / total.pieces : 0;
+  const pr = api.progress;
+  const pct = pr && pr.total.total ? pr.total.placed / pr.total.total : 0;
   const doneSections = G.sections.filter((x) => {
-    const st = api.sectionStats.get(x.id);
-    return st && st.pieces > 0 && st.placed === st.pieces;
+    const st = pr?.perSection.get(x.id);
+    return st && st.total > 0 && st.placed === st.total;
   }).length;
 
   const exportCsv = async (ids: string[] | null) => {
@@ -60,11 +60,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
         </div>
         <div className="stat">
           <span>{t('plan.placed')}</span>
-          <b>{total ? n(total.placed) : '…'}</b>
+          <b data-testid="placed-count">{pr ? n(pr.total.placed) : '…'}</b>
         </div>
         <div className="stat">
           <span>{t('plan.open')}</span>
-          <b>{total ? n(total.pieces - total.placed) : '…'}</b>
+          <b>{pr ? n(pr.total.total - pr.total.placed) : '…'}</b>
         </div>
         <div className="stat">
           <span>{t('plan.sectionsDone')}</span>
@@ -144,10 +144,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               <p className="muted small">
                 {G.scols} × {G.srows} = {G.sections.length} {t('plan.sectionsCount')}
               </p>
-              <div className="section-grid" style={{ gridTemplateColumns: `repeat(${Math.min(G.scols, 8)}, minmax(0, 1fr))` }}>
+              <div className="section-grid-wrap">
+              <div className="section-grid" style={{ gridTemplateColumns: `repeat(${G.scols}, minmax(${G.scols > 8 ? 40 : 0}px, 1fr))` }}>
                 {G.sections.map((x) => {
-                  const st = api.sectionStats.get(x.id);
-                  const p = st && st.pieces ? st.placed / st.pieces : 0;
+                  const st = pr?.perSection.get(x.id);
+                  const p = st && st.total ? st.placed / st.total : 0;
                   return (
                     <button
                       key={x.id}
@@ -163,6 +164,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                     </button>
                   );
                 })}
+              </div>
               </div>
               {sec && (
                 <div className="section-info" data-testid="section-info">
@@ -384,6 +386,7 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
         </tbody>
       </table>
       <p className="muted small">{t('plan.yieldHint')}</p>
+      <p className="muted small">{t('plan.stockHint')}</p>
       <h4>{t('plan.perColor')}</h4>
       <div className="table-wrap">
         <table className="data small">
@@ -411,7 +414,14 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
                   <td className="num">{n(c.cut)}</td>
                   <td className="num">{n(c.raw)}</td>
                   <td className="num">{n(c.rawWithReserve)}</td>
-                  <td className="num">{c.packs !== undefined ? n(c.packs) : '–'}</td>
+                  <td className="num">
+                    {c.packs !== undefined ? n(c.packs) : '–'}
+                    {c.material?.stock !== undefined && c.material.stock > 0 && c.rawWithReserve > c.material.stock && (
+                      <small className="warn block" title={t('plan.stockShort')}>
+                        −{n(c.rawWithReserve - c.material.stock)}
+                      </small>
+                    )}
+                  </td>
                 </tr>
               ))}
           </tbody>

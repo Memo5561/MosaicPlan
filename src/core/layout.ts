@@ -231,15 +231,26 @@ export interface SectionGrid {
 }
 
 function splitAxis(pos: Float64Array, size: Float64Array, maxLen: number): number[] {
-  const starts: number[] = [0];
-  let s = 0;
-  for (let i = 1; i < pos.length; i++) {
+  const n = pos.length;
+  const span = (a: number, b: number) => pos[b - 1] + size[b - 1] - pos[a];
+  // Mindestanzahl Abschnitte (gierig), danach gleichmäßig verteilen, damit kein schmaler Reststreifen entsteht
+  let greedy = 1;
+  for (let i = 1, s = 0; i < n; i++) {
     if (pos[i] + size[i] - pos[s] > maxLen + 1e-9) {
-      starts.push(i);
+      greedy++;
       s = i;
     }
   }
-  return starts;
+  for (let k = greedy; k <= n; k++) {
+    const starts: number[] = [];
+    for (let i = 0; i < k; i++) {
+      const v = Math.round((i * n) / k);
+      if (!starts.includes(v)) starts.push(v);
+    }
+    const ok = starts.every((a, i) => span(a, i + 1 < starts.length ? starts[i + 1] : n) <= maxLen + 1e-9);
+    if (ok) return starts;
+  }
+  return Array.from({ length: n }, (_, i) => i);
 }
 
 export function sectionLabel(sr: number, sc: number): string {

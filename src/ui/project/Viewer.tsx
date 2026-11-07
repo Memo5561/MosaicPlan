@@ -35,7 +35,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
   const { t } = useI18n();
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const view = useRef<View>({ scale: 1, ox: 0, oy: 0, width: 300, height: 300 });
+  const view = useRef<View>({ scale: 1, ox: 0, oy: 0, width: 0, height: 0 });
   const raf = useRef(0);
   const propsRef = useRef(props);
   propsRef.current = props;
@@ -79,6 +79,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
 
   const fit = useCallback(() => {
     const v = view.current;
+    if (v.width <= 0 || v.height <= 0) return;
     const L = propsRef.current.layout;
     const pad = 16;
     const s = Math.min((v.width - 2 * pad) / L.finishedW, (v.height - 2 * pad) / L.finishedH);

@@ -774,8 +774,10 @@ label.inline {
 .after-preview {
   border-radius: 8px;
   overflow: hidden;
-  background: #ddd;
+  background: #ece8e1;
   min-height: 60px;
+  display: flex;
+  justify-content: center;
 }
 .region-holder {
   position: relative;
@@ -952,6 +954,11 @@ table.mini .numin input {
 .orig-thumb {
   border-radius: 8px;
   overflow: hidden;
+}
+.section-grid-wrap {
+  overflow: auto;
+  max-height: 320px;
+  margin: 8px 0;
 }
 .section-grid {
   display: grid;
@@ -1134,5 +1141,18 @@ table.mini .numin input {
   }
   .brand span {
     display: none;
+  }
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .tile {
+    padding: 12px;
+  }
+  .hero::after {
+    opacity: 0.1;
+  }
+  .project-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

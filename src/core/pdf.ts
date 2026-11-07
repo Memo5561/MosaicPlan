@@ -238,8 +238,9 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     font(9, true);
     text(k, M, y);
     font(9);
-    text(v, M + 55, y, { maxWidth: PW - 2 * M - 55 });
-    y += 5.5;
+    const lines = doc.splitTextToSize(safe(v), PW - 2 * M - 55) as string[];
+    doc.text(lines, M + 55, y);
+    y += 4.2 * lines.length + 1.3;
   }
   y += 3;
   font(8);
@@ -425,7 +426,7 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
   const g = layout.joint;
   const topReserve = 19; // Kopf + Spaltennummern + Lineal
   const leftReserve = 12;
-  const bottomReserve = 14;
+  const bottomReserve = 21;
   const printW = PW - M - leftReserve - M;
   const printH = PH - M - topReserve - bottomReserve;
 
@@ -485,8 +486,9 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
       font(9, true);
       text(k, M, yy);
       font(9);
-      text(v, M + 45, yy, { maxWidth: PW - 2 * M - 45 });
-      yy += 5;
+      const lines = doc.splitTextToSize(safe(v), PW - 2 * M - 45 - 75) as string[];
+      doc.text(lines, M + 45, yy);
+      yy += 4.2 * lines.length + 0.8;
     }
     // Mini-Übersicht der Blätter
     {
@@ -654,7 +656,7 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     cross(leftE, botE);
     cross(rightE, botE);
     setText('#E0501E');
-    doc.setFontSize(5);
+    font(5);
     const label = (dx: number, dy: number) => {
       const ntx2 = tx + dx;
       const nty2 = ty + dy;
@@ -669,25 +671,25 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     const lb = label(0, 1);
     if (lr) {
       doc.line(px(rightE), py(topE) - 4, px(rightE), py(botE) + 4);
-      doc.text(`${t('pdf.joinTo')} ${lr} →`, px(rightE) + 1.2, py((topE + botE) / 2), { angle: -90, align: 'center' });
+      doc.text(safe(`${t('pdf.joinTo')} ${lr} →`), px(rightE) + 1.2, py((topE + botE) / 2), { angle: -90, align: 'center' });
     }
     if (ll) {
       doc.line(px(leftE), py(topE) - 4, px(leftE), py(botE) + 4);
     }
     if (lb) {
       doc.line(px(leftE) - 4, py(botE), px(rightE) + 4, py(botE));
-      doc.text(`↓ ${t('pdf.joinTo')} ${lb}`, px((leftE + rightE) / 2), py(botE) + 3, { align: 'center' });
+      doc.text(safe(`↓ ${t('pdf.joinTo')} ${lb}`), px((leftE + rightE) / 2), py(botE) + 3.4, { align: 'center' });
     }
     if (lt) doc.line(px(leftE) - 4, py(topE), px(rightE) + 4, py(topE));
     doc.setLineDashPattern([], 0);
     font(5.5);
     setText('#E0501E');
     const sideInfo = [ll && `← ${ll}`, lt && `↑ ${lt}`].filter(Boolean).join('   ');
-    if (sideInfo) text(sideInfo, M, PH - M - 6.5);
+    if (sideInfo) text(sideInfo, M, PH - M - 9);
     setText('#000000');
     font(6);
-    text(`${t('pdf.markHint', { g: f1(g, 2) })}`, M, PH - M - 3.5, { maxWidth: PW - 2 * M - 60 });
-    drawCalibration(PW - M - 52, PH - M - 7.5, 50);
+    text(`${t('pdf.markHint', { g: f1(g, 2) })}`, M, PH - M - 4.5, { maxWidth: PW - 2 * M - 60 });
+    drawCalibration(PW - M - 52, PH - M - 6, 50);
   }
 
   function drawCalibration(x: number, yv: number, len = 100) {
@@ -697,10 +699,9 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     doc.setLineWidth(0.2);
     doc.line(x, yv, x + len, yv);
     for (let i = 0; i <= len; i += 10) doc.line(x + i, yv - (i % 50 === 0 ? 2 : 1), x + i, yv);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(5);
+    font(5);
     setText('#000000');
-    doc.text(safe(t('pdf.calibration', { n: len })), x + len / 2, yv + 2.5, { align: 'center' });
+    text(t('pdf.calibration', { n: len }), x + len / 2, yv + 2.5, { align: 'center' });
   }
 
   // ================= 8. Schnittvorlagen

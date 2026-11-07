@@ -361,6 +361,8 @@ export const en: Record<keyof typeof de, string> = {
   'plan.cost': 'Cost',
   'plan.notFitting': 'Pieces larger than raw tile',
   'plan.yieldHint': 'Raw tile need from the yield per cut type: whole tiles 1, diagonal triangles 2 per raw tile, rectangles as many as fit, other shapes 1.',
+  'plan.stockShort': 'Stock insufficient',
+  'plan.stockHint': 'Red negative values: this many raw tiles are missing compared to the recorded stock of the linked material.',
   'plan.perColor': 'Need per colour',
   'plan.cutShort': 'cut',
   'plan.packs': 'packs',

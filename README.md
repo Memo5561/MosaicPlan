@@ -1,0 +1,131 @@
+# MosaicPlan – Professioneller Mosaik-Planer
+
+Persönliche Web-App, die Fotos in **maßstabsgetreue Glas- und Keramikmosaike** umwandelt und einen
+vollständigen **Stein-für-Stein-Verlege- und Produktionsplan** erzeugt: Position, Farbe, Größe, Form
+und Schnittmaße jedes einzelnen Steins, Farblegende, Materialliste, Schnittvorlagen und druckbarer
+PDF-Plan mit Anschlussmarken.
+
+* Läuft im Browser auf PC, Tablet und Android-Handy (installierbar als PWA, „Zum Startbildschirm hinzufügen“).
+* **Keine Cloud**: Fotos, Projekte und Materialien bleiben lokal im Browser (IndexedDB).
+* **Offline nutzbar**: Nach dem ersten Laden funktionieren alle Kernfunktionen ohne Internet (Service Worker).
+* Sprachen: **Deutsch** (Standard), Englisch, Türkisch.
+
+## Starten
+
+```bash
+npm install
+npm run dev          # Entwicklungsserver (http://localhost:5173)
+npm run build        # Produktions-Build nach dist/
+npx vite preview     # Build lokal ausliefern (inkl. Offline-Service-Worker)
+```
+
+Für die Nutzung auf Tablet/Handy den `dist/`-Ordner auf einem beliebigen statischen Webserver
+(auch im Heimnetz) bereitstellen und im Browser „Zum Startbildschirm hinzufügen“ wählen.
+Projekte lassen sich unter *Meine Projekte → Exportieren/Importieren* als Datei zwischen Geräten übertragen.
+
+## Arbeitsablauf (10 Schritte)
+
+1. **Foto** – hochladen, zuschneiden (Seitenverhältnis = Mosaikfläche), drehen (90° + Feindrehung), spiegeln,
+   Helligkeit, Kontrast, Sättigung, Schärfe, Details hervorheben, Hintergrund vereinfachen, Tonwerte/Weißabgleich.
+2. **Bildgröße** – beliebige Breite × Höhe in mm/cm/m (keine Obergrenze außer Arbeitsspeicher; harte Grenze 40 Mio. Rasterpositionen).
+   Randmodus: nur ganze Steine / Rand zuschneiden (rechts-unten) / symmetrisch zuschneiden.
+3. **Steingröße** – 2 × 2 … 12 × 12 mm, rechteckig (z. B. 3 × 5, 4 × 8, 6 × 10, 8 × 12) oder frei.
+4. **Fuge** – 0 / 0,5 / 1 / 1,5 / 2 / 3 mm oder frei; Fugenfarbe und -tiefe.
+5. **Farben** – 8, 12, 16, 24, 32, 48, 64, 100, 150, 200 oder frei; Quelle: automatisch (K-Means),
+   automatisch → eigene Materialien, nur eigene Materialien, eigene Palette. CIEDE2000 oder CIE76, optional Dithering.
+6. **Steinformen** – Dreiecke (Diagonalschnitt), Kantenschnitte (Trapez/Dreieck/Rechteck/individuell),
+   feinere Steine 2×2/3×3 in Detailbereichen, Gesichts-/Detailbereiche markieren, Hauttonschutz.
+7. **Berechnen** – im Web Worker, kachelweise (64 × 64 Zellen), mit Fortschritt und Abbruch.
+8. **Vorschau** – realistische Glas-/Keramikdarstellung, Zoom/Pan (Maus, Touch, Pinch), Farbnummern,
+   Stein anklicken → Detailfenster mit Position, Koordinaten, Farbe, Größe, Form, Schnittanweisung,
+   Schnittvorlage, Nachbarn; Farbe/Form einzeln ändern (Statistik aktualisiert sich automatisch).
+9. **Verlegeplan** – Abschnitte (A1, A2 … nach max. Größe oder Anzahl), Verlegemodus (Antippen = verlegt),
+   Abschnitt fertig markieren, Fortschritt in %, Materialberechnung, CSV-Export aller Koordinaten.
+10. **PDF-Export** – A4/A3/A2/A1/A0/individuell, Hoch-/Querformat, Maßstab 1:1/2:1/3:1/4:1/an Seite anpassen.
+
+## Geometrie und Maße (verbindliche Definitionen)
+
+* **Projektursprung (0 | 0)**: obere linke Außenkante des ersten Steins **A001**. X nach rechts, Y nach unten, alle Maße in mm.
+* **Positionsbezeichnung**: Zeile als Buchstabe(n) (A … Z, AA, AB …), Spalte als Zahl (001 …), z. B. `A001`, `A002`.
+  Mehrteilige Zellen: `A001-1`, `A001-2`. Bei 5-mm-Steinen mit 1 mm Fuge liegt A002 bei X = 6 mm.
+* **Fugen**: Bei *n* Steinen der Breite *w* und Fuge *g* ist die belegte Länge `n·w + (n−1)·g`.
+  Fugen liegen nur zwischen Steinen. Die Gesamtgröße wird nie als „Anzahl × Steinbreite“ berechnet.
+* **Randsteine**: Im Modus „Rand zuschneiden“ erhalten Randspalten/-zeilen exakt berechnete Breiten, damit
+  die gewünschte Länge genau erreicht wird; ist das nicht möglich (Mindestschnittbreite), wird das Restmaß angezeigt.
+* **Schnitte**: Jedes geschnittene Teil ist ein exakt berechnetes Polygon (Halbebenen-Clipping mit halber
+  Fugenbreite zu beiden Seiten der Schnittlinie). Daraus ergeben sich Form (Klassifizierung aus der Geometrie),
+  Außenmaße, Fläche, Kantenlängen, Innenwinkel und die Schnittlinien im Rohstein (Koordinaten ab der oberen
+  linken Rohsteinecke). Maße werden auf 0,1 mm gerundet angezeigt.
+* **Formempfehlung vs. Schnittvorlage**: Formen, die sinnvoll wären, aber deaktiviert sind, werden nur als
+  „Empfehlung – nicht berechnet“ markiert. Nur aktivierte Formen erzeugen berechnete Schnittvorlagen.
+* **Zählung**: Es wird über Rasterzellen → Teilstücke iteriert; jeder Stein wird genau einmal gezählt.
+  Die Tests prüfen `Steinfläche + Fugenfläche = Gesamtfläche`, eindeutige IDs und Summen je Farbe/Form/Größe/Abschnitt.
+* **Materialbedarf**: Rohsteine je Farbe aus der Ausbeute je Schnittart (ganzer Stein 1, Diagonaldreieck 2 je Rohstein,
+  Rechtecke so viele wie hineinpassen, sonstige Formen 1), aufgerundet; Reserve 5/10/15/20 % oder frei;
+  Verschnitt = Rohsteinfläche − Steinfläche. Rohsteinmaß = Maß des zugeordneten Materials, sonst Rastermaß.
+  Fugenmasse = Fugenfläche × Fugentiefe × 1,6 kg/l (**Schätzwert**).
+
+## PDF-Inhalt
+
+Deckblatt · Originalfoto · Mosaikvorschau · Gesamtübersicht mit Abschnitten · je Abschnitt: Deckblatt mit Position,
+Anschlüssen, Farblegende und Stückzahlen · nummerierte, maßstäbliche Verlegeblätter (Raster, Farbcodes, Formen,
+Zeilen-/Spaltenbeschriftung, mm-Lineal in Projektkoordinaten, Passkreuze auf Fugenmitte, Anschlusslinien mit
+Blatt-/Abschnittsverweis, 50/100-mm-Kontrollstrecke) · Farblegende · Materialliste · Anzahl je Form und Größe ·
+Schnittvorlagen (vergrößert + 1:1, Kantenmaße, Winkel, Schnittlinien) · Koordinatenlisten · Seitenzahlen.
+Große Abschnitte werden automatisch auf mehrere Blätter verteilt; Blattgrenzen liegen auf Rasterlinien.
+Beim Druck **„Tatsächliche Größe / 100 %“** wählen und die Kontrollstrecke nachmessen.
+
+## Technik
+
+React 19 + TypeScript, Vite, Canvas 2D (virtuelles Rendering nur sichtbarer Steine; Übersichtsbitmap beim
+Herauszoomen), Web Worker für Berechnung/Statistik/PDF/CSV, IndexedDB, jsPDF (Schrift DejaVu Sans eingebettet,
+damit Türkisch korrekt gedruckt wird), vite-plugin-pwa (Workbox) für Offline-Betrieb.
+
+Rechenkern (`src/core`, ohne DOM, vollständig getestet):
+`color.ts` (sRGB ⇄ CIELAB D65, CIE76, CIEDE2000), `kmeans.ts` (gewichtetes K-Means++ in Lab),
+`imageOps.ts` (Gauß/Box-Filter, Sobel, Unschärfemaske, Tonwerte, Weißabgleich, Hintergrundvereinfachung),
+`layout.ts` (Raster mit Fugen, Randzuschnitt, Abschnitte, IDs), `pieces.ts` (Polygone, Schnittanalyse),
+`mosaic.ts` (Bildanalyse je Zelle, Formwahl, Palette, Zuordnung), `stats.ts`, `edits.ts`, `pdf.ts`, `csv.ts`, `render.ts`.
+
+## Tests
+
+```bash
+npm test                                   # 53 Unit-/Integrationstests (Vitest)
+npm run build && npx vite preview --port 4173 &
+npm run e2e                                # Browser-Test (Playwright/Chromium), 17 Prüfungen
+```
+
+Geprüft werden u. a.: CIEDE2000 gegen die Referenzdaten von Sharma et al., Fugen in der Gesamtgröße,
+exakte Randzuschnitte, eindeutige IDs, Steine innerhalb ihrer Zelle ohne Überlappung mit Mindestabstand = Fuge,
+Stückzahlen je Farbe/Form/Größe/Abschnitt, Flächenbilanz, verlustfreies Speichern/Laden,
+**PDF = Berechnung** (Anzahl der gezeichneten Steine je Farbe auf den Verlegeblättern),
+Schnittvorlagen-Zuordnung, Großformat (200 × 100 cm mit 55.778 Positionen, 1000 × 500 cm mit 2 Mio. Positionen),
+sowie im Browser: Berechnung, Steindetail, Farb- und Formänderung (Dreieck mit Schnittvorlage), Verlegemodus, Abschnitt fertig, Materialberechnung,
+PDF-Download, **Projekt und Fortschritt nach Neustart erhalten**, Sprachen, Material anlegen, **Offline-Start**, Handy-Ansicht.
+
+Testprojekte (Startseite → „Testprojekte“): Menschenporträt, Landschaft, Tier (Katze), Stadtbild.
+Die Testbilder sind synthetisch erzeugt (`scripts/svg/*.svg` → `scripts/render-svgs.cjs`), keine echten Fotos.
+
+## Status und Einschränkungen (ehrlich)
+
+| Bereich | Status |
+| --- | --- |
+| Fotoimport, Zuschnitt, Drehen, Bildoptimierung | fertig |
+| Bildanalyse CIELAB/ΔE, K-Means | fertig |
+| Mosaikberechnung, Steingrößen 2–12 mm + individuell, Projektmaße, Fugen | fertig |
+| Farblegende, Farbverwaltung, Materialdatenbank, Abgleich mit eigenen Materialien | fertig |
+| Stein-für-Stein-Positionierung, Einzelstein-Ansicht und -Bearbeitung | fertig |
+| Großformat-Aufteilung in Abschnitte, Fortschritt | fertig |
+| Materialberechnung, PDF-Verlegeplan, CSV | fertig |
+| Individuelle Schnittkonturen | fertig für Dreieck/Trapez/Rechteck/Kantenschnitt (automatisch) und Freiform je Rasterzelle (manuell) |
+| Projektverwaltung, Export/Import, Offline | fertig |
+| **Rauten** | **unvollständig**: werden erkannt/klassifiziert und können per Freiform gezeichnet werden; ein automatisches Rautenraster gibt es nicht |
+| **Gemischte Steingrößen** | nur als k×k-Unterteilung (2×2, 3×3) des Grundrasters; frei kombinierbare Zonen mit eigenem Raster sind **nicht** umgesetzt |
+| **Gesichtserkennung** | automatische Erkennung nur, wenn der Browser die Shape-Detection-API (`FaceDetector`) anbietet; sonst manuelles Markieren + automatischer Hauttonschutz |
+| **Hintergrund vereinfachen** | heuristisch über Kantendichte (keine KI-Segmentierung) |
+| **OpenCV** | **nicht verwendet**: die benötigten Verfahren (Filter, Sobel, Unschärfemaske, K-Means) sind in TypeScript implementiert und getestet; opencv.js (~8–10 MB WASM) wäre für Handy/Offline unverhältnismäßig |
+| Freiform | Konturen bleiben innerhalb einer Rasterzelle; zellübergreifende Freiformsteine sind nicht möglich |
+| Kantenschnitte | Winkel in 15°-Schritten, Versatz im 0,5-mm-Raster (bewusst, damit sich gleiche Schnittvorlagen wiederholen) |
+| Rückgängig (Undo) | nicht vorhanden |
+| Farbwerte der Materialien | werden vom Benutzer eingegeben (HEX oder Pipette); keine Kamerakalibrierung |
+| Sehr große Projekte | Berechnung mit mehreren Millionen Positionen funktioniert (getestet bis 2 Mio.); Speicherbedarf und PDF-Umfang steigen entsprechend – große PDFs abschnittsweise exportieren, vollständige Koordinaten per CSV |

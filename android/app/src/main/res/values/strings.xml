@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MosaicPlan</string>
+    <string name="title_activity_main">MosaicPlan</string>
+    <string name="package_name">de.mosaicplan.app</string>
+    <string name="custom_url_scheme">de.mosaicplan.app</string>
+</resources>

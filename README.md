@@ -23,6 +23,29 @@ Für die Nutzung auf Tablet/Handy den `dist/`-Ordner auf einem beliebigen statis
 (auch im Heimnetz) bereitstellen und im Browser „Zum Startbildschirm hinzufügen“ wählen.
 Projekte lassen sich unter *Meine Projekte → Exportieren/Importieren* als Datei zwischen Geräten übertragen.
 
+## Android-App (APK)
+
+Die App wird mit Capacitor als echte Android-App verpackt (`android/`). Alle Dateien liegen im APK,
+die App läuft vollständig offline; Daten bleiben im App-Speicher des Handys. PDF-, CSV- und Projektdateien
+werden in *Dokumente/MosaicPlan* gespeichert (soweit Android das erlaubt) und zusätzlich über das Teilen-Menü angeboten.
+
+Build (benötigt JDK 21 und Android SDK mit Plattform 36):
+
+```bash
+echo "sdk.dir=/pfad/zum/android-sdk" > android/local.properties
+npm run android:sync
+cd android && ./gradlew assembleRelease \
+  -Pandroid.injected.signing.store.file=/pfad/mosaicplan-release.jks \
+  -Pandroid.injected.signing.store.password=*** \
+  -Pandroid.injected.signing.key.alias=mosaicplan \
+  -Pandroid.injected.signing.key.password=***
+# Ergebnis: android/app/build/outputs/apk/release/app-release.apk
+```
+
+Der Signierschlüssel ist bewusst **nicht** im Repository (öffentlich). Updates müssen mit demselben Schlüssel
+signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal gespeicherte Projekte verloren
+(vorher *Meine Projekte → Exportieren*).
+
 ## Arbeitsablauf (10 Schritte)
 
 1. **Foto** – hochladen, zuschneiden (Seitenverhältnis = Mosaikfläche), drehen (90° + Feindrehung), spiegeln,

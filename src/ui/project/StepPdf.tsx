@@ -7,6 +7,7 @@ import { dictionaries, useI18n } from '../../i18n';
 import { runWorker } from '../../workers/client';
 import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Toggle } from '../components';
 import { canvasToJpeg } from './imagePrep';
+import { isNative } from '../../platform';
 import type { ProjectApi } from './useProject';
 
 export function StepPdf({ api, materials }: { api: ProjectApi; materials: Material[] }) {
@@ -178,9 +179,11 @@ export function StepPdf({ api, materials }: { api: ProjectApi; materials: Materi
         {result && (
           <p data-testid="pdf-done">
             ✓ {t('pdfui.done', { kb: n(result.size / 1024, 0) })}{' '}
-            <a href={result.url} target="_blank" rel="noreferrer">
-              {t('pdfui.open')}
-            </a>
+            {!isNative() && (
+              <a href={result.url} target="_blank" rel="noreferrer">
+                {t('pdfui.open')}
+              </a>
+            )}
           </p>
         )}
       </div>

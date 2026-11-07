@@ -6,3 +6,6 @@ dev-dist
 e2e/output
 test-output
 *.tsbuildinfo
+
+*.jks
+*.keystore

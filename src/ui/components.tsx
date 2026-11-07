@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '../i18n';
+import { isNative, saveNative } from '../platform';
 
 export function parseNum(s: string): number {
   return parseFloat(s.replace(',', '.').trim());
@@ -153,7 +154,11 @@ export function Badge({ kind, children }: { kind: 'ok' | 'warn' | 'info' | 'inco
   return <span className={`badge badge-${kind}`}>{children}</span>;
 }
 
-export function downloadBlob(blob: Blob, name: string) {
+export async function downloadBlob(blob: Blob, name: string): Promise<void> {
+  if (isNative()) {
+    await saveNative(blob, name);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

@@ -41,6 +41,12 @@ describe('Übersetzungen', () => {
     expect(missing).toEqual([]);
   });
 
+  it('Erweiterungsdateien: gleiche Schlüssel in DE, EN und TR', () => {
+    const de = Object.keys(dictionaries.de).sort();
+    expect(Object.keys(dictionaries.en).sort()).toEqual(de);
+    expect(Object.keys(dictionaries.tr).sort()).toEqual(de);
+  });
+
   it('gleiche Platzhalter in allen Sprachen', () => {
     const de = dictionaries.de as Record<string, string>;
     for (const lang of ['en', 'tr'] as const) {

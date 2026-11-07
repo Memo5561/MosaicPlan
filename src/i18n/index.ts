@@ -6,7 +6,21 @@ import { tr } from './tr';
 export type Lang = 'de' | 'en' | 'tr';
 export type Dict = Record<keyof typeof de, string>;
 
-export const dictionaries: Record<Lang, Dict> = { de, en, tr };
+type ExtModule = { de?: Record<string, string>; en?: Record<string, string>; tr?: Record<string, string> };
+
+/**
+ * Zusätzliche Übersetzungen aus src/i18n/ext/*.ts (je Funktionsbereich eine Datei mit {de, en, tr}).
+ * So können neue Funktionen eigene Texte mitbringen, ohne die großen Wörterbücher zu ändern.
+ */
+const extModules = import.meta.glob<ExtModule>('./ext/*.ts', { eager: true });
+
+function merged(lang: Lang, base: Record<string, string>): Dict {
+  const out: Record<string, string> = { ...base };
+  for (const m of Object.values(extModules)) Object.assign(out, m[lang] ?? {});
+  return out as Dict;
+}
+
+export const dictionaries: Record<Lang, Dict> = { de: merged('de', de), en: merged('en', en), tr: merged('tr', tr) };
 
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
 

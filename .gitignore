@@ -5,3 +5,4 @@ dev-dist
 .DS_Store
 e2e/output
 test-output
+*.tsbuildinfo

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1d2a3a"/>
+  <g transform="translate(76 76)">
+    <rect x="0" y="0" width="108" height="108" rx="10" fill="#e8b04a"/>
+    <rect x="126" y="0" width="108" height="108" rx="10" fill="#d4573b"/>
+    <path d="M252 10 Q252 0 262 0 L350 0 Q360 0 360 10 L360 98 Z" fill="#3f8f8a"/>
+    <path d="M252 26 L344 108 L262 108 Q252 108 252 98 Z" fill="#f2ede4"/>
+    <rect x="0" y="126" width="108" height="108" rx="10" fill="#3f8f8a"/>
+    <rect x="126" y="126" width="108" height="108" rx="10" fill="#f2ede4"/>
+    <rect x="252" y="126" width="108" height="108" rx="10" fill="#e8b04a"/>
+    <rect x="0" y="252" width="108" height="108" rx="10" fill="#d4573b"/>
+    <rect x="126" y="252" width="49" height="49" rx="6" fill="#e8b04a"/><rect x="185" y="252" width="49" height="49" rx="6" fill="#3f8f8a"/>
+    <rect x="126" y="311" width="49" height="49" rx="6" fill="#f2ede4"/><rect x="185" y="311" width="49" height="49" rx="6" fill="#d4573b"/>
+    <rect x="252" y="252" width="108" height="108" rx="10" fill="#7d6bb0"/>
+  </g>
+</svg>

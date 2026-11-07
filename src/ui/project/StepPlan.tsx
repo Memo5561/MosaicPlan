@@ -1,0 +1,451 @@
+import { useMemo, useRef, useState } from 'react';
+import { cellPieceCount } from '../../core/pieces';
+import { setRangePlaced, togglePiecePlaced } from '../../core/edits';
+import { packMosaic } from '../../core/serialize';
+import type { Stats } from '../../core/stats';
+import type { Material } from '../../core/types';
+import { useI18n } from '../../i18n';
+import { runWorker } from '../../workers/client';
+import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Swatch, Toggle } from '../components';
+import { StoneDialog } from './StoneDialog';
+import { Viewer, type ViewerHandle } from './Viewer';
+import type { ProjectApi } from './useProject';
+
+export function StepPlan({ api, materials }: { api: ProjectApi; materials: Material[] }) {
+  const { t, n, lang } = useI18n();
+  const [selected, setSelected] = useState<string | null>(null);
+  const [layMode, setLayMode] = useState(false);
+  const [pick, setPick] = useState<{ row: number; col: number; piece: number } | null>(null);
+  const [tab, setTab] = useState<'sections' | 'material'>('sections');
+  const [csvBusy, setCsvBusy] = useState(false);
+  const viewer = useRef<ViewerHandle>(null);
+  const c = api.computed;
+  const rec = api.rec!;
+  const s = rec.settings;
+  const G = api.sections;
+  const sec = useMemo(() => G?.sections.find((x) => x.id === selected) ?? null, [G, selected]);
+  if (!c || !G) return <p className="muted">{t('preview.notComputed')}</p>;
+  const total = api.stats;
+  const pct = total && total.pieces ? total.placed / total.pieces : 0;
+  const doneSections = G.sections.filter((x) => {
+    const st = api.sectionStats.get(x.id);
+    return st && st.pieces > 0 && st.placed === st.pieces;
+  }).length;
+
+  const exportCsv = async (ids: string[] | null) => {
+    setCsvBusy(true);
+    try {
+      const r = await runWorker<'csv'>('pdf', {
+        type: 'csv',
+        layoutParams: c.layoutParams,
+        mosaic: packMosaic(c.data),
+        palette: rec.palette,
+        materials,
+        sections: s,
+        sectionIds: ids,
+        decimalComma: lang !== 'en',
+      });
+      downloadBlob(new Blob(['﻿', r.csv], { type: 'text/csv;charset=utf-8' }), `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_koordinaten.csv`);
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="summary-box">
+        <div className="stat">
+          <span>{t('plan.progress')}</span>
+          <b data-testid="progress-pct">{n(pct * 100, 1)} %</b>
+        </div>
+        <div className="stat">
+          <span>{t('plan.placed')}</span>
+          <b>{total ? n(total.placed) : '…'}</b>
+        </div>
+        <div className="stat">
+          <span>{t('plan.open')}</span>
+          <b>{total ? n(total.pieces - total.placed) : '…'}</b>
+        </div>
+        <div className="stat">
+          <span>{t('plan.sectionsDone')}</span>
+          <b>
+            {doneSections} / {G.sections.length}
+          </b>
+        </div>
+        <ProgressBar value={pct} />
+      </div>
+      <div className="viewer-layout">
+        <div>
+          <div className="btn-row wrap">
+            <Toggle checked={layMode} onChange={setLayMode} label={t('plan.layMode')} hint={t('plan.layModeHint')} />
+          </div>
+          <Viewer
+            ref={viewer}
+            layout={c.layout}
+            data={c.data}
+            palette={rec.palette}
+            version={api.version}
+            progressVersion={api.progressVersion}
+            groutHex={s.groutHex}
+            surface={s.surface}
+            realistic={false}
+            showCodes
+            progressMode
+            sections={G}
+            selectedSection={selected}
+            highlight={pick}
+            onPick={(row, col, piece) => {
+              if (layMode) {
+                const idx = row * c.layout.cols + col;
+                if (piece < cellPieceCount(c.data, idx)) togglePiecePlaced(c.data, idx, piece);
+                api.touchProgress();
+              } else setPick({ row, col, piece });
+            }}
+          />
+        </div>
+        <aside className="side">
+          <Segmented
+            value={tab}
+            options={[
+              { value: 'sections', label: t('plan.sections') },
+              { value: 'material', label: t('plan.material') },
+            ]}
+            onChange={setTab}
+          />
+          {tab === 'sections' && (
+            <>
+              <Field label={t('plan.sectionMode')}>
+                <Segmented
+                  value={s.sectionMode ?? 'size'}
+                  options={[
+                    { value: 'size', label: t('plan.bySize') },
+                    { value: 'count', label: t('plan.byCount') },
+                  ]}
+                  onChange={(v) => api.setSettings({ sectionMode: v })}
+                />
+              </Field>
+              {(s.sectionMode ?? 'size') === 'size' ? (
+                <Field label={t('plan.sectionSize')}>
+                  <div className="btn-row">
+                    <NumberInput value={s.sectionWmm / 10} onChange={(v) => api.setSettings({ sectionWmm: v * 10 })} min={1} suffix="cm" width={60} label={t('size.width')} />
+                    ×
+                    <NumberInput value={s.sectionHmm / 10} onChange={(v) => api.setSettings({ sectionHmm: v * 10 })} min={1} suffix="cm" width={60} label={t('size.height')} />
+                  </div>
+                </Field>
+              ) : (
+                <Field label={t('plan.sectionCount')}>
+                  <div className="btn-row">
+                    <NumberInput value={s.sectionCols ?? 4} onChange={(v) => api.setSettings({ sectionCols: Math.max(1, Math.round(v)) })} min={1} max={500} width={50} label={t('pdf.cols')} />
+                    ×
+                    <NumberInput value={s.sectionRows ?? 3} onChange={(v) => api.setSettings({ sectionRows: Math.max(1, Math.round(v)) })} min={1} max={500} width={50} label={t('pdf.rows')} />
+                  </div>
+                </Field>
+              )}
+              <p className="muted small">
+                {G.scols} × {G.srows} = {G.sections.length} {t('plan.sectionsCount')}
+              </p>
+              <div className="section-grid" style={{ gridTemplateColumns: `repeat(${Math.min(G.scols, 8)}, minmax(0, 1fr))` }}>
+                {G.sections.map((x) => {
+                  const st = api.sectionStats.get(x.id);
+                  const p = st && st.pieces ? st.placed / st.pieces : 0;
+                  return (
+                    <button
+                      key={x.id}
+                      className={`section-cell ${selected === x.id ? 'active' : ''} ${p >= 1 ? 'done' : ''}`}
+                      onClick={() => {
+                        setSelected(x.id);
+                        viewer.current?.zoomTo(x);
+                      }}
+                      title={`${x.id}: ${Math.round(p * 100)} %`}
+                    >
+                      <b>{x.id}</b>
+                      <small>{Math.round(p * 100)}%</small>
+                    </button>
+                  );
+                })}
+              </div>
+              {sec && (
+                <div className="section-info" data-testid="section-info">
+                  <h4>
+                    {t('plan.section')} {sec.id}
+                  </h4>
+                  <table className="kv small">
+                    <tbody>
+                      <tr>
+                        <th>{t('plan.position')}</th>
+                        <td>
+                          X {n(sec.x, 2)} · Y {n(sec.y, 2)} mm
+                        </td>
+                      </tr>
+                      <tr>
+                        <th>{t('plan.size')}</th>
+                        <td>
+                          {n(sec.w, 2)} × {n(sec.h, 2)} mm
+                        </td>
+                      </tr>
+                      <tr>
+                        <th>{t('plan.neighbors')}</th>
+                        <td>
+                          {(['N', 'E', 'S', 'W'] as const)
+                            .map((d) => {
+                              const dr = d === 'N' ? -1 : d === 'S' ? 1 : 0;
+                              const dc = d === 'W' ? -1 : d === 'E' ? 1 : 0;
+                              const sr = sec.sr + dr;
+                              const sc = sec.sc + dc;
+                              const nb = sr >= 0 && sc >= 0 && sr < G.srows && sc < G.scols ? G.sections[sr * G.scols + sc].id : '–';
+                              return `${t(`dir.${d}`)}: ${nb}`;
+                            })
+                            .join(' · ')}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {api.sectionStats.get(sec.id) && <SectionLegend st={api.sectionStats.get(sec.id)!} api={api} />}
+                  <div className="btn-row wrap">
+                    <button
+                      className="btn small"
+                      onClick={() => {
+                        setRangePlaced(c.layout, c.data, sec, true);
+                        api.touchProgress();
+                      }}
+                    >
+                      ✓ {t('plan.markDone')}
+                    </button>
+                    <button
+                      className="btn small"
+                      onClick={() => {
+                        if (!confirm(t('plan.resetConfirm'))) return;
+                        setRangePlaced(c.layout, c.data, sec, false);
+                        api.touchProgress();
+                      }}
+                    >
+                      {t('plan.reset')}
+                    </button>
+                    <button className="btn small" disabled={csvBusy} onClick={() => exportCsv([sec.id])}>
+                      CSV {sec.id}
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="btn-row wrap" style={{ marginTop: 10 }}>
+                <button className="btn small" disabled={csvBusy} onClick={() => exportCsv(null)} data-testid="csv-all">
+                  {csvBusy ? t('common.loading') : t('plan.csvAll')}
+                </button>
+              </div>
+            </>
+          )}
+          {tab === 'material' && <MaterialCalc api={api} />}
+        </aside>
+      </div>
+      {pick && (
+        <StoneDialog
+          layout={c.layout}
+          data={c.data}
+          palette={rec.palette}
+          materials={materials}
+          sections={G}
+          row={pick.row}
+          col={pick.col}
+          piece={pick.piece}
+          minPieceMm={s.shapes.minPieceMm}
+          onClose={() => setPick(null)}
+          onNavigate={(row, col, piece) => setPick({ row, col, piece })}
+          onChanged={api.touchMosaic}
+          onProgress={api.touchProgress}
+        />
+      )}
+    </div>
+  );
+}
+
+function SectionLegend({ st, api }: { st: Stats; api: ProjectApi }) {
+  const { t, n } = useI18n();
+  return (
+    <table className="data small">
+      <thead>
+        <tr>
+          <th>{t('colors.code')}</th>
+          <th />
+          <th className="num">{t('colors.stones')}</th>
+          <th className="num">{t('plan.placedShort')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {st.perColor
+          .filter((c) => c.pieces > 0)
+          .map((c) => (
+            <tr key={c.color}>
+              <td>{String(api.rec!.palette[c.color]?.code).padStart(2, '0')}</td>
+              <td>
+                <Swatch hex={api.rec!.palette[c.color]?.hex ?? '#000'} size={12} />
+              </td>
+              <td className="num">{n(c.pieces)}</td>
+              <td className="num">{n(c.placed)}</td>
+            </tr>
+          ))}
+        <tr>
+          <th colSpan={2}>Σ</th>
+          <th className="num">{n(st.pieces)}</th>
+          <th className="num">{n(st.placed)}</th>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+export function MaterialCalc({ api }: { api: ProjectApi }) {
+  const { t, n } = useI18n();
+  const st = api.stats;
+  const s = api.rec!.settings;
+  const reserves = [5, 10, 15, 20];
+  if (!st) return <p className="muted">{t('common.loading')}</p>;
+  return (
+    <div data-testid="material-calc">
+      <Field label={t('plan.reserve')}>
+        <div className="btn-row wrap">
+          {reserves.map((r) => (
+            <button key={r} className={`btn chip ${s.reservePct === r ? 'primary' : ''}`} onClick={() => api.setSettings({ reservePct: r })}>
+              {r} %
+            </button>
+          ))}
+          <NumberInput value={s.reservePct} onChange={(v) => api.setSettings({ reservePct: v })} min={0} max={200} suffix="%" width={50} label={t('plan.reserve')} />
+        </div>
+      </Field>
+      <table className="kv small">
+        <tbody>
+          <tr>
+            <th>{t('plan.gridPositions')}</th>
+            <td data-testid="mc-grid">{n(st.gridPositions)}</td>
+          </tr>
+          <tr>
+            <th>{t('plan.stonesTotal')}</th>
+            <td data-testid="mc-pieces">{n(st.pieces)}</td>
+          </tr>
+          <tr>
+            <th>{t('plan.uncut')}</th>
+            <td>{n(st.uncutPieces)}</td>
+          </tr>
+          <tr>
+            <th>{t('plan.cut')}</th>
+            <td>{n(st.cutPieces)}</td>
+          </tr>
+          <tr>
+            <th>{t('plan.areaTotal')}</th>
+            <td>{n(st.finishedArea / 1e6, 4)} m²</td>
+          </tr>
+          <tr>
+            <th>{t('plan.areaStones')}</th>
+            <td>
+              {n(st.stoneArea / 1e6, 4)} m² ({n((st.stoneArea / st.finishedArea) * 100, 1)} %)
+            </td>
+          </tr>
+          <tr>
+            <th>{t('plan.areaJoints')}</th>
+            <td>
+              {n(st.jointArea / 1e6, 4)} m² ({n((st.jointArea / st.finishedArea) * 100, 1)} %)
+            </td>
+          </tr>
+          <tr>
+            <th>{t('plan.raw')}</th>
+            <td>{n(st.rawTotal)}</td>
+          </tr>
+          <tr>
+            <th>{t('plan.waste')}</th>
+            <td>
+              {n(st.wasteArea / 1e6, 4)} m² ({n(st.wastePct, 1)} %)
+            </td>
+          </tr>
+          <tr>
+            <th>{t('plan.withReserve')}</th>
+            <td>
+              <b>{n(st.rawWithReserveTotal)}</b>
+            </td>
+          </tr>
+          <tr>
+            <th>{t('plan.grout')}</th>
+            <td>
+              ≈ {n(st.groutKg, 2)} kg <small className="muted">({t('plan.estimate')})</small>
+            </td>
+          </tr>
+          {st.totalCost > 0 && (
+            <tr>
+              <th>{t('plan.cost')}</th>
+              <td>
+                {n(st.totalCost, 2)} {!st.costComplete && <Badge kind="incomplete">{t('common.incomplete')}</Badge>}
+              </td>
+            </tr>
+          )}
+          {st.notFitting > 0 && (
+            <tr>
+              <th>{t('plan.notFitting')}</th>
+              <td className="error">{n(st.notFitting)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <p className="muted small">{t('plan.yieldHint')}</p>
+      <h4>{t('plan.perColor')}</h4>
+      <div className="table-wrap">
+        <table className="data small">
+          <thead>
+            <tr>
+              <th>{t('colors.code')}</th>
+              <th />
+              <th className="num">{t('colors.stones')}</th>
+              <th className="num">{t('plan.cutShort')}</th>
+              <th className="num">{t('plan.raw')}</th>
+              <th className="num">+{s.reservePct}%</th>
+              <th className="num">{t('plan.packs')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {st.perColor
+              .filter((c) => c.pieces > 0)
+              .map((c) => (
+                <tr key={c.color}>
+                  <td>{String(api.rec!.palette[c.color]?.code).padStart(2, '0')}</td>
+                  <td>
+                    <Swatch hex={api.rec!.palette[c.color]?.hex ?? '#000'} size={12} />
+                  </td>
+                  <td className="num">{n(c.pieces)}</td>
+                  <td className="num">{n(c.cut)}</td>
+                  <td className="num">{n(c.raw)}</td>
+                  <td className="num">{n(c.rawWithReserve)}</td>
+                  <td className="num">{c.packs !== undefined ? n(c.packs) : '–'}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+      <h4>{t('plan.perShape')}</h4>
+      <table className="data small">
+        <tbody>
+          {Object.entries(st.perShape)
+            .filter(([, v]) => v > 0)
+            .map(([k, v]) => (
+              <tr key={k}>
+                <td>{t(`shape.${k}`)}</td>
+                <td className="num">{n(v)}</td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+      <h4>{t('plan.perSize')}</h4>
+      <div className="table-wrap" style={{ maxHeight: 220 }}>
+        <table className="data small">
+          <tbody>
+            {st.perSize.slice(0, 200).map((z) => (
+              <tr key={z.key}>
+                <td>{t(`shape.${z.shape}`)}</td>
+                <td>
+                  {n(z.w, 1)} × {n(z.h, 1)} mm
+                </td>
+                <td className="num">{n(z.count)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

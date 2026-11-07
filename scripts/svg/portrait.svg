@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000">
+  <defs>
+    <radialGradient id="bg" cx="0.3" cy="0.2" r="1"><stop offset="0" stop-color="#9cc3d9"/><stop offset="1" stop-color="#2e4a62"/></radialGradient>
+    <radialGradient id="skin" cx="0.42" cy="0.38" r="0.7"><stop offset="0" stop-color="#f3cdb0"/><stop offset="0.6" stop-color="#e2a985"/><stop offset="1" stop-color="#b9785a"/></radialGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a3520"/><stop offset="1" stop-color="#26150c"/></linearGradient>
+    <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b3283a"/><stop offset="1" stop-color="#5e0f1c"/></linearGradient>
+    <radialGradient id="iris" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#3f7d5a"/><stop offset="1" stop-color="#1b3a29"/></radialGradient>
+  </defs>
+  <rect width="800" height="1000" fill="url(#bg)"/>
+  <path d="M120 1000 C140 820 260 760 400 760 C540 760 660 820 680 1000 Z" fill="url(#shirt)"/>
+  <rect x="345" y="640" width="110" height="150" rx="40" fill="#d39a78"/>
+  <ellipse cx="400" cy="420" rx="230" ry="300" fill="url(#hair)"/>
+  <ellipse cx="400" cy="470" rx="175" ry="235" fill="url(#skin)"/>
+  <path d="M225 400 C240 240 330 190 410 195 C500 200 580 260 578 400 C540 300 470 270 400 285 C330 270 260 310 225 400 Z" fill="url(#hair)"/>
+  <ellipse cx="228" cy="480" rx="22" ry="45" fill="#d59b79"/>
+  <ellipse cx="572" cy="480" rx="22" ry="45" fill="#d59b79"/>
+  <path d="M295 395 Q335 375 372 392" stroke="#3b2414" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <path d="M428 392 Q465 375 505 395" stroke="#3b2414" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <ellipse cx="335" cy="440" rx="38" ry="20" fill="#fbf7f2"/>
+  <ellipse cx="465" cy="440" rx="38" ry="20" fill="#fbf7f2"/>
+  <circle cx="337" cy="440" r="16" fill="url(#iris)"/>
+  <circle cx="463" cy="440" r="16" fill="url(#iris)"/>
+  <circle cx="337" cy="440" r="7" fill="#0b0b0b"/>
+  <circle cx="463" cy="440" r="7" fill="#0b0b0b"/>
+  <circle cx="342" cy="434" r="4" fill="#ffffff"/>
+  <circle cx="468" cy="434" r="4" fill="#ffffff"/>
+  <path d="M296 440 Q335 412 374 440" stroke="#2a180d" stroke-width="4" fill="none"/>
+  <path d="M426 440 Q465 412 504 440" stroke="#2a180d" stroke-width="4" fill="none"/>
+  <path d="M400 450 L385 540 Q400 552 418 540" stroke="#a86a4c" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <ellipse cx="300" cy="530" rx="40" ry="22" fill="#e79a86" opacity="0.45"/>
+  <ellipse cx="500" cy="530" rx="40" ry="22" fill="#e79a86" opacity="0.45"/>
+  <path d="M345 600 Q400 640 455 600 Q400 618 345 600 Z" fill="#b5404d"/>
+  <path d="M345 600 Q400 585 455 600" stroke="#8c2a35" stroke-width="4" fill="none"/>
+</svg>

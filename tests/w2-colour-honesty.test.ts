@@ -256,7 +256,7 @@ describe('Namen beim Bearbeiten', () => {
       { ...pc('#0000FF', 3), name: 'Mein Blau' },
       { ...pc('#FF0000', 4), name: 'Orange', materialId: 'm' },
     ];
-    expect(legacy.map(isAutoNamed)).toEqual([true, true, false, false]);
+    expect(legacy.map((p) => isAutoNamed(p))).toEqual([true, true, false, false]);
     // HEX-Änderung an einer früher automatisch benannten Farbe → neuer, korrekter Name
     const up = updatePaletteColor(legacy, 0, { hex: '#FE0000' }, 'de');
     expect(up[0]).toMatchObject({ nameKey: 'red' });
@@ -443,16 +443,21 @@ describe('Abweichung je Farbe vom Foto (matchDeltaE) und angefordert/verwendet',
     expect(custom.palette[1].matchDeltaE!.pieces).toBe(0);
   });
 
-  it('eigene Auswahl: Namen bleiben genau, automatische Namen behalten ihren Schlüssel', () => {
+  it('eigene Auswahl: Namen bleiben genau, automatische Namen behalten ihren Schlüssel, Benutzernamen ihre Markierung', () => {
     const su = sampleSetup('portrait');
     const pal = addPaletteColor(addPaletteColor(addPaletteColor([], '#F4F1EA', undefined, 'de'), '#E8B494', 'Haut', 'de'), '#A02432', undefined, 'en');
+    expect(pal.map((p) => !!p.userNamed)).toEqual([false, true, false]);
     const fixed: FixedColor[] = pal.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, code: p.code }));
+    // ohne weitergereichten Schlüssel wird NICHT am Text geraten: die Namen bleiben wörtlich
     const res = computeMosaic(su.img, baseParams(su, { paletteMode: 'custom', fixedPalette: fixed }));
     expect(res.palette.map((p) => p.name)).toEqual(pal.map((p) => p.name));
-    expect(res.palette.map((p) => p.nameKey)).toEqual(pal.map((p) => p.nameKey));
-    // mit weitergereichtem Schlüssel genauso
-    const res2 = computeMosaic(su.img, baseParams(su, { paletteMode: 'custom', fixedPalette: pal.map((p) => ({ ...fixed[p.code - 1], nameKey: p.nameKey, nameSuffix: p.nameSuffix })) }));
-    expect(res2.palette.map((p) => [p.name, p.nameKey])).toEqual(pal.map((p) => [p.name, p.nameKey]));
+    expect(res.palette.map((p) => p.nameKey)).toEqual([undefined, undefined, undefined]);
+    // mit weitergereichtem Schlüssel bzw. Markierung (so wie buildFixedPalette sie übergibt) bleibt beides erhalten
+    const res2 = computeMosaic(
+      su.img,
+      baseParams(su, { paletteMode: 'custom', fixedPalette: pal.map((p) => ({ ...fixed[p.code - 1], ...(p.nameKey ? { nameKey: p.nameKey, nameSuffix: p.nameSuffix } : { userNamed: p.userNamed }) })) }),
+    );
+    expect(res2.palette.map((p) => [p.name, p.nameKey, !!p.userNamed])).toEqual(pal.map((p) => [p.name, p.nameKey, !!p.userNamed]));
   });
 
   it('matchDeltaEValid: nach manuellen Änderungen oder anderer Stückzahl nicht mehr gültig', () => {

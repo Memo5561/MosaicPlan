@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type TextareaHTMLAttributes } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
 import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, removePaletteColor, resetAutoName, updatePaletteColor } from '../../core/edits';
@@ -7,6 +7,7 @@ import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialM
 import type { Material, MosaicData, PaletteColor, PaletteMode } from '../../core/types';
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
+import { computedDeltaE } from './staleReasons';
 import type { ProjectApi } from './useProject';
 import '../css/w1-mosaic-core.css';
 import '../css/w2-colour-honesty.css';
@@ -25,9 +26,11 @@ function nearestMaterial(p: PaletteColor, mats: Material[]): { m: Material; d: n
 }
 
 /**
- * Hält die automatischen Farbnamen der Palette auf dem Stand der UI-Sprache (und erkennt die automatischen
- * Namen älterer Projekte). Läuft beim Öffnen, bei Sprachwechsel und nach einer Berechnung – nicht bei jeder
- * Tastatureingabe im Namensfeld. Nie während einer Berechnung (Palette gesperrt).
+ * Hält die gespeicherten automatischen Farbnamen der Palette auf dem Stand der UI-Sprache (und übernimmt einmalig
+ * die automatischen Namen von Projekten vor Welle 2). Läuft im Arbeitsbereich – also auf jedem Schritt – beim
+ * Öffnen, bei Sprachwechsel, nach einer Berechnung und wenn eine anderswo gespeicherte Berechnung übernommen wird;
+ * nicht bei jeder Tastatureingabe im Namensfeld. Nie während einer Berechnung (Palette gesperrt).
+ * Steindetail, PDF und CSV lösen automatische Namen zusätzlich selbst in der Sprache auf (paletteDisplayName).
  */
 export function useLocalizedPaletteNames(api: ProjectApi): void {
   const { lang } = useI18n();
@@ -36,11 +39,11 @@ export function useLocalizedPaletteNames(api: ProjectApi): void {
   ref.current = palette;
   useEffect(() => {
     const cur = ref.current;
-    if (api.paletteLocked || !cur || !cur.length) return;
+    if (!api.loaded || api.paletteLocked || !cur || !cur.length) return;
     const next = normalizePaletteNames(cur, lang);
     if (next !== cur) api.setPalette(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lang, api.paletteLocked, api.computed?.data]);
+  }, [lang, api.loaded, api.paletteLocked, api.computed?.data, api.rec?.meta.id, api.rec?.mosaicRev]);
 }
 
 /** „Angefordert N – verwendet M …“ aus den Kennzahlen der letzten Berechnung (null bei älteren Ergebnissen). */
@@ -77,7 +80,6 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
   const nonDefault = s.deltaE !== '2000' || s.dither > 0;
   // „Erweitert“ ist geöffnet, wenn dort etwas vom Standard abweicht – danach entscheidet der Benutzer
   const [advOpen, setAdvOpen] = useState(nonDefault);
-  useLocalizedPaletteNames(api);
   return (
     <div>
       {locked && (
@@ -172,6 +174,42 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
 
 const codeStr = (c: number) => String(c).padStart(2, '0');
 
+/**
+ * Namensfeld der Palette: bricht lange Namen um und wächst in der Höhe mit, statt sie abzuschneiden – der Zusatz
+ * („Hautton dunkel 2“, „Karminrot (dunkel)“), der gleichnamige Farben unterscheidet, bleibt so auch auf dem Handy
+ * sichtbar. Ein Name ist einzeilig: Enter beendet die Eingabe, Zeilenumbrüche werden zu Leerzeichen.
+ */
+function NameField({ onValue, value, ...rest }: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'onChange' | 'value'> & { value: string; onValue: (v: string) => void; 'data-testid'?: string; 'data-auto'?: string }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  };
+  useLayoutEffect(fit, [value]);
+  useEffect(() => {
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+  return (
+    <textarea
+      {...rest}
+      ref={ref}
+      rows={1}
+      className="text w2ch-name"
+      value={value}
+      onChange={(e) => onValue(e.target.value.replace(/\s*[\r\n]+\s*/g, ' '))}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 /** Farbfeld + Nummer + Name, z. B. „■ 09 Hellblau“. */
 function ColorChip({ code, hex, name }: { code: number; hex: string; name: string }) {
   return (
@@ -212,6 +250,11 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
   const matById = new Map(materials.map((m) => [m.id, m]));
   const dn = (p: PaletteColor) => paletteDisplayName(p, lang);
   const counts = api.computed ? colorCountNotice(rec.diagnostics, t) : null;
+  // ΔE-Formel, mit der die Abweichung je Farbe gemessen wurde (die der Berechnung, nicht die eingestellte).
+  // Die Einstufung „> 5 deutlich“ (rot) gilt nur für CIEDE2000 – wie die Einstufung in Schritt 7.
+  const resultDE = computedDeltaE(rec.computedWith) ?? (api.stale ? null : rec.settings.deltaE);
+  const deLabel = resultDE === '76' ? 'ΔE76' : resultDE === '2000' ? 'ΔE00' : 'ΔE';
+  const rateMatch = resultDE === '2000';
 
   const snapNow = (): Snapshot => ({ palette, data: api.computed?.data ?? null, version: api.version });
   const unchangedSince = (s: Snapshot) => s.palette === palette && s.data === (api.computed?.data ?? null) && s.version === api.version;
@@ -401,15 +444,14 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                         </span>
                       </td>
                       <td data-col="name">
-                        <input
-                          className="text"
+                        <NameField
                           value={name}
                           placeholder={t('w2ch.namePlaceholder')}
-                          title={p.nameKey ? t('w2ch.autoName') : undefined}
+                          title={p.nameKey ? `${name} – ${t('w2ch.autoName')}` : name}
                           data-testid="palette-name"
                           data-auto={p.nameKey ? 'true' : undefined}
                           aria-label={`${t('colors.name')} ${codeStr(p.code)}`}
-                          onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { name: e.target.value }, lang))}
+                          onValue={(v) => api.setPalette(updatePaletteColor(palette, i, { name: v }, lang))}
                           onBlur={(e) => {
                             if (!e.target.value.trim()) api.setPalette(resetAutoName(palette, i, lang));
                           }}
@@ -422,11 +464,12 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                         {cs && cs.pieces > 0 && anyMatch && (
                           match ? (
                             <span
-                              className={`w2ch-de ${match.mean > 5 ? 'bad' : ''}`}
+                              className={`w2ch-de ${rateMatch && match.mean > 5 ? 'bad' : ''}`}
                               data-testid="palette-match"
-                              title={t('w2ch.matchTitle', { n: n(match.pieces), mean: n(match.mean, 1), max: n(match.max, 1), over5: n(match.over5), over10: n(match.over10) })}
+                              data-formula={resultDE ?? undefined}
+                              title={t('w2ch.matchTitle', { de: deLabel, n: n(match.pieces), mean: n(match.mean, 1), max: n(match.max, 1), over5: n(match.over5), over10: n(match.over10) })}
                             >
-                              {t('w2ch.match', { mean: n(match.mean, 1) })}
+                              {t('w2ch.match', { de: deLabel, mean: n(match.mean, 1) })}
                               <span className="w2ch-max"> · {t('w2ch.matchMax', { max: n(match.max, 0) })}</span>
                               {match.over5 > 0 && <span className="w2ch-over"> · {t('w2ch.over5', { n: n(match.over5) })}</span>}
                             </span>
@@ -494,7 +537,11 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
               </tbody>
             </table>
           </div>
-          {anyMatch && <p className="muted small" data-testid="palette-match-hint">{t('w2ch.matchHint')}</p>}
+          {anyMatch && (
+            <p className="muted small" data-testid="palette-match-hint">
+              {t('w2ch.matchHint')} {rateMatch ? t('w2ch.matchScale') : resultDE === '76' ? t('w2ch.matchNoScale') : ''}
+            </p>
+          )}
           <div className="btn-row">
             <input type="color" value={newHex} onChange={(e) => setNewHex(e.target.value)} aria-label={t('colors.newColor')} />
             <button className="btn" onClick={() => api.setPalette(addPaletteColor(palette, newHex, undefined, lang))}>

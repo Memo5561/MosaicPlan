@@ -3,7 +3,6 @@ import { isValidHex } from '../../core/color';
 import {
   cellCoverage,
   cellGrid,
-  farDeltaE,
   groutCandidates,
   hexToLinear,
   linToSrgb8,
@@ -24,6 +23,7 @@ import { Badge, Field, NumberInput, Segmented, Swatch } from '../components';
 import '../css/w2-grout-preview.css';
 import { layoutParamsOf, type ProjectApi } from './useProject';
 import { canvasToRaw, renderCropped, rotatedSize } from './imagePrep';
+import { computedMatchesPhoto } from './staleReasons';
 
 const UNIT_F = { mm: 1, cm: 10, m: 1000 } as const;
 
@@ -355,7 +355,8 @@ function useGroutAdvice(api: ProjectApi) {
   const rec = api.rec!;
   const lpKey = JSON.stringify(layoutParamsOf(rec.settings));
   const c = api.effectiveCrop;
-  const photoKey = api.bitmap && api.layout && c ? `${lpKey}|${JSON.stringify(rec.adjust)}|${c.x},${c.y},${c.w},${c.h}` : '';
+  // mit der Foto-Identität: das Modell eines früheren Fotos wird nie für ein neues verwendet
+  const photoKey = api.bitmap && api.layout && c ? `${rec.imageRev ?? ''}|${lpKey}|${JSON.stringify(rec.adjust)}|${c.x},${c.y},${c.w},${c.h}` : '';
   const [photo, setPhoto] = useState<PhotoModel | null>(null);
   const [stone, setStone] = useState<StoneModel | null>(null);
   const [failedKey, setFailedKey] = useState<string | null>(null);
@@ -393,40 +394,46 @@ function useGroutAdvice(api: ProjectApi) {
   }, [photoKey, bitmap]);
   const photoNow = photo && photo.key === photoKey ? photo : null;
 
-  // 2) Berechnetes Mosaik: nur wenn sein Raster dem aktuellen entspricht (sonst wäre es ein anderes Mosaik)
+  // 2) Berechnetes Mosaik: nur wenn sein Raster dem aktuellen entspricht (sonst wäre es ein anderes Mosaik) UND es
+  //    aus diesem Foto mit diesem Zuschnitt und diesen Bildeinstellungen berechnet wurde – sonst verglichen wir die
+  //    alten Steine mit einem Bild, aus dem sie nie berechnet wurden (eine Zahl ohne Bedeutung).
   const computed = api.computed;
   const sameGrid = !!computed && JSON.stringify(computed.layoutParams) === lpKey;
+  const samePhoto = !!computed && computedMatchesPhoto(rec);
+  const useStones = sameGrid && samePhoto;
   const palette = rec.palette;
   const version = api.version;
+  const [stoneFailedKey, setStoneFailedKey] = useState<string | null>(null);
   useEffect(() => {
-    if (!photoNow || !computed || !sameGrid) return;
+    if (!photoNow || !computed || !useStones) return;
     let cancelled = false;
+    const key = `${photoNow.key}|${version}`;
     const timer = window.setTimeout(() => {
       try {
         const mc = mosaicCells(computed.layout, computed.data, palette, photoNow.grid);
         const model = prepareFarModel({ w: photoNow.grid.w, h: photoNow.grid.h, target: photoNow.target, stones: mc.stones, coverage: mc.coverage, k: photoNow.grid.k });
-        if (!cancelled) setStone({ key: `${photoNow.key}|${version}`, coverage: mc.coverage, stones: mc.stones, model });
+        if (!cancelled) setStone({ key, coverage: mc.coverage, stones: mc.stones, model });
       } catch (e) {
         console.warn('Fernwirkung des Mosaiks: Schätzung fehlgeschlagen', e);
+        if (!cancelled) setStoneFailedKey(key);
       }
     }, 150);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [photoNow, computed, sameGrid, palette, version]);
-  const stoneNow = stone && sameGrid && stone.key === `${photoKey}|${version}` ? stone : null;
+  }, [photoNow, computed, useStones, palette, version]);
+  const stoneKey = `${photoKey}|${version}`;
+  const stoneNow = stone && useStones && stone.key === stoneKey ? stone : null;
+  const stoneFailed = useStones && stoneFailedKey === stoneKey;
 
-  // 3) Rangliste (billig): alle Kandidaten + aktuelle Farbe
+  // 3) Rangliste (billig): alle Kandidaten + aktuelle Farbe – mit EINEM Modell für Empfehlung, Liste und Abdeckung:
+  //    die berechneten Steine (Farben und Schnittteile), solange das berechnete Mosaik zu Raster und Foto passt,
+  //    sonst ideale ganze Steine in Fotofarbe. Solange das Steinmodell noch entsteht: „wird geschätzt …“.
   const groutHex = rec.settings.groutHex;
-  const ranked = useMemo(() => (photoNow ? recommendGrout(photoNow.ideal, groutCandidates(groutHex)) : null), [photoNow, groutHex]);
-  const mosaic = useMemo(() => {
-    if (!stoneNow || !ranked) return null;
-    const cur = hexToLinear(groutHex);
-    const best = hexToLinear(ranked[0].hex);
-    if (!cur || !best) return null;
-    return { current: farDeltaE(stoneNow.model, cur), best: farDeltaE(stoneNow.model, best) };
-  }, [stoneNow, ranked, groutHex]);
+  const basis: 'stones' | 'ideal' | null = !photoNow ? null : useStones && !stoneFailed ? (stoneNow ? 'stones' : null) : 'ideal';
+  const model = basis === 'stones' ? stoneNow!.model : basis === 'ideal' ? photoNow!.ideal : null;
+  const ranked = useMemo(() => (model ? recommendGrout(model, groutCandidates(groutHex)) : null), [model, groutHex]);
 
   return {
     hasPhoto: !!api.bitmap,
@@ -434,23 +441,29 @@ function useGroutAdvice(api: ProjectApi) {
     photo: photoNow,
     stone: stoneNow,
     ranked,
-    mosaic,
+    /** Grundlage von Empfehlung, Liste und Abdeckung */
+    basis,
+    /** mittlere Abdeckung der Steine im verwendeten Modell (0…1) */
+    coverage: model ? model.meanCoverage : null,
     computedOtherGrid: !!computed && !sameGrid,
+    computedOtherPhoto: !!computed && sameGrid && !samePhoto,
   };
 }
 
 function GroutAdvice({ api }: { api: ProjectApi }) {
-  const { t, n } = useI18n();
+  const { t, n, lang } = useI18n();
   const adv = useGroutAdvice(api);
   const groutHex = normHex(api.rec!.settings.groutHex);
   const name = (sc: { key: string }) => (sc.key === 'current' ? t('grout.c.current') : t(`grout.c.${sc.key}`));
-  const de = (v: number) => n(v, 1);
+  // ΔE immer mit genau einer Nachkommastelle („5,0“ neben „4,9“, nicht „5“)
+  const locale = lang === 'de' ? 'de-DE' : lang === 'tr' ? 'tr-TR' : 'en-GB';
+  const de = (v: number) => (Number.isFinite(v) ? v.toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '–');
   const apply = (hex: string) => api.setSettings({ groutHex: hex });
 
   let body: ReactNode;
   if (!adv.hasPhoto) body = <p className="muted small">{t('grout.noPhoto')}</p>;
   else if (adv.failed) body = <p className="muted small">{t('grout.error')}</p>;
-  else if (!adv.ranked || !adv.photo)
+  else if (!adv.ranked || !adv.photo || !adv.basis)
     body = (
       <p className="muted small" data-testid="grout-busy">
         {t('grout.busy')}
@@ -491,16 +504,24 @@ function GroutAdvice({ api }: { api: ProjectApi }) {
             </span>
           </div>
         ) : null}
-        {adv.mosaic && (
-          <p className="small gp-mosaic" data-testid="grout-mosaic">
-            {t('grout.mosaic', { current: de(adv.mosaic.current.mean) })}
-            {otherBest && t('grout.mosaicWithBest', { name: name(best), best: de(adv.mosaic.best.mean) })}
+        {/* Grundlage aller Zahlen dieses Kastens (Empfehlung, Liste, Abdeckung) – ein Modell, keine zwei „aktuell“-Werte */}
+        <p className="small muted gp-basis" data-testid="grout-basis" data-basis={adv.basis}>
+          {adv.basis === 'stones' ? t('grout.basisStones') : t('grout.basisIdeal')}
+        </p>
+        {adv.computedOtherGrid && (
+          <p className="muted small" data-testid="grout-other-grid">
+            {t('grout.mosaicOtherGrid')}
           </p>
         )}
-        {adv.computedOtherGrid && <p className="muted small">{t('grout.mosaicOtherGrid')}</p>}
+        {adv.computedOtherPhoto && (
+          <p className="muted small" data-testid="grout-other-photo">
+            {t('grout.mosaicOtherPhoto')}
+          </p>
+        )}
         <FarPreview photo={adv.photo} stone={adv.stone} currentHex={groutHex} best={switchIt ? best : null} name={name} />
         <details className="gp-details">
           <summary>{t('grout.list')}</summary>
+          <div className="gp-table-wrap">
           <table className="gp-table" data-testid="grout-table">
             <thead>
               <tr>
@@ -516,11 +537,14 @@ function GroutAdvice({ api }: { api: ProjectApi }) {
               ))}
             </tbody>
           </table>
+          </div>
           <p className="muted small">{t('grout.listHint')}</p>
         </details>
         <details className="gp-details">
           <summary>{t('grout.how')}</summary>
-          <p className="muted small">{t('grout.howText', { cov: n(adv.photo.ideal.meanCoverage * 100, 0) })}</p>
+          <p className="muted small" data-testid="grout-how">
+            {t(adv.basis === 'stones' ? 'grout.howTextStones' : 'grout.howText', { cov: n((adv.coverage ?? adv.photo.ideal.meanCoverage) * 100, 0) })}
+          </p>
         </details>
       </>
     );
@@ -545,6 +569,16 @@ function GroutRow({ r, name, isCurrent, onApply, de }: { r: GroutScore; name: st
           <span>
             {name} <span className="muted">{r.hex}</span>
           </span>
+        </span>
+        {/* Handy: „Übernehmen“ hier statt in der letzten Spalte (siehe w2-grout-preview.css) */}
+        <span className="gp-apply-inline">
+          {isCurrent ? (
+            <span className="small gp-current-tag">{t('grout.currentTag')}</span>
+          ) : (
+            <button className="btn small" onClick={onApply}>
+              {t('grout.apply')}
+            </button>
+          )}
         </span>
       </td>
       <td>{de(r.mean)}</td>

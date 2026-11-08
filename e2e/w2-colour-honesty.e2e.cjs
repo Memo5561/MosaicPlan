@@ -72,6 +72,9 @@ const MATERIALS = [
   const compute = async () => {
     await page.click('[data-testid="step-compute"]');
     await page.click('[data-testid="compute-btn"]');
+    // Bearbeitete Palettenfarben gehen beim Neuberechnen verloren (Palette wird neu erstellt) → Rückfrage
+    await page.waitForSelector('[data-testid="recompute-guard"], [data-testid="mosaic-canvas"]', { timeout: 120000 });
+    if (await page.isVisible('[data-testid="recompute-guard"]')) await page.click('[data-testid="guard-nobackup"]');
     await page.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 120000 });
     await page.click('[data-testid="step-colors"]');
     await page.waitForSelector('[data-testid="palette-table"]');
@@ -123,7 +126,7 @@ const MATERIALS = [
   const counts = (await page.textContent('[data-testid="palette-counts"]').catch(() => '')) || '';
   check('Hinweis „angefordert 32 – verwendet …“', /angefordert 32 – verwendet \d+/.test(counts), counts.trim());
   const withMatch = rs.filter((r) => r.stones > 0);
-  check('Jede Farbe mit Steinen zeigt die Abweichung vom Foto (Ø/max ΔE)', withMatch.length > 0 && withMatch.every((r) => r.match && /Ø ΔE [\d,]+ · max \d+/.test(r.match)), withMatch.slice(0, 3).map((r) => `${r.code}: ${r.match}`).join(' | '));
+  check('Jede Farbe mit Steinen zeigt die Abweichung vom Foto (Ø/max ΔE)', withMatch.length > 0 && withMatch.every((r) => r.match && /Ø ΔE00 [\d,]+ · max \d+/.test(r.match)), withMatch.slice(0, 3).map((r) => `${r.code}: ${r.match}`).join(' | '));
   check('Tooltip nennt Steine über ΔE 5 und 10', /über ΔE 5/.test(withMatch[0]?.matchTitle || '') && /über ΔE 10/.test(withMatch[0]?.matchTitle || ''), withMatch[0]?.matchTitle);
   check('HEX und L*a*b* in einer Zelle', /^#[0-9A-F]{6} · L [\d,]+ a -?[\d,]+ b -?[\d,]+$/.test(rs[0].hexlab), rs[0].hexlab);
   const total = rs.reduce((s, r) => s + r.stones, 0);

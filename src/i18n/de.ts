@@ -28,7 +28,7 @@ export const de = {
   'home.uploadPhotoHint': 'Direkt mit einem Foto starten',
   'home.myProjects': 'Meine Projekte',
   'home.myProjectsHint': 'Gespeicherte Projekte öffnen',
-  'home.materials': 'Materialverwaltung',
+  'home.materials': 'Materialien',
   'home.materialsHint': 'Eigene Glas- und Keramiksteine erfassen',
   'home.settings': 'Einstellungen',
   'home.settingsHint': 'Sprache, Standardwerte, Speicher',

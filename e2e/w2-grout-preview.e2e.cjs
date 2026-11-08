@@ -152,8 +152,12 @@ function changedPixels(a, b, thr = 12) {
     check(`${tag} Fugenfarbe nicht automatisch geändert`, hex0.toUpperCase() === '#BDB8AE', hex0);
     const lBest = parseInt(best.slice(1, 3), 16);
     check(`${tag} Landschaft: dunklere Fuge empfohlen`, lBest < 0xbd, best);
-    const mosaicLine = (await page.textContent('[data-testid="grout-mosaic"]').catch(() => '')) || '';
-    check(`${tag} Fernwirkung des berechneten Mosaiks inkl. Fuge (Modell-Schätzung)`, /Fernwirkung inkl\. Fuge \(Modell-Schätzung\): ΔE ≈ [\d,]+/.test(mosaicLine), mosaicLine.trim().slice(0, 110));
+    // Empfehlung, Liste und Abdeckung beruhen nach dem Berechnen auf EINEM Modell: den berechneten Steinen
+    const basis = await page.getAttribute('[data-testid="grout-basis"]', 'data-basis').catch(() => null);
+    const basisText = ((await page.textContent('[data-testid="grout-basis"]').catch(() => '')) || '').trim();
+    check(`${tag} Grundlage nach dem Berechnen: berechnete Steinfarben (Modell-Schätzung), keine zweite „aktuell“-Zahl`, basis === 'stones' && /berechnete Mosaik/.test(basisText) && !(await page.$('[data-testid="grout-mosaic"]')), basisText.slice(0, 110));
+    const how = ((await page.textContent('[data-testid="grout-how"]').catch(() => '')) || '').replace(/\s+/g, ' ');
+    check(`${tag} „Wie wird geschätzt?“ nennt die Abdeckung der berechneten Steine`, /berechneten Steine und Schnittteile bedecken hier im Mittel \d+ %/.test(how), how.slice(0, 160));
     const thumbs = await page.$$eval('[data-testid="grout-preview"] canvas', (cs) => cs.length);
     check(`${tag} Ansicht aus der Entfernung: Foto, aktuelle Fuge, Empfehlung`, thumbs === 3, `${thumbs} Bilder`);
     const hint = await page.isVisible('text=trocknet meist deutlich heller');
@@ -240,7 +244,7 @@ function changedPixels(a, b, thr = 12) {
     const sw = await page.getAttribute('[data-testid="grout-recommendation"]', 'data-switch');
     const cap = (await page.textContent('[data-testid="grout-preview"] figcaption')).trim();
     check('[Desktop] Porträt vor der Berechnung: dunklere Fuge empfohlen (ideale Steine)', sw === '1' && parseInt(best.slice(1, 3), 16) < 0xbd && /vor der Berechnung/.test(cap), `${best} | ${cap.slice(0, 60)}`);
-    check('[Desktop] ohne Berechnung keine Mosaik-Fernwirkung', !(await page.$('[data-testid="grout-mosaic"]')));
+    check('[Desktop] ohne Berechnung: Grundlage ideale Steine in Fotofarbe', (await page.getAttribute('[data-testid="grout-basis"]', 'data-basis')) === 'ideal');
     await page.click('text=Alle geprüften Fugenfarben');
     await page.waitForTimeout(200);
     const rows = await page.$$eval('[data-testid="grout-table"] tbody tr', (r) => r.length);

@@ -7,7 +7,6 @@ import type { ProjectApi } from './useProject';
 import type { Material } from '../../core/types';
 import { parseCellId } from '../../core/layout';
 import { paletteDisplayName } from '../../core/colorNames';
-import { useLocalizedPaletteNames } from './StepColors';
 import '../css/w2-colour-honesty.css';
 
 export function StepPreview({ api, materials }: { api: ProjectApi; materials: Material[] }) {
@@ -21,8 +20,6 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const viewer = useRef<ViewerHandle>(null);
   const origRef = useRef<HTMLDivElement>(null);
   const c = api.computed;
-  // automatische Farbnamen folgen der Sprache (auch für Steindetail, PDF und CSV, die den gespeicherten Namen lesen)
-  useLocalizedPaletteNames(api);
 
   useEffect(() => {
     const h = origRef.current;
@@ -128,6 +125,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           col={pick.col}
           piece={pick.piece}
           minPieceMm={rec.settings.shapes.minPieceMm}
+          readOnly={!!api.computing || api.paletteLocked}
           onClose={() => setPick(null)}
           onNavigate={(row, col, piece) => setPick({ row, col, piece })}
           onChanged={api.touchMosaic}

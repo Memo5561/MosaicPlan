@@ -83,6 +83,11 @@ export interface PaletteColor {
   nameKey?: string;
   /** Zusatz eines automatischen Namens zur Unterscheidung gleichnamiger Farben: hell/mittel/dunkel oder Nummer */
   nameSuffix?: NameSuffix;
+  /**
+   * Name vom Benutzer eingetippt (oder bewusst übernommen, z. B. ein Materialname): wird nie automatisch erkannt,
+   * übersetzt oder verändert – auch wenn er einem automatischen Namen gleicht. Fehlt bei automatischen Namen.
+   */
+  userNamed?: boolean;
   /** Abweichung der Steine dieser Farbe vom Foto bei der Berechnung (siehe MatchDeltaE) */
   matchDeltaE?: MatchDeltaE;
   /** Nur „Automatisch → eigene Materialien“: Anzahl der Bildfarben (K-Means), die auf dieses Material zusammengelegt wurden */

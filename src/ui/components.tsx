@@ -117,10 +117,10 @@ export function Segmented<T extends string | number>(props: { value: T; options:
   );
 }
 
-export function Toggle(props: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode }) {
+export function Toggle(props: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; disabled?: boolean; testId?: string }) {
   return (
-    <label className="toggle">
-      <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
+    <label className={`toggle ${props.disabled ? 'disabled' : ''}`}>
+      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} data-testid={props.testId} />
       <span className="toggle-track" />
       <span>
         {props.label}

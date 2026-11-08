@@ -2,7 +2,7 @@
  * Manuelle Änderungen am Mosaik (einzelne Steine, Formen, Palette, Fortschritt).
  */
 import { deltaE, hexToLab, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
-import { autoColorName, inferAutoName, nameKeyFor, uniqueAutoNames } from './colorNames';
+import { autoColorName, legacyDescribeColor, nameKeyFor, uniqueAutoNames } from './colorNames';
 import { area, cleanPoly, isSimple, polygonsOverlap, type Pt } from './geometry';
 import type { Layout } from './layout';
 import type { Range } from './stats';
@@ -279,15 +279,36 @@ const storedLab = (hex: string): Lab => {
 const upperHex = (hex: string) => (hex.toUpperCase().startsWith('#') ? hex.toUpperCase() : `#${hex.toUpperCase()}`);
 
 /**
- * Ist der Name dieser Palettenfarbe automatisch erzeugt (und darf daher neu gebildet/übersetzt werden)?
- * Ja bei gesetztem nameKey. Ohne nameKey (ältere Projekte) nur, wenn der Name genau dem automatischen Namen
- * dieser Farbe entspricht – nach der heutigen oder der früheren Benennung (legacyDescribeColor) in DE, EN oder TR –
- * und keine Material-Verknüpfung besteht. Material- und Benutzernamen gelten nie als automatisch.
+ * Palette eines Projekts von vor Welle 2: kein Eintrag trägt einen Namensschlüssel (nameKey) oder die
+ * Markierung „vom Benutzer benannt“ (userNamed). Nur in solchen Paletten werden automatische Namen am Text
+ * erkannt – in neueren Paletten ist ein Name ohne Schlüssel immer ein Benutzer- oder Materialname.
  */
-export function isAutoNamed(p: PaletteColor): boolean {
+export function isLegacyPalette(palette: readonly PaletteColor[]): boolean {
+  return !palette.some((p) => p.nameKey || p.userNamed);
+}
+
+/**
+ * Schlüssel eines automatisch erzeugten Namens aus einem Projekt von vor Welle 2: nur, wenn der Name genau der
+ * damaligen Benennung (legacyDescribeColor) dieser Farbe in DE, EN oder TR entspricht – das war das einzige
+ * Schema, das ältere Projekte enthalten können. Nie für Material- oder Benutzernamen.
+ */
+export function legacyAutoKey(p: PaletteColor): string | null {
+  if (p.nameKey || p.materialId || p.userNamed) return null;
+  for (const lang of ['de', 'en', 'tr'] as const) if (p.name === legacyDescribeColor(p.lab, lang)) return nameKeyFor(p.lab);
+  return null;
+}
+
+/**
+ * Ist der Name dieser Palettenfarbe automatisch erzeugt (und darf daher neu gebildet/übersetzt werden)?
+ * Ja bei gesetztem nameKey. Ohne nameKey nur in einer Palette von vor Welle 2 (`palette`, siehe
+ * isLegacyPalette), wenn der Name genau der damaligen automatischen Benennung entspricht (legacyAutoKey).
+ * Material- und Benutzernamen (userNamed) gelten nie als automatisch.
+ */
+export function isAutoNamed(p: PaletteColor, palette?: readonly PaletteColor[]): boolean {
   if (p.nameKey) return true;
-  if (p.materialId) return false;
-  return inferAutoName(p.name, p.lab, { legacy: true }) !== null;
+  if (p.materialId || p.userNamed) return false;
+  if (palette && !isLegacyPalette(palette)) return false;
+  return legacyAutoKey(p) !== null;
 }
 
 /**
@@ -298,7 +319,8 @@ export function isAutoNamed(p: PaletteColor): boolean {
 export function addPaletteColor(palette: PaletteColor[], hex: string, name?: string, lang: ColorNameLang = 'de', materialId?: string): PaletteColor[] {
   const lab = storedLab(hex);
   const entry: PaletteColor = { code: nextCode(palette), hex: upperHex(hex), lab, name: name || '', materialId };
-  if (name) return [...palette, entry];
+  // ein übergebener Name (Material- oder Benutzername) bleibt wörtlich – nie automatisch erkannt oder übersetzt
+  if (name) return [...palette, { ...entry, userNamed: true }];
   entry.nameKey = nameKeyFor(lab);
   entry.name = autoColorName(lab, lang);
   return uniqueAutoNames([...palette, entry], lang);
@@ -352,11 +374,14 @@ export function removePaletteColor(palette: PaletteColor[], data: MosaicData, in
 
 /**
  * Ändert HEX, Name oder Material einer Farbe.
- *  - Ein übergebener Name ist ein Benutzername: nameKey/nameSuffix entfallen, der Name wird nie mehr automatisch geändert.
+ *  - Ein übergebener Name ist ein Benutzername: nameKey/nameSuffix entfallen, die Farbe wird als „vom Benutzer
+ *    benannt“ markiert (userNamed) und ihr Name wird nie mehr automatisch erkannt, übersetzt oder geändert –
+ *    auch nicht, wenn er zufällig einem automatischen Namen gleicht (z. B. zweimal „Rot“).
  *  - Eine HEX-Änderung bildet den Namen einer automatisch benannten Farbe (isAutoNamed) neu und macht die
  *    automatischen Namen wieder eindeutig (Sprache `lang`); Benutzer- und Materialnamen bleiben.
  *    matchDeltaE (Abweichung vom Foto bei der Berechnung) passt danach nicht mehr und wird gelöscht.
- *  - Eine Material-Änderung lässt Name und Farbe unverändert.
+ *  - Eine Material-Änderung lässt Name und Farbe unverändert. Wird die Verknüpfung einer Farbe mit
+ *    Materialnamen gelöst, bleibt deren Name wörtlich (userNamed).
  */
 export function updatePaletteColor(
   palette: PaletteColor[],
@@ -371,17 +396,19 @@ export function updatePaletteColor(
     const next: PaletteColor = { ...p, ...rest };
     if (name !== undefined) {
       next.name = name;
+      next.userNamed = true;
       delete next.nameKey;
       delete next.nameSuffix;
-    }
+    } else if ('materialId' in patch && !patch.materialId && p.materialId && !p.nameKey) next.userNamed = true;
     if (hex) {
       const lab = storedLab(hex);
       next.hex = hex.toUpperCase();
       next.lab = lab;
       if (next.hex !== p.hex.toUpperCase() || lab.some((v, k) => v !== p.lab[k])) delete next.matchDeltaE;
-      if (name === undefined && isAutoNamed(p)) {
+      if (name === undefined && isAutoNamed(p, palette)) {
         next.nameKey = nameKeyFor(lab);
         delete next.nameSuffix;
+        delete next.userNamed;
         next.name = autoColorName(lab, lang);
         renamed = true;
       }
@@ -397,19 +424,12 @@ export function resetAutoName(palette: PaletteColor[], index: number, lang: Colo
     if (i !== index) return p;
     const next: PaletteColor = { ...p, nameKey: nameKeyFor(p.lab), name: autoColorName(p.lab, lang) };
     delete next.nameSuffix;
+    delete next.userNamed;
     return next;
   });
   return uniqueAutoNames(out, lang);
 }
 
-/**
- * Bringt die automatischen Namen einer Palette auf den aktuellen Stand der Sprache `lang`:
- *  1. Farben ohne nameKey und ohne Material, deren Name genau einem automatischen Namen entspricht
- *     (heutige oder frühere Benennung, siehe isAutoNamed), erhalten ihren Schlüssel – ältere Projekte
- *     bekommen so die korrekten Namen (z. B. „Rot“ statt „Orange“).
- *  2. Alle automatischen Namen werden eindeutig gemacht und in `lang` gesetzt (uniqueAutoNames).
- * Benutzer- und Materialnamen bleiben unverändert. Liefert dasselbe Array, wenn sich nichts ändert.
- */
 /**
  * Abweichung vom Foto (matchDeltaE) einer Farbe – nur, wenn sie noch zu den aktuellen Steinen passt:
  * seit der Berechnung keine manuelle Änderung an Steinen (manualEdits = 0) und dieselbe Stückzahl wie heute.
@@ -421,18 +441,28 @@ export function matchDeltaEValid(p: PaletteColor, currentPieces: number | undefi
   return m;
 }
 
+/**
+ * Bringt die automatischen Namen einer Palette auf den aktuellen Stand der Sprache `lang`:
+ *  1. Nur bei Paletten von vor Welle 2 (isLegacyPalette, einmalige Übernahme): Farben ohne Material, deren Name
+ *     genau der damaligen automatischen Benennung entspricht (legacyAutoKey), erhalten ihren Schlüssel und so
+ *     den korrekten Namen (z. B. „Rot“ statt „Orange“); alle übrigen Farben ohne Material werden als
+ *     „vom Benutzer benannt“ markiert. Danach ist die Palette keine ältere mehr – es wird nie wieder geraten.
+ *  2. Alle automatischen Namen werden eindeutig gemacht und in `lang` gesetzt (uniqueAutoNames).
+ * Benutzer- und Materialnamen bleiben unverändert. Liefert dasselbe Array, wenn sich nichts ändert.
+ */
 export function normalizePaletteNames(palette: PaletteColor[], lang: ColorNameLang): PaletteColor[] {
-  let keyed = false;
-  const withKeys = palette.map((p) => {
-    if (p.nameKey || p.materialId) return p;
-    const inf = inferAutoName(p.name, p.lab, { legacy: true });
-    if (!inf) return p;
-    keyed = true;
-    const next: PaletteColor = { ...p, nameKey: inf.key };
-    delete next.nameSuffix;
-    return next;
-  });
-  return uniqueAutoNames(keyed ? withKeys : palette, lang);
+  let base = palette;
+  if (isLegacyPalette(palette) && palette.some((p) => !p.materialId)) {
+    base = palette.map((p) => {
+      if (p.materialId) return p;
+      const key = legacyAutoKey(p);
+      if (!key) return { ...p, userNamed: true };
+      const next: PaletteColor = { ...p, nameKey: key };
+      delete next.nameSuffix;
+      return next;
+    });
+  }
+  return uniqueAutoNames(base, lang);
 }
 
 /** Ersetzt in einem Bereich (oder überall) Farbe a durch b. Gibt die Anzahl geänderter Steine zurück. */

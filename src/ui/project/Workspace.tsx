@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Material } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
-import { Badge } from '../components';
+import { Badge, downloadBlob, Modal, safeFileName } from '../components';
+import { setLeaveGuard } from '../leaveGuard';
+import { SaveResultNote } from '../SaveResultNote';
+import { timestampedName, type SaveResult } from '../../platform';
 import { modalDepth } from '../modalHistory';
 import { EmptyState } from './EmptyState';
 import { useGuardedCompute } from './RecomputeGuard';
-import { SaveErrorBanner, SaveStatus } from './SaveStatus';
+import { SaveErrorBanner, saveErrorText, SaveStatus } from './SaveStatus';
 import { staleReasonLabels, staleReasons } from './staleReasons';
-import { StepColors } from './StepColors';
+import { StepColors, useLocalizedPaletteNames } from './StepColors';
 import { StepCompute } from './StepCompute';
 import { StepJoint, StepSize, StepTiles } from './StepGeometry';
 import { centeredScrollLeft, lastStepOf, rememberStep, RESULT_STEPS, resumeStep, STEPS, stepFromHash, stepHash, stepStates, isStep, type Step } from './stepNav';
@@ -32,6 +35,8 @@ async function modalHistorySettled(maxMs = 1000) {
 export function Workspace({ id, materials, initialStep, onBack }: { id: string; materials: Material[]; initialStep?: string; onBack: () => void }) {
   const { t, n, lang } = useI18n();
   const api = useProject(id, materials, lang);
+  // Automatische Farbnamen folgen der UI-Sprache – auf jedem Schritt (Verlegeplan, PDF, Steindetail …)
+  useLocalizedPaletteNames(api);
 
   // Schritt aus der Adresse beim Öffnen – einmal festgehalten. Spätere Prop-Änderungen (z. B. das
   // verspätete hashchange nach dem Öffnen) überschreiben die Weiterleitung nach dem Laden nicht.
@@ -121,6 +126,68 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
     if (mounted.current && stepRef.current === 'compute') goStep('preview');
   }, [goStep]);
   const guard = useGuardedCompute(api, () => void onComputed());
+
+  // ---------- Verlassen, solange Speichern fehlschlägt: nicht still verlieren
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const [leave, setLeave] = useState<{ proceed: () => void; retrying: boolean } | null>(null);
+  const [leaveSave, setLeaveSave] = useState<SaveResult | { error: string } | null>(null);
+  /** Kennung der offenen Rückfrage (Bleiben/Schließen beendet sie – ein später erfolgreicher Versuch verlässt dann nicht) */
+  const leaveReq = useRef(0);
+  const stay = () => {
+    leaveReq.current++;
+    setLeave(null);
+  };
+  useEffect(
+    () =>
+      setLeaveGuard((proceed) => {
+        const a = apiRef.current;
+        if (a.saveState !== 'error' || !a.saveError || a.saveError.code === 'deleted') return true;
+        setLeaveSave(null);
+        setLeave({ proceed, retrying: true });
+        const my = ++leaveReq.current;
+        // erst noch einmal speichern – klappt es jetzt, wird ohne Rückfrage verlassen
+        void a.retrySave().then(async (ok) => {
+          if (!mounted.current || leaveReq.current !== my) return;
+          if (!ok) {
+            setLeave((l) => (l ? { ...l, retrying: false } : l));
+            return;
+          }
+          setLeave(null);
+          await modalHistorySettled();
+          proceed();
+        });
+        return false;
+      }),
+    [],
+  );
+  // Tab/Fenster schließen, solange Speichern fehlschlägt: Rückfrage des Browsers
+  const unsavedError = api.saveState === 'error' && !!api.saveError && api.saveError.code !== 'deleted';
+  useEffect(() => {
+    if (!unsavedError) return;
+    const onBefore = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBefore);
+    return () => window.removeEventListener('beforeunload', onBefore);
+  }, [unsavedError]);
+  const leaveAnyway = async () => {
+    const l = leave;
+    leaveReq.current++;
+    setLeave(null);
+    if (!l) return;
+    await modalHistorySettled();
+    l.proceed();
+  };
+  const leaveDownload = async () => {
+    try {
+      const blob = await api.exportCurrent();
+      setLeaveSave(await downloadBlob(blob, timestampedName(safeFileName(api.rec?.meta.name ?? ''), 'mosaicplan.json'), { announce: false }));
+    } catch (e) {
+      setLeaveSave({ error: t('w2ws.save.downloadFailed', { msg: e instanceof Error ? e.message : String(e) }) });
+    }
+  };
 
   // Bildlauf: neuer Schritt beginnt oben; aktiver Schritt steht mittig in der Schrittleiste
   const rootRef = useRef<HTMLDivElement>(null);
@@ -240,6 +307,11 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           {api.computing && step !== 'compute' && (
             <button className="badge badge-info as-btn" onClick={() => goStep('compute')} data-testid="computing-badge">
               {t('w2ws.computing', { pct })}
+            </button>
+          )}
+          {guard.pendingHidden && (
+            <button className="badge badge-warn as-btn" onClick={guard.openPending} data-testid="pending-badge">
+              {t('w2ws.pending.badge')}
             </button>
           )}
           {doneNotice && !api.computing && (
@@ -372,6 +444,36 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
         )}
       </div>
       {guard.dialog}
+      {leave && (
+        <Modal
+          title={t('w2ws.leave.title')}
+          onClose={stay}
+          footer={
+            <div className="btn-row w2ws-guard-foot">
+              <button className="btn" onClick={stay} data-testid="leave-stay">
+                {t('w2ws.leave.stay')}
+              </button>
+              <button className="btn danger" disabled={leave.retrying} onClick={() => void leaveAnyway()} data-testid="leave-anyway">
+                {t('w2ws.leave.anyway')}
+              </button>
+              <button className="btn primary" disabled={leave.retrying} onClick={() => void leaveDownload()} data-testid="leave-download">
+                {t('w2ws.save.download')}
+              </button>
+            </div>
+          }
+        >
+          <div data-testid="leave-guard">
+            <p className="w2ws-guard-lead">{leave.retrying ? t('w2ws.leave.retrying') : t('w2ws.leave.lead', { reason: saveErrorText(api.saveError, t) })}</p>
+            {!leave.retrying && <p className="muted small">{t('w2ws.leave.info')}</p>}
+            {leaveSave && 'kind' in leaveSave && <SaveResultNote result={leaveSave} testId="leave-download-note" />}
+            {leaveSave && 'error' in leaveSave && (
+              <p className="error" role="status">
+                {leaveSave.error}
+              </p>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

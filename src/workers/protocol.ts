@@ -60,6 +60,8 @@ export type WorkerRequest =
       sections: SectionSettings;
       sectionIds: string[] | null;
       decimalComma: boolean;
+      /** Sprache der automatischen Farbnamen */
+      lang?: 'de' | 'en' | 'tr';
     };
 
 export type WorkerResponse =

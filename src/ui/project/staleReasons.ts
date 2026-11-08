@@ -145,10 +145,62 @@ export function isRestorable(r: StaleReason): boolean {
 }
 
 /**
+ * Felder der Fotobearbeitung, die sich auf das Foto selbst beziehen: Zuschnitt (normierte Koordinaten im Foto),
+ * Drehung und Spiegeln. Sie gehören zu genau einem Foto – setPhoto setzt sie beim Ersetzen zurück.
+ */
+export const PHOTO_GEOMETRY_FIELDS: readonly string[] = ['crop', 'rotation', 'fineRotate', 'flipH'];
+
+/**
+ * Was „Änderungen verwerfen“ in diesem Zusammenhang wirklich wiederherstellt. Wurde das Foto seit der
+ * Berechnung ersetzt (Grund 'photo'), gehören Gesichts-/Detailbereiche und Zuschnitt/Drehung/Spiegeln der
+ * Berechnung zum ALTEN Foto: Sie werden nicht auf das neue Foto übertragen (nicht wiederherstellbar). Die
+ * übrigen Bildeinstellungen (Helligkeit, Kontrast …) hängen nicht vom Foto ab und bleiben wiederherstellbar.
+ * Hinweistext und restoreComputedSettings richten sich beide danach.
+ */
+export function splitRestorable(reasons: StaleReason[]): { restorable: StaleReason[]; notRestorable: StaleReason[] } {
+  const photo = reasons.some((r) => r.group === 'photo');
+  const restorable: StaleReason[] = [];
+  const notRestorable: StaleReason[] = [];
+  for (const r of reasons) {
+    if (!isRestorable(r)) notRestorable.push(r);
+    else if (photo && r.group === 'regions') notRestorable.push(r);
+    else if (photo && r.group === 'adjust') {
+      const fields = r.fields ?? [];
+      const tonal = fields.filter((f) => !PHOTO_GEOMETRY_FIELDS.includes(f));
+      const geo = fields.filter((f) => PHOTO_GEOMETRY_FIELDS.includes(f));
+      if (tonal.length) restorable.push({ ...r, fields: tonal });
+      if (geo.length || !tonal.length) notRestorable.push({ ...r, fields: geo });
+    } else restorable.push(r);
+  }
+  return { restorable, notRestorable };
+}
+
+/** Wurde das Foto seit der Berechnung ersetzt? (Foto-Identität im Berechnungsschlüssel ≠ aktuelle; wie staleReasons) */
+export function photoChangedSince(rec: Pick<ProjectRecord, 'computedWith' | 'imageRev'>): boolean {
+  const k = parseKey(rec.computedWith);
+  return !!k && !same(k.im, rec.imageRev);
+}
+
+/**
+ * Passt das berechnete Mosaik zum aktuellen Foto und dessen Bearbeitung (gleiches Foto, gleicher Zuschnitt,
+ * gleiche Drehung und Bildeinstellungen)? Nur dann ist ein Vergleich „berechnete Steine ↔ aktuelles Foto“
+ * sinnvoll (z. B. Fernwirkung inkl. Fuge). Gesichts-/Detailbereiche, Formen und Farben ändern das Foto nicht.
+ */
+export function computedMatchesPhoto(rec: Pick<ProjectRecord, 'computedWith' | 'imageRev' | 'adjust'>): boolean {
+  const k = parseKey(rec.computedWith);
+  if (!k || !same(k.im, rec.imageRev) || !isObj(k.a)) return false;
+  const a = k.a;
+  const b = rec.adjust as unknown as Record<string, unknown>;
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((f) => same(a[f], b[f]));
+}
+
+/**
  * Projekt mit den Einstellungen, mit denen das gespeicherte Mosaik berechnet wurde (Raster, Formen,
  * Farbquelle/-anzahl, Mischung, ΔE-Formel, Materialauswahl, Fotobearbeitung, Bereiche).
  * Foto und eigene Palette bleiben, wie sie sind (lassen sich aus dem Schlüssel nicht vollständig
- * wiederherstellen). null, wenn der Schlüssel fehlt oder unlesbar ist.
+ * wiederherstellen). Wurde das Foto inzwischen ersetzt, bleiben außerdem die Gesichts-/Detailbereiche und
+ * Zuschnitt/Drehung/Spiegeln des NEUEN Fotos – die der Berechnung gehören zum alten Foto (siehe splitRestorable).
+ * null, wenn der Schlüssel fehlt oder unlesbar ist.
  */
 export function restoreComputedSettings(rec: ProjectRecord): ProjectRecord | null {
   const k = parseKey(rec.computedWith);
@@ -166,8 +218,15 @@ export function restoreComputedSettings(rec: ProjectRecord): ProjectRecord | nul
   if (k.de === '2000' || k.de === '76') settings.deltaE = k.de;
   // Materialauswahl steht nur bei Material-Modi im Schlüssel; sonst ist sie für die Berechnung ohne Bedeutung
   if (Array.isArray(k.mi) && (k.pm === 'materials' || k.pm === 'auto-snap')) settings.materialIds = (k.mi as unknown[]).filter((x): x is string => typeof x === 'string');
-  const adjust = isObj(k.a) ? ({ ...rec.adjust, ...k.a } as ProjectRecord['adjust']) : rec.adjust;
-  const regions = Array.isArray(k.rg) ? (structuredCloneSafe(k.rg) as ProjectRecord['regions']) : rec.regions;
+  const photoChanged = !same(k.im, rec.imageRev);
+  let adjust = rec.adjust;
+  if (isObj(k.a)) {
+    const fromKey: Record<string, unknown> = { ...k.a };
+    // Zuschnitt/Drehung/Spiegeln beziehen sich auf das Foto: nie vom alten auf ein neues Foto übertragen
+    if (photoChanged) for (const f of PHOTO_GEOMETRY_FIELDS) delete fromKey[f];
+    adjust = { ...rec.adjust, ...fromKey } as ProjectRecord['adjust'];
+  }
+  const regions = !photoChanged && Array.isArray(k.rg) ? (structuredCloneSafe(k.rg) as ProjectRecord['regions']) : rec.regions;
   return { ...rec, settings, adjust, regions };
 }
 
@@ -189,23 +248,29 @@ export function computedDeltaE(computedWith: string | undefined): '2000' | '76' 
   return k && (k.de === '2000' || k.de === '76') ? k.de : null;
 }
 
-/** Lesbare Bezeichnungen der Gründe (für Hinweis, Kopfzeile, Tooltip). */
-export function staleReasonLabels(reasons: StaleReason[], t: TFunc, n: (v: number, d?: number) => string): string[] {
+/**
+ * Lesbare Bezeichnungen der Gründe (für Hinweis, Kopfzeile, Tooltip): Wertänderungen als „alt → neu“.
+ * Mit `{ target: 'from' }` nur der Wert der letzten Berechnung („Steingröße 5 × 5 mm“) – für „Änderungen
+ * verwerfen“, das genau diese Werte wiederherstellt.
+ */
+export function staleReasonLabels(reasons: StaleReason[], t: TFunc, n: (v: number, d?: number) => string, opts: { target?: 'from' } = {}): string[] {
   const dims = (v: number[] | undefined, div: number, d: number) => (v ? `${n(v[0] / div, d)} × ${n(v[1] / div, d)}` : '');
+  const onlyFrom = opts.target === 'from';
+  const val = <T,>(from: T, to: T, fmt: (v: T) => string) => (onlyFrom ? fmt(from) : `${fmt(from)} → ${fmt(to)}`);
   return reasons.map((r) => {
     switch (r.group) {
       case 'size':
-        return Array.isArray(r.from) && Array.isArray(r.to) ? `${t('w2ws.reason.size')} ${dims(r.from, 10, 2)} → ${dims(r.to, 10, 2)} cm` : t('w2ws.reason.size');
+        return Array.isArray(r.from) && Array.isArray(r.to) ? `${t('w2ws.reason.size')} ${val(r.from, r.to, (v) => dims(v, 10, 2))} cm` : t('w2ws.reason.size');
       case 'tile':
-        return Array.isArray(r.from) && Array.isArray(r.to) ? `${t('w2ws.reason.tile')} ${dims(r.from, 1, 2)} → ${dims(r.to, 1, 2)} mm` : t('w2ws.reason.tile');
+        return Array.isArray(r.from) && Array.isArray(r.to) ? `${t('w2ws.reason.tile')} ${val(r.from, r.to, (v) => dims(v, 1, 2))} mm` : t('w2ws.reason.tile');
       case 'joint':
-        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.joint')} ${n(r.from, 2)} → ${n(r.to, 2)} mm` : t('w2ws.reason.joint');
+        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.joint')} ${val(r.from, r.to, (v) => n(v, 2))} mm` : t('w2ws.reason.joint');
       case 'colorCount':
-        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.colorCount')} ${n(r.from)} → ${n(r.to)}` : t('w2ws.reason.colorCount');
+        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.colorCount')} ${val(r.from, r.to, (v) => n(v))}` : t('w2ws.reason.colorCount');
       case 'dither':
-        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.dither')} ${n(r.from * 100)} → ${n(r.to * 100)} %` : t('w2ws.reason.dither');
+        return typeof r.from === 'number' && typeof r.to === 'number' ? `${t('w2ws.reason.dither')} ${val(r.from, r.to, (v) => n(v * 100))} %` : t('w2ws.reason.dither');
       case 'deltaE':
-        return typeof r.from === 'string' && typeof r.to === 'string' ? `${t('w2ws.reason.deltaE')} ${deName(r.from)} → ${deName(r.to)}` : t('w2ws.reason.deltaE');
+        return typeof r.from === 'string' && typeof r.to === 'string' ? `${t('w2ws.reason.deltaE')} ${val(r.from, r.to, deName)}` : t('w2ws.reason.deltaE');
       case 'adjust':
         return r.fields && r.fields.length ? `${t('w2ws.reason.adjust')} (${r.fields.map((f) => adjustLabel(f, t)).join(', ')})` : t('w2ws.reason.adjust');
       case 'edge':

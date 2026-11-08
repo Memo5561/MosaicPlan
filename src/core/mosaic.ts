@@ -6,7 +6,7 @@
  * Die Berechnung läuft kachelweise (64×64 Zellen) und meldet Fortschritt.
  */
 import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, type Lab, type ColorNameLang } from './color';
-import { inferAutoName, nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
+import { nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
 import { regionMask, detailMap, type RGBAImage } from './imageOps';
 import { kmeansLab } from './kmeans';
 import type { Layout } from './layout';
@@ -29,6 +29,8 @@ export interface FixedColor {
   /** Schlüssel eines automatischen Namens (Modus 'custom'): der Name bleibt automatisch und folgt der UI-Sprache */
   nameKey?: string;
   nameSuffix?: NameSuffix;
+  /** Vom Benutzer benannt (Modus 'custom'): der Name bleibt wörtlich, auch nach dem Neuberechnen */
+  userNamed?: boolean;
 }
 
 export interface ComputeParams {
@@ -449,7 +451,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const fromQ = (arr: Uint8Array, i: number): Lab => [arr[i * 3] / 2.55, arr[i * 3 + 1] - 128, arr[i * 3 + 2] - 128];
 
   let paletteLab: Lab[] = [];
-  let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number; nameKey?: string; nameSuffix?: NameSuffix; mergedFrom?: number }[] = [];
+  let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number; nameKey?: string; nameSuffix?: NameSuffix; userNamed?: boolean; mergedFrom?: number }[] = [];
   const fixed = params.fixedPalette ?? [];
   let imageColors: number | undefined;
   let mergedColors: number | undefined;
@@ -513,11 +515,16 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     if (!fixed.length) throw new Error('Die Palette ist leer.');
     paletteLab = fixed.map((f) => f.lab);
     paletteMeta = fixed.map((f) => {
-      // Eigene Palette: Namen bleiben genau so, wie sie sind. Ein automatischer Name bleibt automatisch –
-      // über den mitgegebenen Schlüssel oder, falls der Aufrufer ihn nicht weiterreicht, weil der Text genau
-      // dem automatischen Namen dieser Farbe entspricht (nie bei Farben mit Material).
-      const auto = f.nameKey ? { key: f.nameKey, suffix: f.nameSuffix } : !f.materialId ? inferAutoName(f.name, f.lab) : null;
-      return { hex: f.hex, name: f.name, materialId: f.materialId, code: f.code, ...(auto ? { nameKey: auto.key, nameSuffix: auto.suffix } : {}) };
+      // Eigene Palette: Namen bleiben genau so, wie sie sind. Ein automatischer Name bleibt automatisch – nur über
+      // den mitgegebenen Schlüssel (nie am Text geraten: ein eingetipptes „Rot“ bleibt „Rot“); ein Benutzername
+      // behält seine Markierung.
+      return {
+        hex: f.hex,
+        name: f.name,
+        materialId: f.materialId,
+        code: f.code,
+        ...(f.nameKey ? { nameKey: f.nameKey, nameSuffix: f.nameSuffix } : f.userNamed ? { userNamed: true } : {}),
+      };
     });
   }
   onProgress?.('palette', 1);
@@ -640,6 +647,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       };
       if (meta.nameKey) pc.nameKey = meta.nameKey;
       if (meta.nameSuffix !== undefined) pc.nameSuffix = meta.nameSuffix;
+      if (meta.userNamed) pc.userNamed = true;
       pc.matchDeltaE = matchOf(i);
       return pc;
     });

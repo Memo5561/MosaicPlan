@@ -129,16 +129,38 @@ td.w2ch-hexlab {
   color: var(--ink-soft);
 }
 
+/* Namensfeld der Palette (mehrzeilig, wächst mit – siehe NameField in StepColors.tsx) */
+textarea.w2ch-name {
+  display: block;
+  width: 100%;
+  min-width: 110px;
+  font: inherit;
+  font-size: 0.92rem;
+  line-height: 1.3;
+  padding: 7px 9px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Handy: Steine und Bedarf passen neben den Namen in die erste Bildschirmbreite */
 @media (max-width: 600px) {
   table.w2ch-palette th,
   table.w2ch-palette td {
     padding: 5px 5px;
   }
-  table.w2ch-palette input.text {
+  /* Name bricht um statt abgeschnitten zu werden (der Zusatz „… 2“ / „(dunkel)“ unterscheidet gleichnamige Farben) */
+  table.w2ch-palette textarea.w2ch-name {
     min-width: 0;
-    width: 128px;
+    width: 132px;
     padding: 6px 6px;
+    font-size: 16px;
+    min-height: 44px;
   }
   /* Bedarf: Einheit unter die Zahl, damit die Spalte schmal bleibt */
   table.w2ch-palette .w2ch-unit {

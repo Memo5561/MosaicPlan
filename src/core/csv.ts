@@ -1,6 +1,8 @@
 /**
  * Vollständige Stein-Koordinatenliste als CSV (Semikolon-getrennt, für Excel/LibreOffice).
  */
+import type { ColorNameLang } from './color';
+import { paletteDisplayName } from './colorNames';
 import { bbox, type Pt } from './geometry';
 import { cellId, sectionOfCell, type Layout, type SectionGrid } from './layout';
 import { cellPieces } from './pieces';
@@ -15,7 +17,10 @@ export function buildCsv(
   sections: SectionGrid,
   sectionIds: string[] | null,
   decimalComma = true,
+  /** Sprache der Farbnamen: automatische Namen (nameKey) folgen ihr, Material- und Benutzernamen bleiben wörtlich */
+  lang?: ColorNameLang,
 ): string {
+  const nameOf = (pc: PaletteColor | undefined) => (pc ? (lang ? paletteDisplayName(pc, lang) : pc.name) : '');
   const raw = makeRawSizeFn(layout, palette, materials);
   const cache = new CutCache();
   const f = (v: number) => {
@@ -51,7 +56,7 @@ export function buildCsv(
             f(ci.h),
             f(ci.area),
             String(pc?.code ?? '').padStart(2, '0'),
-            `"${(pc?.name ?? '').replace(/"/g, '""')}"`,
+            `"${nameOf(pc).replace(/"/g, '""')}"`,
             pc?.hex ?? '',
             ci.shape,
             ci.needsCut ? 'ja' : 'nein',

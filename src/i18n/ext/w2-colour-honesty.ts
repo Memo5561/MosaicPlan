@@ -35,14 +35,15 @@ export const de: Record<string, string> = {
   'w2ch.count.snapMore': 'Für mehr verschiedene Farben weitere Materialien im Bestand anlegen oder „Automatisch aus dem Foto“ wählen.',
 
   // ---- Abweichung vom Foto je Farbe
-  'w2ch.match': 'Ø ΔE {mean}',
+  'w2ch.match': 'Ø {de} {mean}',
   'w2ch.matchMax': 'max {max}',
-  'w2ch.matchTitle': 'Abweichung der {n} Steine dieser Farbe vom Foto, gemessen bei der Berechnung: Ø ΔE {mean}, höchstens {max}; {over5} Steine über ΔE 5, {over10} über ΔE 10.',
+  'w2ch.matchTitle': 'Abweichung der {n} Steine dieser Farbe vom Foto, gemessen bei der Berechnung ({de}): Ø {mean}, höchstens {max}; {over5} Steine über ΔE 5, {over10} über ΔE 10.',
   'w2ch.matchStale': 'ΔE –',
   'w2ch.matchStaleTitle': 'Abweichung vom Foto nicht mehr aktuell: Farbe oder Steine wurden seit der Berechnung geändert. Nach einer Neuberechnung wieder verfügbar.',
-  'w2ch.matchHint':
-    'Ø ΔE unter der Steinzahl: wie stark die Steine dieser Farbe im Mittel vom Foto abweichen (gemessen bei der Berechnung; < 2 kaum sichtbar, 2–5 erkennbar, > 5 deutlich); „12 > 5“ = 12 Steine weichen um mehr als ΔE 5 ab. Rot markiert: Mittel über 5.',
-  'w2ch.over5': '{n} > 5',
+  'w2ch.matchHint': 'Ø ΔE unter der Steinzahl: wie stark die Steine dieser Farbe im Mittel vom Foto abweichen (gemessen bei der Berechnung, mit deren ΔE-Formel); „12× über ΔE 5“ = 12 Steine dieser Farbe weichen um mehr als ΔE 5 ab.',
+  'w2ch.matchScale': 'Einstufung (CIEDE2000): < 2 kaum sichtbar, 2–5 erkennbar, > 5 deutlich. Rot markiert: Mittel über 5.',
+  'w2ch.matchNoScale': 'Berechnet mit CIE76: Die Einstufung „kaum sichtbar / erkennbar / deutlich“ gilt nur für CIEDE2000 (CIE76-Werte sind meist größer) – daher hier keine Einstufung und keine Rotmarkierung.',
+  'w2ch.over5': '{n}× über ΔE 5',
 
   // ---- Tabelle
   'w2ch.hexLab': 'HEX · L*a*b*',
@@ -86,14 +87,15 @@ export const en: Record<string, string> = {
   'w2ch.count.noStones.one': '1 more colour received no tile.',
   'w2ch.count.snapMore': 'For more different colours, add further materials to your stock or choose “Automatically from the photo”.',
 
-  'w2ch.match': 'avg ΔE {mean}',
+  'w2ch.match': 'avg {de} {mean}',
   'w2ch.matchMax': 'max {max}',
-  'w2ch.matchTitle': 'Deviation of the {n} tiles of this colour from the photo, measured at computation: average ΔE {mean}, at most {max}; {over5} tiles above ΔE 5, {over10} above ΔE 10.',
+  'w2ch.matchTitle': 'Deviation of the {n} tiles of this colour from the photo, measured at computation ({de}): average {mean}, at most {max}; {over5} tiles above ΔE 5, {over10} above ΔE 10.',
   'w2ch.matchStale': 'ΔE –',
   'w2ch.matchStaleTitle': 'Deviation from the photo is no longer current: the colour or tiles were changed since the computation. Available again after recomputing.',
-  'w2ch.matchHint':
-    'avg ΔE below the tile count: how much the tiles of this colour deviate from the photo on average (measured at computation; < 2 barely visible, 2–5 noticeable, > 5 clear); “12 > 5” = 12 tiles deviate by more than ΔE 5. Marked red: average above 5.',
-  'w2ch.over5': '{n} > 5',
+  'w2ch.matchHint': 'avg ΔE below the tile count: how much the tiles of this colour deviate from the photo on average (measured at computation, with its ΔE formula); “12× above ΔE 5” = 12 tiles of this colour deviate by more than ΔE 5.',
+  'w2ch.matchScale': 'Rating (CIEDE2000): < 2 barely visible, 2–5 noticeable, > 5 clear. Marked red: average above 5.',
+  'w2ch.matchNoScale': 'Computed with CIE76: the rating “barely visible / noticeable / clear” applies to CIEDE2000 only (CIE76 values are usually larger) – so there is no rating and no red marking here.',
+  'w2ch.over5': '{n}× above ΔE 5',
 
   'w2ch.hexLab': 'HEX · L*a*b*',
   'w2ch.namePlaceholder': 'empty = automatic name',
@@ -135,14 +137,15 @@ export const tr: Record<string, string> = {
   'w2ch.count.noStones.one': '1 renk daha hiç taş almadı.',
   'w2ch.count.snapMore': 'Daha fazla farklı renk için stoğa başka malzemeler ekleyin veya “Fotoğraftan otomatik” seçin.',
 
-  'w2ch.match': 'ort. ΔE {mean}',
+  'w2ch.match': 'ort. {de} {mean}',
   'w2ch.matchMax': 'en çok {max}',
-  'w2ch.matchTitle': 'Bu rengin {n} taşının fotoğraftan sapması, hesaplamada ölçüldü: ortalama ΔE {mean}, en çok {max}; ΔE 5 üzerinde {over5} taş, ΔE 10 üzerinde {over10}.',
+  'w2ch.matchTitle': 'Bu rengin {n} taşının fotoğraftan sapması, hesaplamada ölçüldü ({de}): ortalama {mean}, en çok {max}; ΔE 5 üzerinde {over5} taş, ΔE 10 üzerinde {over10}.',
   'w2ch.matchStale': 'ΔE –',
   'w2ch.matchStaleTitle': 'Fotoğraftan sapma artık güncel değil: renk veya taşlar hesaplamadan sonra değiştirildi. Yeniden hesaplamadan sonra tekrar görünür.',
-  'w2ch.matchHint':
-    'Taş sayısının altındaki ort. ΔE: bu rengin taşlarının fotoğraftan ortalama ne kadar saptığı (hesaplamada ölçüldü; < 2 neredeyse görünmez, 2–5 fark edilir, > 5 belirgin); “12 > 5” = 12 taş ΔE 5’ten fazla sapıyor. Kırmızı işaretli: ortalama 5’in üzerinde.',
-  'w2ch.over5': '{n} > 5',
+  'w2ch.matchHint': 'Taş sayısının altındaki ort. ΔE: bu rengin taşlarının fotoğraftan ortalama ne kadar saptığı (hesaplamada, onun ΔE formülüyle ölçüldü); “ΔE 5 üzerinde 12” = bu rengin 12 taşı ΔE 5’ten fazla sapıyor.',
+  'w2ch.matchScale': 'Derecelendirme (CIEDE2000): < 2 neredeyse görünmez, 2–5 fark edilir, > 5 belirgin. Kırmızı işaretli: ortalama 5’in üzerinde.',
+  'w2ch.matchNoScale': 'CIE76 ile hesaplandı: “neredeyse görünmez / fark edilir / belirgin” derecelendirmesi yalnızca CIEDE2000 için geçerlidir (CIE76 değerleri genellikle daha büyüktür) – bu yüzden burada derecelendirme ve kırmızı işaret yok.',
+  'w2ch.over5': 'ΔE 5 üzerinde {n}',
 
   'w2ch.hexLab': 'HEX · L*a*b*',
   'w2ch.namePlaceholder': 'boş = otomatik ad',

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { deltaE2000 } from '../../core/color';
+import { paletteDisplayName } from '../../core/colorNames';
 import { bbox, centroid, type Pt } from '../../core/geometry';
 import { cellId, sectionOfCell, type Layout, type SectionGrid } from '../../core/layout';
 import { analyzeCut, cellPieces, cellRect, cutLineItems, pieceWidthCheck, type CutInfo, type WidthCheck } from '../../core/pieces';
@@ -87,10 +88,12 @@ interface Props {
   onNavigate: (row: number, col: number, piece: number) => void;
   onChanged: () => void;
   onProgress: () => void;
+  /** Nur ansehen: während einer Berechnung (das angezeigte Mosaik wird gleich ersetzt) keine Änderungen */
+  readOnly?: boolean;
 }
 
 export function StoneDialog(p: Props) {
-  const { t, n } = useI18n();
+  const { t, n, lang } = useI18n();
   const [, setTick] = useState(0);
   const [freeOpen, setFreeOpen] = useState(false);
   const [lineAngle, setLineAngle] = useState(45);
@@ -116,6 +119,7 @@ export function StoneDialog(p: Props) {
       .sort((a, b) => a.d - b.d);
   }, [palette, pc]);
 
+  const ro = !!p.readOnly;
   const changed = () => {
     setTick((x) => x + 1);
     p.onChanged();
@@ -152,6 +156,7 @@ export function StoneDialog(p: Props) {
   if (lineErr) reasons.push({ label: `${t('edit.lineCut')} ${n(lineAngle, 1)}° / ${n(lineOffset, 1)} mm`, text: why(lineErr, lineChange)! });
 
   const setKind = (ch: KindChange) => {
+    if (ro) return;
     // Unveränderte Form: nichts tun (Verlegestatus und gewähltes Teil bleiben erhalten)
     if (sameCellKind(layout, data, p.row, p.col, ch)) {
       setMsg(null);
@@ -168,6 +173,11 @@ export function StoneDialog(p: Props) {
 
   return (
     <Modal title={`${t('stone.title')} ${id}`} onClose={p.onClose} wide>
+      {ro && (
+        <p className="w1mc-notice w1fx-locked small" role="status" data-testid="stone-locked">
+          {t('w2ws.lockedComputing')}
+        </p>
+      )}
       <div className="stone-grid">
         <div>
           <table className="kv">
@@ -197,7 +207,7 @@ export function StoneDialog(p: Props) {
               <tr>
                 <th>{t('stone.color')}</th>
                 <td>
-                  <Swatch hex={pc?.hex ?? '#000'} size={22} /> <b>{String(pc?.code ?? '').padStart(2, '0')}</b> {pc?.name} · {pc?.hex}
+                  <Swatch hex={pc?.hex ?? '#000'} size={22} /> <b>{String(pc?.code ?? '').padStart(2, '0')}</b> {pc ? paletteDisplayName(pc, lang) : ''} · {pc?.hex}
                   <small className="muted block">
                     L*a*b* {n(pc?.lab[0] ?? 0, 1)} / {n(pc?.lab[1] ?? 0, 1)} / {n(pc?.lab[2] ?? 0, 1)}
                     {pc?.materialId && ` · ${t('stone.material')}: ${(() => {
@@ -236,7 +246,9 @@ export function StoneDialog(p: Props) {
                       type="checkbox"
                       checked={placed}
                       data-testid="stone-placed"
+                      disabled={ro}
                       onChange={() => {
+                        if (ro) return;
                         togglePiecePlaced(data, idx, pi);
                         setTick((x) => x + 1);
                         p.onProgress();
@@ -247,7 +259,9 @@ export function StoneDialog(p: Props) {
                   {pieces.length > 1 && (
                     <button
                       className="btn small"
+                      disabled={ro}
                       onClick={() => {
+                        if (ro) return;
                         setCellPlaced(data, idx, true);
                         setTick((x) => x + 1);
                         p.onProgress();
@@ -328,8 +342,10 @@ export function StoneDialog(p: Props) {
               <button
                 key={i}
                 className={`cp ${i === piece.color ? 'active' : ''}`}
-                title={`${String(q.code).padStart(2, '0')} ${q.name} · ΔE ${n(d, 1)}`}
+                title={`${String(q.code).padStart(2, '0')} ${paletteDisplayName(q, lang)} · ΔE ${n(d, 1)}`}
+                disabled={ro}
                 onClick={() => {
+                  if (ro) return;
                   setPieceColor(data, idx, pi, i);
                   changed();
                 }}
@@ -341,6 +357,7 @@ export function StoneDialog(p: Props) {
           </div>
 
           <h4>{t('edit.shape')}</h4>
+          <fieldset className="w1fx-fieldset" disabled={ro}>
           <div className="btn-row wrap" data-testid="shape-buttons">
             <button className={`btn small ${shapeKind === CellKind.FULL ? 'primary' : ''}`} onClick={() => setKind({ kind: CellKind.FULL })} data-testid="kind-full">
               {t('edit.full')}
@@ -399,6 +416,7 @@ export function StoneDialog(p: Props) {
               {t('common.apply')}
             </button>
           </div>
+          </fieldset>
           <small className="muted block">{t('edit.lineHint')}</small>
           {reasons.length > 0 && (
             <ul className="kind-reasons" data-testid="kind-reasons" aria-label={t('edit.notPossible')}>
@@ -412,7 +430,7 @@ export function StoneDialog(p: Props) {
           {msg && <p className="error">{msg}</p>}
         </div>
       </div>
-      {freeOpen && (
+      {freeOpen && !ro && (
         <FreeformEditor
           cellW={cellRect(layout, p.row, p.col).w}
           cellH={cellRect(layout, p.row, p.col).h}
@@ -444,7 +462,7 @@ function FreeformEditor(props: {
   onClose: () => void;
   onSave: (p: FreePiece[]) => boolean;
 }) {
-  const { t, n } = useI18n();
+  const { t, n, lang } = useI18n();
   const [pieces, setPieces] = useState<FreePiece[]>(() => props.initial.map((p) => ({ poly: p.poly.map((q) => ({ x: round1(q.x), y: round1(q.y) })), color: p.color })));
   const [active, setActive] = useState(0);
   const size = 320;
@@ -530,7 +548,7 @@ function FreeformEditor(props: {
                 <select value={pieces[active].color} onChange={(e) => setPieces((ps) => ps.map((p, i) => (i === active ? { ...p, color: +e.target.value } : p)))}>
                   {props.palette.map((c, i) => (
                     <option key={i} value={i}>
-                      {String(c.code).padStart(2, '0')} {c.name}
+                      {String(c.code).padStart(2, '0')} {paletteDisplayName(c, lang)}
                     </option>
                   ))}
                 </select>

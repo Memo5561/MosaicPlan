@@ -98,7 +98,10 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Silbentrennung (lang der Seite) statt „Empfehlun|g“; anywhere bleibt Schutz für Sprachen ohne Wörterbuch */
   overflow-wrap: anywhere;
+  -webkit-hyphens: auto;
+  hyphens: auto;
 }
 .gp-preview figcaption {
   margin-top: 4px;
@@ -145,8 +148,25 @@
   align-items: center;
   gap: 6px;
 }
+/* Die Tabelle wird nie breiter als die Seite: notfalls scrollt nur sie */
+.gp-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.gp-apply-inline {
+  display: none;
+}
 @media (max-width: 520px) {
   .gp-table .muted {
     display: none;
+  }
+  /* „Übernehmen“ unter den Farbnamen statt in einer eigenen Spalte – sonst ist die Tabelle breiter als das Handy */
+  .gp-table th:nth-child(4),
+  .gp-table td:nth-child(4) {
+    display: none;
+  }
+  .gp-apply-inline {
+    display: block;
+    margin-top: 4px;
   }
 }

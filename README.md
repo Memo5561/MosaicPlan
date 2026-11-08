@@ -56,13 +56,20 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
 4. **Fuge** – 0 / 0,5 / 1 / 1,5 / 2 / 3 mm oder frei; Fugenfarbe und -tiefe.
 5. **Farben** – 8, 12, 16, 24, 32, 48, 64, 100, 150, 200 oder frei; Quelle: automatisch (K-Means),
    automatisch → eigene Materialien, nur eigene Materialien, eigene Palette. CIEDE2000 oder CIE76, optional Dithering.
+   Automatische Farbnamen folgen der Sprache (auch in PDF, CSV und Steindetail); eingetippte Namen bleiben wörtlich.
+   Die Abweichung je Farbe wird mit der ΔE-Formel der Berechnung angezeigt; eingestuft („> 5 deutlich“) nur bei CIEDE2000.
    Eine eigene Palette behält beim Berechnen Reihenfolge und Farbnummern (auch Lücken nach dem Entfernen). Während
    einer Berechnung sind Farbquelle und Palette gesperrt – auch in anderen Ansichten und Tabs; wird die gespeicherte
    eigene Palette trotzdem geändert, bleibt eine Ergänzung erhalten (Projekt gilt als geändert), eine Verkürzung
    verwirft das Ergebnis mit Meldung (nie falsche Farben).
 6. **Steinformen** – Dreiecke (Diagonalschnitt), Kantenschnitte (Trapez/Dreieck/Rechteck/individuell),
    feinere Steine 2×2/3×3 in Detailbereichen, Gesichts-/Detailbereiche markieren, Hauttonschutz.
-7. **Berechnen** – im Web Worker, kachelweise (64 × 64 Zellen), mit Fortschritt und Abbruch.
+7. **Berechnen** – im Web Worker, kachelweise (64 × 64 Zellen), mit Fortschritt und Abbruch. Gehen beim Neuberechnen
+   verlegte Steine, manuelle Änderungen oder bearbeitete Palettenfarben (Name, Farbton, Material – in den Modi
+   „automatisch“ und „Materialien“ wird die Palette neu erstellt) verloren, fragt die App vorher nach (mit
+   Sicherungskopie). Während der Berechnung ist das bisherige Mosaik gesperrt (Verlegemodus, „Abschnitt fertig“,
+   Steine ändern); wurde trotzdem daran gearbeitet, wird das Ergebnis nicht still übernommen, sondern wartet auf
+   eine Entscheidung (Sicherungskopie und übernehmen, ohne Sicherung übernehmen, Ergebnis verwerfen).
 8. **Vorschau** – realistische Glas-/Keramikdarstellung, Zoom/Pan (Maus, Touch, Pinch), Farbnummern,
    Stein anklicken → Detailfenster mit Position, Koordinaten, Farbe, Größe, Form, Schnittanweisung,
    Schnittvorlage, Nachbarn; Farbe/Form einzeln ändern (Statistik aktualisiert sich automatisch).

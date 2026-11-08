@@ -292,7 +292,21 @@
   font-weight: 600;
   margin-top: 0;
 }
-.w2ws-guard-foot {
+.btn-row.w2ws-guard-foot {
   flex-wrap: wrap;
   justify-content: flex-end;
+  /* Flex-Element der Fußzeile: darf schmaler werden als seine längste Schaltfläche */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.w2ws-guard-foot .btn {
+  white-space: normal;
+  text-align: center;
+}
+/* Handy: Schaltflächen untereinander, volle Breite, empfohlene Wahl oben */
+@media (max-width: 600px) {
+  .btn-row.w2ws-guard-foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
 }

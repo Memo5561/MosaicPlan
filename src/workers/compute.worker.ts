@@ -99,7 +99,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         const layout = computeLayout(msg.layoutParams);
         const data = unpackMosaic(msg.mosaic);
         const sections = sectionsFor(layout, msg.sections);
-        const csv = buildCsv(layout, data, msg.palette, msg.materials, sections, msg.sectionIds, msg.decimalComma);
+        const csv = buildCsv(layout, data, msg.palette, msg.materials, sections, msg.sectionIds, msg.decimalComma, msg.lang);
         post({ type: 'csv', id: msg.id, csv });
         break;
       }

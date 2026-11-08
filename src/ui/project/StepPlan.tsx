@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { cellPieceCount } from '../../core/pieces';
 import { setRangePlaced, togglePiecePlaced } from '../../core/edits';
 import { packMosaic } from '../../core/serialize';
@@ -25,6 +25,16 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const s = rec.settings;
   const G = api.sections;
   const sec = useMemo(() => G?.sections.find((x) => x.id === selected) ?? null, [G, selected]);
+  // Während einer Berechnung dieses Projekts (hier, in einer früheren Ansicht im Hintergrund oder in einem anderen
+  // Tab) ist das angezeigte Mosaik schreibgeschützt: es wird gleich ersetzt (siehe useProject, computeLock)
+  const locked = !!api.computing || api.paletteLocked;
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  /** aktueller Stand (z. B. nach einer Rückfrage, während der eine Berechnung begonnen haben kann) */
+  const apiComputing = () => !!apiRef.current.computing || apiRef.current.paletteLocked;
+  useEffect(() => {
+    if (locked) setLayMode(false);
+  }, [locked]);
   if (!c || !G) return <p className={api.integrityError ? 'error' : 'muted'}>{t(api.integrityError ? 'compute.err.integrity' : 'preview.notComputed')}</p>;
   const pr = api.progress;
   const pct = pr && pr.total.total ? pr.total.placed / pr.total.total : 0;
@@ -45,6 +55,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
         sections: s,
         sectionIds: ids,
         decimalComma: lang !== 'en',
+        lang,
       });
       downloadBlob(new Blob(['﻿', r.csv], { type: 'text/csv;charset=utf-8' }), `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_koordinaten.csv`);
     } finally {
@@ -78,8 +89,13 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
       <div className="viewer-layout">
         <div>
           <div className="btn-row wrap">
-            <Toggle checked={layMode} onChange={setLayMode} label={t('plan.layMode')} hint={t('plan.layModeHint')} />
+            <Toggle checked={layMode && !locked} onChange={setLayMode} label={t('plan.layMode')} hint={t('plan.layModeHint')} disabled={locked} testId="lay-mode" />
           </div>
+          {locked && (
+            <p className="w1mc-notice w1fx-locked small" role="status" data-testid="edit-locked">
+              {t('w2ws.lockedComputing')}
+            </p>
+          )}
           <Viewer
             ref={viewer}
             layout={c.layout}
@@ -96,7 +112,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
             selectedSection={selected}
             highlight={pick}
             onPick={(row, col, piece) => {
-              if (layMode) {
+              if (layMode && !locked) {
                 const idx = row * c.layout.cols + col;
                 if (piece < cellPieceCount(c.data, idx)) togglePiecePlaced(c.data, idx, piece);
                 api.touchProgress();
@@ -207,7 +223,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                   <div className="btn-row wrap">
                     <button
                       className="btn small"
+                      disabled={locked}
+                      title={locked ? t('w2ws.lockedComputing') : undefined}
+                      data-testid="section-done"
                       onClick={() => {
+                        if (apiComputing()) return;
                         setRangePlaced(c.layout, c.data, sec, true);
                         api.touchProgress();
                       }}
@@ -216,8 +236,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                     </button>
                     <button
                       className="btn small"
+                      disabled={locked}
+                      title={locked ? t('w2ws.lockedComputing') : undefined}
                       onClick={() => {
                         if (!confirm(t('plan.resetConfirm'))) return;
+                        if (apiComputing()) return;
                         setRangePlaced(c.layout, c.data, sec, false);
                         api.touchProgress();
                       }}
@@ -251,6 +274,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
           col={pick.col}
           piece={pick.piece}
           minPieceMm={s.shapes.minPieceMm}
+          readOnly={locked}
           onClose={() => setPick(null)}
           onNavigate={(row, col, piece) => setPick({ row, col, piece })}
           onChanged={api.touchMosaic}

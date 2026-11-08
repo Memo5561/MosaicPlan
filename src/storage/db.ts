@@ -44,6 +44,12 @@ export interface ProjectRecord {
   imageRev?: string;
   /** `imageRev` des Fotos, aus dem das gespeicherte Mosaik berechnet wurde */
   computedImageRev?: string;
+  /**
+   * Fingerabdruck der Palette, die die letzte Berechnung festgeschrieben hat (Farbnummer → paletteEntrySig).
+   * In den Modi „automatisch“ und „Materialien“ erstellt Neu berechnen die Palette neu; Abweichungen davon
+   * sind Bearbeitungen, die dabei verloren gehen (siehe paletteEditsSince). Fehlt bei älteren Projekten.
+   */
+  computedPaletteSig?: Record<string, string>;
 }
 
 export interface ImageRecord {
@@ -378,6 +384,34 @@ export function samePalette(a: readonly PaletteColor[], b: readonly PaletteColor
 }
 
 /**
+ * Was an einer Palettenfarbe Bearbeitung des Benutzers ist: HEX-Wert, Material-Verknüpfung und ein nicht
+ * automatischer Name (Benutzer-/Materialname). Automatische Namen (nameKey) zählen nicht – sie folgen nur der
+ * Sprache bzw. ändern sich mit dem HEX-Wert.
+ */
+export function paletteEntrySig(p: PaletteColor): string {
+  return JSON.stringify([p.hex.toUpperCase(), p.materialId ?? null, p.nameKey ? null : p.name]);
+}
+
+/** Fingerabdruck einer Palette: Farbnummer → paletteEntrySig. */
+export function paletteSignature(palette: readonly PaletteColor[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of palette) out[String(p.code)] = paletteEntrySig(p);
+  return out;
+}
+
+/**
+ * Anzahl der Palettenfarben, die seit der letzten Berechnung geändert (HEX, Name, Material) oder hinzugefügt
+ * wurden – exakt aus dem gespeicherten Fingerabdruck. Entfernte Farben zählen hier nicht (sie sind bereits
+ * manuelle Änderungen am Mosaik). 0, wenn kein Fingerabdruck bekannt ist (ältere Projekte).
+ */
+export function paletteEditsSince(sig: Record<string, string> | undefined, palette: readonly PaletteColor[]): number {
+  if (!sig) return 0;
+  let n = 0;
+  for (const p of palette) if (sig[String(p.code)] !== paletteEntrySig(p)) n++;
+  return n;
+}
+
+/**
  * Passt ein Raster, dessen Farbindizes auf die Palette `base` zeigen, auch zur Palette `current`?
  * Ja, wenn jede Farbe von `base` an derselben Stelle mit derselben Farbnummer erhalten ist – Farben
  * wurden also nur angehängt oder an Ort und Stelle umbenannt, umgefärbt oder anders verknüpft.
@@ -421,6 +455,8 @@ export function mergeComputeFields(latest: ProjectRecord, f: ComputeFields): Pro
     computedWith: f.computedWith,
     mosaicRev: f.mosaicRev,
     computedImageRev: f.computedImageRev,
+    // Palette, wie diese Berechnung sie festschreibt (bei eigener Palette ggf. mit den Ergänzungen des Benutzers)
+    computedPaletteSig: paletteSignature(pal.palette),
     meta: dropUndefined({ ...latest.meta, computed: true, thumb: f.thumb ?? latest.meta.thumb, updatedAt: f.updatedAt, manualEdits: 0 }),
   });
 }
@@ -458,6 +494,7 @@ export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectReco
     computedWith: stored.computedWith,
     mosaicRev: stored.mosaicRev,
     computedImageRev: stored.computedImageRev,
+    computedPaletteSig: stored.computedPaletteSig,
     meta: dropUndefined({ ...mine.meta, computed: stored.meta.computed, thumb: stored.meta.thumb, manualEdits: stored.meta.manualEdits }),
   });
 }

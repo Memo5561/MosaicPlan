@@ -18,6 +18,7 @@ import {
   mergeComputeFields,
   onStoreEvent,
   PALETTE_CHANGED,
+  paletteEditsSince,
   resolveComputedPalette,
   saveProjectState,
   txMulti,
@@ -47,6 +48,7 @@ import {
   type WorkingBitmap,
 } from './imagePrep';
 import type { Lang } from '../../i18n';
+import { announceNotice } from '../SaveResultNote';
 
 export function layoutParamsOf(s: ProjectSettings): LayoutParams {
   return { widthMm: s.widthMm, heightMm: s.heightMm, tileW: s.tileW, tileH: s.tileH, joint: s.joint, edgeMode: s.edgeMode, minCutMm: s.minCutMm };
@@ -73,14 +75,14 @@ export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'mate
     return fixed;
   }
   if (s.paletteMode === 'custom') {
-    // nameKey/nameSuffix: automatische Namen bleiben automatisch (folgen der UI-Sprache), eingetippte bleiben wörtlich
+    // nameKey/nameSuffix: automatische Namen bleiben automatisch (folgen der UI-Sprache); userNamed: eingetippte bleiben wörtlich
     const fixed: FixedColor[] = palette.map((p) => ({
       lab: p.lab,
       hex: p.hex,
       name: p.name,
       materialId: p.materialId,
       code: p.code,
-      ...(p.nameKey ? { nameKey: p.nameKey, nameSuffix: p.nameSuffix } : {}),
+      ...(p.nameKey ? { nameKey: p.nameKey, nameSuffix: p.nameSuffix } : p.userNamed ? { userNamed: true } : {}),
     }));
     if (!fixed.length) throw new Error('no-palette');
     return fixed;
@@ -167,6 +169,28 @@ export interface RejectedMosaic {
   cells: number;
   /** als verlegt markierte Steine im gespeicherten Fortschritt – sie gehen beim Neuberechnen verloren */
   placed: number;
+}
+
+/**
+ * Fertiges Ergebnis einer Berechnung, das noch nicht übernommen wurde, weil während der Berechnung am
+ * angezeigten Mosaik weitergearbeitet wurde (Steine verlegt, Abschnitt fertig, Steine geändert). Übernehmen
+ * würde diese Arbeit verwerfen – das entscheidet der Benutzer (siehe applyPending/discardPending).
+ */
+interface PendingCommit {
+  fields: ComputeFields;
+  pk: { mosaic: StoredMosaicNoProgress; progress: Uint16Array };
+  data: MosaicDataWithRev;
+  proc: HTMLCanvasElement;
+  layout: Layout;
+  lp: LayoutParams;
+  /** Projektstand beim Start der Berechnung (Rückfall, falls kein neuerer vorliegt) */
+  started: ProjectRecord;
+}
+
+/** Was über ein wartendes Ergebnis angezeigt wird. */
+export interface PendingResult {
+  /** Zeitpunkt, an dem das Ergebnis fertig wurde (ms) */
+  at: number;
 }
 
 /** Verlegte Steine im gespeicherten Fortschritt (nur wenn er zum gespeicherten Raster passt). */
@@ -263,6 +287,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const [repairedCells, setRepairedCells] = useState(0);
   /** Läuft irgendwo (diese Ansicht, eine frühere Ansicht im Hintergrund, anderer Tab) eine Berechnung? */
   const [paletteLocked, setPaletteLocked] = useState(() => isComputing(id));
+  /** Ergebnis, das wegen Änderungen während der Berechnung auf die Entscheidung des Benutzers wartet */
+  const [pendingResult, setPendingResult] = useState<PendingResult | null>(null);
+  const pendingRef = useRef<PendingCommit | null>(null);
+  /**
+   * Zählt jede Bearbeitung des angezeigten Rasters (Steinfarbe/-form, verlegt, Abschnitt fertig). Eine
+   * Berechnung merkt sich den Stand beim Start; weicht er beim Ende ab, wird ihr Ergebnis nicht still übernommen.
+   */
+  const editTick = useRef(0);
 
   // Die Refs sind die maßgebliche Quelle (sofort aktuell, auch in Ereignis-Handlern beim Verlassen
   // der Seite); der React-State spiegelt sie für das Rendern.
@@ -493,9 +525,17 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       window.removeEventListener('beforeunload', onLeave);
       window.removeEventListener('pagehide', onLeave);
       document.removeEventListener('visibilitychange', onVis);
-      // Verlassen innerhalb der App: Seite lebt weiter, also mit Prüfung speichern
-      void persistRef.current('normal').catch(() => {});
+      // Verlassen innerhalb der App: Seite lebt weiter, also mit Prüfung speichern. Schlägt auch dieser letzte
+      // Versuch fehl, gibt es keine automatischen Wiederholungen mehr – app-weit Bescheid geben statt still verlieren.
+      void persistRef.current('normal').catch((e: unknown) => {
+        if (!isDeletedError(e) && !sv.current.deleted) announceNotice('w2ws.save.lostOnLeave');
+      });
       mounted.current = false;
+      // Ein wartendes Ergebnis gehört zu dieser Ansicht: nicht übernommen – Bescheid geben statt still verwerfen
+      if (pendingRef.current) {
+        pendingRef.current = null;
+        announceNotice('w2ws.pending.dropped');
+      }
       window.clearTimeout(sv.current.retryTimer);
     };
   }, []);
@@ -656,12 +696,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   /** Nach manuellen Änderungen am Raster aufrufen (Steinfarbe/-form, Farbe entfernt). */
   const touchMosaic = useCallback(() => {
+    editTick.current++;
     setVersion((v) => v + 1);
     markDirty('mosaic');
     update((r) => ({ ...r, meta: { ...r.meta, manualEdits: (r.meta.manualEdits ?? 0) + 1 } }));
   }, [markDirty, update]);
 
   const touchProgress = useCallback(() => {
+    editTick.current++;
     setProgressVersion((v) => v + 1);
     markDirty('progress');
   }, [markDirty]);
@@ -750,6 +792,15 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   const stale = !!rec && !!computed && rec.computedWith !== computeKey(rec);
 
+  /**
+   * Palettenfarben, die seit der letzten Berechnung bearbeitet wurden (HEX, Name, Material, hinzugefügt) und beim
+   * Neuberechnen verloren gehen: nur in den Modi, in denen die Berechnung die Palette neu erstellt (nicht bei
+   * eigener Palette – die ist eine Eingabe und bleibt). Exakt aus dem Fingerabdruck der Berechnung.
+   */
+  const paletteEdits = rec && computed && rec.settings.paletteMode !== 'custom' ? paletteEditsSince(rec.computedPaletteSig, rec.palette) : 0;
+  /** true: Fingerabdruck der berechneten Palette unbekannt (ältere Projekte) – Palettenbearbeitungen nicht einzeln erfasst */
+  const paletteEditsUnknown = !!rec && !!computed && rec.settings.paletteMode !== 'custom' && !rec.computedPaletteSig;
+
   /** Schneller Verlegefortschritt (ohne Geometrie) – gesamt und je Abschnitt. */
   const progress = useMemo(() => {
     if (!computed || !sections) return null;
@@ -807,10 +858,92 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, [computed, version, progressVersion, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
 
   // ---------- Berechnung
+  /**
+   * Schreibt ein fertiges Ergebnis fest (Projekt, Raster, Fortschritt in EINER Transaktion) und zeigt es an.
+   * Wirft bei geänderter eigener Palette (PALETTE_CHANGED); false, wenn das Projekt gelöscht wurde.
+   */
+  const commitJob = useCallback(
+    async (job: PendingCommit): Promise<boolean> => {
+      const { fields, pk, data, proc, layout, lp } = job;
+      let saveFailure: unknown = null;
+      let committed: ProjectRecord | null = null;
+      try {
+        // Projekt (neuester gespeicherter Stand + Ergebnisfelder), Raster und Fortschritt in EINER Transaktion
+        committed = await commitComputed(id, fields, pk.mosaic, pk.progress, instanceRef.current);
+      } catch (e) {
+        if (isDeletedError(e)) {
+          // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
+          if (mounted.current) setComputeError('deleted');
+          return false;
+        }
+        // Eigene Palette wurde anderswo verkürzt/umsortiert: nichts gespeichert, Palette und altes Raster bleiben
+        if (isPaletteChangedError(e)) throw e;
+        saveFailure = e;
+      }
+      if (!mounted.current) {
+        if (saveFailure) console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
+        return !saveFailure;
+      }
+      setProcessed(proc);
+      data.rev = fields.mosaicRev;
+      const latest = recRef.current ?? job.started;
+      // Palette, die jetzt zum gespeicherten Raster gehört (bei eigener Palette ggf. mit Ergänzungen,
+      // die anderswo während der Berechnung gespeichert wurden – siehe commitComputed)
+      const storedPalette = committed?.palette ?? fields.palette;
+      const asStored = () => mergeComputeFields({ ...latest, palette: storedPalette }, { ...fields, customInput: undefined, palette: storedPalette, computedWith: committed?.computedWith ?? fields.computedWith });
+      let merged: ProjectRecord;
+      if (latest.palette === paletteBaseRef.current) {
+        // hier nicht bearbeitet: der gespeicherte Stand gilt
+        merged = asStored();
+      } else {
+        try {
+          // hier bearbeitet (noch nicht gespeichert): nur ergänzt/geändert → bleibt, sonst gilt das Gespeicherte
+          merged = mergeComputeFields(latest, fields);
+        } catch {
+          // Palette wurde in den Millisekunden des Speicherns verkürzt (sonst gesperrt): Raster und
+          // gespeicherte Palette gehören zusammen – diese Palette gilt.
+          merged = asStored();
+        }
+      }
+      setRecBoth(merged);
+      paletteBaseRef.current = committed?.palette ?? fields.palette;
+      setComputedBoth({ layout, layoutParams: lp, data });
+      setIntegrityError(null);
+      setRejected(null);
+      discardGrid(); // ausstehende Speicherungen gehören zum ersetzten Raster
+      setVersion((v) => v + 1);
+      setProgressVersion((v) => v + 1);
+      if (saveFailure) {
+        // Ergebnis ist berechnet, aber nicht gespeichert: im Speicher behalten, vollständig nachspeichern
+        console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
+        const sref = sv.current;
+        sref.force = true;
+        markDirty('rec');
+        markDirty('mosaic');
+        markDirty('progress');
+        setError(classifySaveError(saveFailure));
+      }
+      return true;
+    },
+    [id, discardGrid, markDirty, setError, setRecBoth, setComputedBoth],
+  );
+
+  /** Gibt es am angezeigten Mosaik jetzt etwas, das ein Übernehmen verwerfen würde (verlegt, manuell geändert)? */
+  const displayedWorkAtRisk = useCallback((): boolean => {
+    const c = computedRef.current;
+    if (!c) return false;
+    return progressOf(c.layout, c.data).placed > 0 || (recRef.current?.meta.manualEdits ?? 0) > 0;
+  }, []);
+
   const compute = useCallback(async () => {
     // Momentaufnahme NUR für die Eingaben der Berechnung; das Ergebnis wird später in den neuesten Stand übernommen
     const r = recRef.current;
     if (!r || !bitmap || !layoutInfo.layout) return false;
+    // Ein noch wartendes Ergebnis wird durch diese Berechnung ersetzt
+    pendingRef.current = null;
+    setPendingResult(null);
+    // Stand der Bearbeitungen am angezeigten Mosaik beim Start (siehe editTick)
+    const startTick = editTick.current;
     // Foto zum Zeitpunkt des Starts (ein Fotowechsel während der Berechnung macht das Ergebnis „veraltet“)
     const original = imageRef.current?.original ?? null;
     const reduced = !!sourceSize?.reduced;
@@ -894,66 +1027,21 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       };
       // Wurde die eigene Palette hier während der Berechnung verkürzt oder umsortiert, passt das Ergebnis nicht mehr
       if (mounted.current && recRef.current && !resolveComputedPalette(recRef.current.palette, fields)) throw new Error(PALETTE_CHANGED);
-      const pk = packWithoutProgress(data, fields.mosaicRev);
-      let saveFailure: unknown = null;
-      let committed: ProjectRecord | null = null;
-      try {
-        // Projekt (neuester gespeicherter Stand + Ergebnisfelder), Raster und Fortschritt in EINER Transaktion
-        committed = await commitComputed(id, fields, pk.mosaic, pk.progress, instanceRef.current);
-      } catch (e) {
-        if (isDeletedError(e)) {
-          // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
-          if (mounted.current) setComputeError('deleted');
+      const job: PendingCommit = { fields, pk: packWithoutProgress(data, fields.mosaicRev), data, proc, layout, lp, started: r };
+      // Während der Berechnung wurde am angezeigten Mosaik gearbeitet (verlegt, Abschnitt fertig, Steine geändert):
+      // NICHT still ersetzen – das Ergebnis wartet, der Benutzer entscheidet (mit Sicherungskopie wie vor dem Start).
+      if (editTick.current !== startTick && displayedWorkAtRisk()) {
+        if (!mounted.current) {
+          // Ansicht schon geschlossen: niemand kann gefragt werden – die Arbeit bleibt, das Ergebnis nicht
+          console.warn('Berechnung nicht übernommen: während der Berechnung wurde am Mosaik gearbeitet');
+          announceNotice('w2ws.pending.dropped');
           return false;
         }
-        // Eigene Palette wurde anderswo verkürzt/umsortiert: nichts gespeichert, Palette und altes Raster bleiben
-        if (isPaletteChangedError(e)) throw e;
-        saveFailure = e;
+        pendingRef.current = job;
+        setPendingResult({ at: Date.now() });
+        return false;
       }
-      if (!mounted.current) {
-        if (saveFailure) console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
-        return !saveFailure;
-      }
-      setProcessed(proc);
-      data.rev = fields.mosaicRev;
-      const latest = recRef.current ?? r;
-      // Palette, die jetzt zum gespeicherten Raster gehört (bei eigener Palette ggf. mit Ergänzungen,
-      // die anderswo während der Berechnung gespeichert wurden – siehe commitComputed)
-      const storedPalette = committed?.palette ?? fields.palette;
-      const asStored = () => mergeComputeFields({ ...latest, palette: storedPalette }, { ...fields, customInput: undefined, palette: storedPalette, computedWith: committed?.computedWith ?? fields.computedWith });
-      let merged: ProjectRecord;
-      if (latest.palette === paletteBaseRef.current) {
-        // hier nicht bearbeitet: der gespeicherte Stand gilt
-        merged = asStored();
-      } else {
-        try {
-          // hier bearbeitet (noch nicht gespeichert): nur ergänzt/geändert → bleibt, sonst gilt das Gespeicherte
-          merged = mergeComputeFields(latest, fields);
-        } catch {
-          // Palette wurde in den Millisekunden des Speicherns verkürzt (sonst gesperrt): Raster und
-          // gespeicherte Palette gehören zusammen – diese Palette gilt.
-          merged = asStored();
-        }
-      }
-      setRecBoth(merged);
-      paletteBaseRef.current = committed?.palette ?? fields.palette;
-      setComputedBoth({ layout, layoutParams: lp, data });
-      setIntegrityError(null);
-      setRejected(null);
-      discardGrid(); // ausstehende Speicherungen gehören zum ersetzten Raster
-      setVersion((v) => v + 1);
-      setProgressVersion((v) => v + 1);
-      if (saveFailure) {
-        // Ergebnis ist berechnet, aber nicht gespeichert: im Speicher behalten, vollständig nachspeichern
-        console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
-        const sref = sv.current;
-        sref.force = true;
-        markDirty('rec');
-        markDirty('mosaic');
-        markDirty('progress');
-        setError(classifySaveError(saveFailure));
-      }
-      return true;
+      return await commitJob(job);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== 'abgebrochen' && mounted.current) setComputeError(msg);
@@ -962,7 +1050,36 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       endLock();
       setComputing(null);
     }
-  }, [bitmap, sourceSize, srcW, srcH, layoutInfo.layout, materials, id, lang, discardGrid, markDirty, setError, setRecBoth, setComputedBoth]);
+  }, [bitmap, sourceSize, srcW, srcH, layoutInfo.layout, materials, id, lang, commitJob, displayedWorkAtRisk]);
+
+  /**
+   * Übernimmt das wartende Ergebnis (verwirft dabei Fortschritt und Änderungen am bisherigen Mosaik – der Aufrufer
+   * hat nachgefragt). Liefert true, wenn es übernommen wurde.
+   */
+  const applyPending = useCallback(async (): Promise<boolean> => {
+    const job = pendingRef.current;
+    if (!job) return false;
+    pendingRef.current = null;
+    setPendingResult(null);
+    setComputeError(null);
+    const endLock = beginCompute(id);
+    try {
+      // Eigene Palette inzwischen verkürzt/umsortiert: das Ergebnis passt nicht mehr
+      if (recRef.current && !resolveComputedPalette(recRef.current.palette, job.fields)) throw new Error(PALETTE_CHANGED);
+      return await commitJob(job);
+    } catch (e) {
+      if (mounted.current) setComputeError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      endLock();
+    }
+  }, [id, commitJob]);
+
+  /** Verwirft das wartende Ergebnis; das angezeigte Mosaik mit seinem Fortschritt bleibt. */
+  const discardPending = useCallback(() => {
+    pendingRef.current = null;
+    setPendingResult(null);
+  }, []);
 
   const cancelCompute = useCallback(() => cancelChannel('compute'), []);
 
@@ -1033,6 +1150,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     paletteLocked,
     /** Anzahl manueller Rasteränderungen seit der letzten Berechnung */
     manualEdits: rec?.meta.manualEdits ?? 0,
+    /** Palettenfarben, die seit der letzten Berechnung bearbeitet wurden und beim Neuberechnen verloren gehen */
+    paletteEdits,
+    /** Palettenbearbeitungen dieses (älteren) Projekts nicht einzeln erfasst */
+    paletteEditsUnknown,
+    /** Ergebnis wartet auf Entscheidung (während der Berechnung wurde am Mosaik gearbeitet) */
+    pendingResult,
+    applyPending,
+    discardPending,
     update,
     setSettings,
     setAdjust,

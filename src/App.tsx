@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Material } from './core/types';
 import { I18nContext, makeT, numberFormatter, type Lang } from './i18n';
 import { DEFAULT_APP, listMaterials, loadAppSettings, saveAppSettings, type AppSettings } from './storage/db';
 import { ErrorBoundary } from './ui/ErrorBoundary';
+import { leavesProject, requestLeave } from './ui/leaveGuard';
 import { Home } from './ui/Home';
 import { Materials } from './ui/Materials';
 import { Projects } from './ui/Projects';
@@ -11,16 +12,52 @@ import { Workspace } from './ui/project/Workspace';
 
 function useHash(): [string, (h: string) => void] {
   const [hash, setHash] = useState(location.hash || '#/');
+  /** zuletzt übernommene Adresse (für den Schutz beim Verlassen eines Projekts) */
+  const cur = useRef(location.hash || '#/');
+  /** Adresse, deren Verlassen bereits bestätigt ist (kein zweites Nachfragen) */
+  const allowed = useRef<string | null>(null);
+  const apply = useCallback((h: string) => {
+    cur.current = h;
+    setHash(h);
+  }, []);
   useEffect(() => {
-    const h = () => setHash(location.hash || '#/');
+    const h = () => {
+      const next = location.hash || '#/';
+      const prev = cur.current;
+      if (allowed.current === next || !leavesProject(prev, next)) {
+        allowed.current = null;
+        apply(next);
+        return;
+      }
+      // Zurück-Taste/-Geste oder Adressänderung verlässt das Projekt: erst fragen (z. B. Änderungen nicht gespeichert)
+      const ok = requestLeave(() => {
+        allowed.current = next;
+        if (location.hash !== next) location.hash = next;
+        else apply(next);
+      });
+      if (ok) apply(next);
+      // Projekt bleibt offen: Adresse wiederherstellen (neuer Verlaufseintrag; erneutes Zurück fragt wieder)
+      else history.pushState(null, '', prev);
+    };
     window.addEventListener('hashchange', h);
     return () => window.removeEventListener('hashchange', h);
-  }, []);
-  const go = useCallback((h: string) => {
-    if (location.hash !== h) location.hash = h;
-    setHash(h);
-    window.scrollTo(0, 0);
-  }, []);
+  }, [apply]);
+  const go = useCallback(
+    (h: string) => {
+      const navigate = () => {
+        if (location.hash !== h) {
+          allowed.current = h;
+          location.hash = h;
+        }
+        apply(h);
+        window.scrollTo(0, 0);
+      };
+      // Navigation in der App (Kopfzeile, „←“): beim Verlassen eines Projekts erst fragen
+      if (leavesProject(cur.current, h) && !requestLeave(navigate)) return;
+      navigate();
+    },
+    [apply],
+  );
   return [hash, go];
 }
 

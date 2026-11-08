@@ -4,7 +4,7 @@ import { tCount, useI18n } from '../../i18n';
 import { Badge, downloadBlob, ProgressBar, safeFileName } from '../components';
 import { EmptyState } from './EmptyState';
 import { lossList, lossOf } from './RecomputeGuard';
-import { computedDeltaE, deltaERating, isRestorable, restoreComputedSettings, staleReasonLabels, type StaleReason } from './staleReasons';
+import { computedDeltaE, deltaERating, restoreComputedSettings, splitRestorable, staleReasonLabels, type StaleReason } from './staleReasons';
 import { LayoutSummary } from './StepGeometry';
 import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
@@ -32,8 +32,12 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
   const loss = api.computed ? lossOf(api) : null;
   // Änderungen seit der letzten Berechnung
   const reasonLabels = staleReasonLabels(reasons, t, n);
-  const restorable = reasons.filter(isRestorable);
-  const notRestorable = reasons.filter((r) => !isRestorable(r));
+  // Was „Änderungen verwerfen“ hier wirklich wiederherstellt (nach einem Fotowechsel nicht Bereiche/Zuschnitt des alten Fotos)
+  const { restorable, notRestorable } = splitRestorable(reasons);
+  // Hinweis nennt die Werte, auf die zurückgesetzt wird (nicht „alt → neu“)
+  const discardHint = t('w2ws.stale.discardHint', { list: staleReasonLabels(restorable, t, n, { target: 'from' }).join(', ') });
+  // Berechnung erstellt die Palette neu (automatisch/Materialien) – eigene Palette bleibt
+  const paletteRebuilt = s.paletteMode !== 'custom';
   // Bewertung der Farbabweichung nur für die Formel, mit der das angezeigte Ergebnis berechnet wurde
   const resultDE = computedDeltaE(api.rec!.computedWith) ?? (api.stale ? null : s.deltaE);
   const rating = d && resultDE === '2000' ? deltaERating(d.meanDeltaE) : null;
@@ -101,7 +105,7 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
                 <button
                   className="btn small"
                   data-testid="discard-changes"
-                  title={t('w2ws.stale.discardHint', { list: staleReasonLabels(restorable, t, n).join(', ') })}
+                  title={discardHint}
                   onClick={() => {
                     api.update((r) => restoreComputedSettings(r) ?? r);
                     setDiscarded(true);
@@ -109,7 +113,9 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
                 >
                   ↶ {t('w2ws.stale.discard')}
                 </button>
-                <small className="muted">{t('w2ws.stale.discardHint', { list: staleReasonLabels(restorable, t, n).join(', ') })}</small>
+                <small className="muted" data-testid="discard-hint">
+                  {discardHint}
+                </small>
               </div>
             )}
             {notRestorable.length > 0 && <p className="muted small">{t('w2ws.stale.notRestorable', { list: staleReasonLabels(notRestorable, t, n).join(', ') })}</p>}
@@ -139,10 +145,11 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
           (loss ? (
             <p className="warn small w2ws-overwrite" data-testid="overwrite-warn">
               {t('w2ws.overwriteCounts', { list: lossList(loss, t, n) })}
+              {paletteRebuilt && ` ${t('w2ws.paletteRebuilt')}`}
             </p>
           ) : (
             <p className="muted small" data-testid="overwrite-warn">
-              {t('w2ws.overwriteNone')}
+              {!paletteRebuilt ? t('w2ws.overwriteNone') : api.paletteEditsUnknown ? t('w2ws.overwriteNoneLegacy') : t('w2ws.overwriteNoneAuto')}
             </p>
           ))}
         {lostPlaced > 0 && !api.computing && (

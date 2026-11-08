@@ -4,6 +4,7 @@
  */
 import { jsPDF } from 'jspdf';
 import { hexToRgb, textColorFor } from './color';
+import { paletteDisplayName } from './colorNames';
 import { bbox, centroid, fmtMm, type Pt } from './geometry';
 import { cellId, rowLabel, type Layout, type Section, type SectionGrid } from './layout';
 import { cellPieces, cutLineItems, type CutInfo } from './pieces';
@@ -75,7 +76,9 @@ export function collectTemplates(layout: Layout, data: MosaicData, palette: Pale
 }
 
 export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?: (f: number, label: string) => void): Promise<ArrayBuffer> {
-  const { layout, data, palette, materials, settings, t } = input;
+  const { layout, data, materials, settings, t } = input;
+  // Farbnamen in der Sprache des PDFs: automatische Namen (nameKey) übersetzt, Material- und Benutzernamen wörtlich
+  const palette = input.palette.map((p) => (p.nameKey ? { ...p, name: paletteDisplayName(p, input.locale) } : p));
   const [pw0, ph0] = opts.format === 'custom' ? [opts.customW ?? 210, opts.customH ?? 297] : PAPER[opts.format];
   const portrait = opts.orientation === 'portrait';
   const PW = portrait ? Math.min(pw0, ph0) : Math.max(pw0, ph0);

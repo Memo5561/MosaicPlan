@@ -229,22 +229,22 @@ describe('Farbabweichung: Einstufung', () => {
 describe('Rückfrage vor dem Neuberechnen', () => {
   it('fragt nur, wenn verlegte Steine oder manuelle Änderungen verloren gehen', () => {
     expect(recomputeLoss({ computed: true, placed: 0, total: 5950, edits: 0, storedPlaced: 0, storedCells: 0 })).toBeNull();
-    expect(recomputeLoss({ computed: true, placed: 1526, total: 5950, edits: 0, storedPlaced: 0, storedCells: 0 })).toEqual({ placed: 1526, total: 5950, edits: 0, stored: false });
-    expect(recomputeLoss({ computed: true, placed: 0, total: 5950, edits: 2, storedPlaced: 0, storedCells: 0 })).toEqual({ placed: 0, total: 5950, edits: 2, stored: false });
+    expect(recomputeLoss({ computed: true, placed: 1526, total: 5950, edits: 0, storedPlaced: 0, storedCells: 0 })).toEqual({ placed: 1526, total: 5950, edits: 0, paletteEdits: 0, stored: false });
+    expect(recomputeLoss({ computed: true, placed: 0, total: 5950, edits: 2, storedPlaced: 0, storedCells: 0 })).toEqual({ placed: 0, total: 5950, edits: 2, paletteEdits: 0, stored: false });
     // nicht angezeigtes gespeichertes Mosaik (Integritätsfehler) mit Fortschritt
-    expect(recomputeLoss({ computed: false, placed: 0, total: 0, edits: 0, storedPlaced: 12, storedCells: 400 })).toEqual({ placed: 12, total: 0, edits: 0, stored: true });
+    expect(recomputeLoss({ computed: false, placed: 0, total: 0, edits: 0, storedPlaced: 12, storedCells: 400 })).toEqual({ placed: 12, total: 0, edits: 0, paletteEdits: 0, stored: true });
     expect(recomputeLoss({ computed: false, placed: 0, total: 0, edits: 0, storedPlaced: 0, storedCells: 400 })).toBeNull();
   });
 
   it('nennt exakte Zahlen, Einzahl und Mehrzahl', () => {
-    expect(lossList({ placed: 1526, total: 5952, edits: 3, stored: false }, t, n)).toBe(
+    expect(lossList({ placed: 1526, total: 5952, edits: 3, paletteEdits: 0, stored: false }, t, n)).toBe(
       '1.526 als verlegt markierte Steine (25,6 % des Mosaiks) und 3 manuelle Änderungen am Mosaik (z. B. Steinfarbe, Steinform, Umstellung beim Entfernen einer Farbe)',
     );
-    expect(lossList({ placed: 1, total: 4, edits: 0, stored: false }, t, n)).toBe('1 als verlegt markierter Stein (25 % des Mosaiks)');
-    expect(lossList({ placed: 0, total: 4, edits: 1, stored: false }, t, n)).toBe('1 manuelle Änderung am Mosaik (z. B. Steinfarbe, Steinform, Umstellung beim Entfernen einer Farbe)');
-    expect(lossList({ placed: 12, total: 0, edits: 0, stored: true }, t, n)).toBe('12 als verlegt markierte Steine');
+    expect(lossList({ placed: 1, total: 4, edits: 0, paletteEdits: 0, stored: false }, t, n)).toBe('1 als verlegt markierter Stein (25 % des Mosaiks)');
+    expect(lossList({ placed: 0, total: 4, edits: 1, paletteEdits: 0, stored: false }, t, n)).toBe('1 manuelle Änderung am Mosaik (z. B. Steinfarbe, Steinform, Umstellung beim Entfernen einer Farbe)');
+    expect(lossList({ placed: 12, total: 0, edits: 0, paletteEdits: 0, stored: true }, t, n)).toBe('12 als verlegt markierte Steine');
     const en = makeT('en');
-    expect(lossList({ placed: 1526, total: 5952, edits: 3, stored: false }, en, numberFormatter('en'))).toBe(
+    expect(lossList({ placed: 1526, total: 5952, edits: 3, paletteEdits: 0, stored: false }, en, numberFormatter('en'))).toBe(
       '1,526 stones marked as laid (25.6 % of the mosaic) and 3 manual changes to the mosaic (e.g. stone colour, stone shape, reassignment when a colour was removed)',
     );
   });

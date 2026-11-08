@@ -13,6 +13,7 @@ import { cellId, computeLayout, computeSections, computeSectionsByCount, type La
 import { computeMosaic } from '../src/core/mosaic';
 import { collectTemplates, countStones, DEFAULT_PDF_OPTIONS, generatePdf, type PdfOptions } from '../src/core/pdf';
 import { fitSheetScale, fmtScale, sheetPrintArea } from '../src/core/pdfOptions';
+import { planSheets } from '../src/core/pdfPlan';
 import { CutCache, computeStats, makeRawSizeFn } from '../src/core/stats';
 import { createEmptyMosaic, DEFAULT_SETTINGS, DEFAULT_SHAPES, type Material, type MosaicData, type PaletteColor } from '../src/core/types';
 import { makeT } from '../src/i18n';
@@ -257,6 +258,7 @@ describe('PDF-Verlegeplan', () => {
   }, 120000);
 
   it('Lesezeichen, Dokumenttitel, PrintScaling=None; Abschnitts-Lesezeichen und Übersichts-Links zeigen auf die Abschnittsseite', async () => {
+    // 120 × 120 mm passen auf ein A4-Blatt: kompakte Blöcke auf „Abschnittsübersicht“-Seiten statt je eines Deckblatts
     const pdf = await generatePdf(
       { projectName: 'Lesezeichen', dateStr: '08.11.2026', layout, data: res.data, palette: res.palette, materials: [], settings, sections, t: tDe, locale: 'de' },
       { ...DEFAULT_PDF_OPTIONS, includeImages: false, includeTemplates: true, includeCoords: true, coordLimit: 400 },
@@ -273,11 +275,12 @@ describe('PDF-Verlegeplan', () => {
     expect(secNodes.map((o) => o.title)).toEqual(sections.sections.map((s) => `Abschnitt ${s.id}`));
     for (const sn of secNodes) {
       const id = sn.title.replace('Abschnitt ', '');
-      // Kopfzeile der Zielseite nennt den Abschnitt; Deckblatt des Abschnitts
+      // Abschnittsseite: Übersichtsseite mit dem Block des Abschnitts (kein eigenes Deckblatt)
       expect(p.pageText(sn.page)).toContain(`Abschnitt ${id}`);
-      expect(p.pageText(sn.page)).toContain('Farblegende und Stückzahlen des Abschnitts');
+      expect(p.pageText(sn.page)).toContain('Abschnittsübersicht');
+      expect(p.pageText(sn.page)).not.toContain('Farblegende und Stückzahlen des Abschnitts');
       const sheetNodes = p.outline.filter((o) => o.parent === sn.id);
-      expect(sheetNodes.length).toBeGreaterThanOrEqual(1);
+      expect(sheetNodes.length).toBe(1);
       sheetNodes.forEach((s, i) => {
         expect(s.title).toBe(`Blatt ${id}-${i + 1}`);
         expect(p.pageText(s.page)).toContain(`Abschnitt ${id} – Blatt ${id}-${i + 1}`);
@@ -285,17 +288,46 @@ describe('PDF-Verlegeplan', () => {
         expect(p.pageText(s.page)).toContain(`Blatt ${id}-${i + 1} · Seite ${s.page} / ${p.pages.length}`);
       });
     }
-    // Übersicht: Zeilen und Kartenrechtecke verlinken genau auf die Abschnittsdeckblätter
+    // Übersicht: Zeilen und Kartenrechtecke verlinken genau auf die Abschnittsseiten
     const ovPage = top.find((o) => o.title === 'Gesamtübersicht')!.page;
     const targets = new Set(linkTargets(p, ovPage));
-    expect([...targets].sort((a, b) => a - b)).toEqual(secNodes.map((s) => s.page).sort((a, b) => a - b));
+    expect([...targets].sort((a, b) => a - b)).toEqual([...new Set(secNodes.map((s) => s.page))].sort((a, b) => a - b));
     expect(linkTargets(p, ovPage).length).toBe(2 * sections.sections.length);
     // Seitenspalte: die Seitenzahl jedes Abschnitts steht auf der Übersichtsseite
     const ovText = p.pageText(ovPage).split('\n');
     for (const sn of secNodes) expect(ovText).toContain(String(sn.page));
-    // Mini-Übersicht auf dem Abschnittsdeckblatt verlinkt auf die Blätter
+    // jeder Block verlinkt auf sein Blatt und nennt dessen Seite
     const first = secNodes[0];
-    expect(linkTargets(p, first.page).sort((a, b) => a - b)).toEqual(p.outline.filter((o) => o.parent === first.id).map((o) => o.page));
+    const onPage = secNodes.filter((s) => s.page === first.page);
+    const sheetsOnPage = onPage.map((s) => p.outline.find((o) => o.parent === s.id)!.page);
+    expect(linkTargets(p, first.page).sort((a, b) => a - b)).toEqual(sheetsOnPage.sort((a, b) => a - b));
+    for (const s of onPage) {
+      const id = s.title.replace('Abschnitt ', '');
+      const sp = p.outline.find((o) => o.parent === s.id)!.page;
+      // Helvetica (ohne eingebettete Schrift): „→“ wird als „->“ gesetzt
+      expect(flat(p.pageText(first.page))).toMatch(new RegExp(`Blatt ${id}-1 (→|->) S\\. ${sp}\\b`));
+    }
+  }, 120000);
+
+  it('mehrblättriger Abschnitt: Deckblatt mit Farblegende, Mini-Übersicht verlinkt auf die Blätter', async () => {
+    const big = computeSections(layout, 300, 300);
+    expect(big.sections.length).toBe(1);
+    const p = parsePdf(
+      await generatePdf(
+        { projectName: 'Deckblatt', dateStr: '08.11.2026', layout, data: res.data, palette: res.palette, materials: [], settings, sections: big, t: tDe, locale: 'de' },
+        { ...lean, includeTemplates: true },
+      ),
+    );
+    const sn = p.outline.find((o) => o.title === 'Abschnitt A1')!;
+    expect(p.pageText(sn.page)).toContain('Farblegende und Stückzahlen des Abschnitts');
+    const sheetNodes = p.outline.filter((o) => o.parent === sn.id);
+    expect(sheetNodes.length).toBe(4);
+    expect(linkTargets(p, sn.page).sort((a, b) => a - b)).toEqual(sheetNodes.map((o) => o.page));
+    // „Seiten in diesem PDF“: vom Deckblatt bis zur letzten Seite des Abschnitts (inkl. Zuschnittliste) –
+    // einziger Abschnitt, also bis vor die Schnittvorlagen
+    const last = p.outline.find((o) => o.title === 'Schnittvorlagen')!.page - 1;
+    expect(p.pageText(last)).toContain('Zuschnittliste');
+    expect(flat(p.pageText(sn.page))).toContain(`${sn.page}–${last}`);
   }, 120000);
 
   it('nur ein Abschnitt exportiert: andere Abschnitte in der Seitenspalte „–“, Hinweis gedruckt', async () => {
@@ -457,10 +489,9 @@ describe('Druckränder, Anschlussbeschriftung, Spaltennummern', () => {
     const { layout, data, palette } = squaresProject(300, 200);
     const sections = computeSections(layout, 300, 300);
     const p = parsePdf(await generatePdf(baseInput(layout, data, palette, sections), lean));
-    const { printW } = sheetPrintArea(210, 297);
-    let c1 = 1;
-    while (c1 < layout.cols && layout.colX[c1] + layout.colW[c1] <= printW + 1e-6) c1++;
-    const X1 = layout.colX[c1 - 1] + layout.colW[c1 - 1];
+    // rechte Kante von Blatt A1-1 aus dem gemeinsamen Seitenplan (gleichmäßig verteilte Blätter)
+    const sh = planSheets(layout, sections, lean).sections[0].sheets[0];
+    const X1 = layout.colX[sh.c1 - 1] + layout.colW[sh.c1 - 1];
     const L = 22;
     const sheet = p.outline.find((o) => o.title === 'Blatt A1-1')!;
     const pl = placements(p.pageContent(sheet.page), 297);

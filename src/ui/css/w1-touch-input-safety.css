@@ -1,0 +1,56 @@
+/* w1-touch-input-safety: Zahleneingabe-Hinweis, Viewer-Hinweis beim Antipp-Zoom */
+
+/* „→ 1000 cm“ neben dem Feld, solange eine gruppierte Eingabe („1.000“) getippt wird; verdeckt nichts */
+.numin-hint {
+  margin-left: 2px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #ece8e1;
+  color: var(--ink-soft, #4a5566);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+/* Langes Drücken auf die Mosaikfläche soll kein Kontextmenü und keine Textauswahl auslösen */
+.viewer canvas {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Kurzer Hinweis, wenn ein Antippen bei zu kleinen Steinen erst hineinzoomt */
+.viewer-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 7px 14px;
+  border-radius: 16px;
+  background: rgba(29, 42, 58, 0.9);
+  color: #fff;
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  animation: w1-viewer-hint-in 0.15s ease-out;
+}
+@keyframes w1-viewer-hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .viewer-hint {
+    animation: none;
+  }
+}

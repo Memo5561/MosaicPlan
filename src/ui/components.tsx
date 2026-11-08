@@ -1,12 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useI18n } from '../i18n';
+import { useI18n, type Lang } from '../i18n';
 import { isNative, saveNative } from '../platform';
+import { getModalHistory, type ModalHandle } from './modalHistory';
+import { parseLocaleNum, parseLocaleNumInfo } from './numberParse';
+import './css/w1-touch-input-safety.css';
 
-export function parseNum(s: string): number {
-  return parseFloat(s.replace(',', '.').trim());
+// Dialog-Verlauf früh einrichten, damit ein nach dem Neuladen verwaister Dialog-Eintrag sofort bereinigt wird.
+getModalHistory();
+
+/**
+ * Zahl aus einer Benutzereingabe (Standard: deutsche Schreibweise, „1.000,5“ = 1000,5).
+ * Ungültige oder mehrdeutige Eingaben ergeben NaN – siehe parseLocaleNum in numberParse.ts.
+ */
+export function parseNum(s: string, lang: Lang = 'de'): number {
+  return parseLocaleNum(s, lang);
 }
 
-/** Zahleneingabe, akzeptiert Komma und Punkt; übernimmt Wert bei gültiger Eingabe. */
+/**
+ * Zahleneingabe nach Sprache: DE/TR „1.000,5“, EN „1,000.5“; „12,5“ und „12.5“ gehen überall.
+ * Übernimmt den Wert nur bei gültiger Eingabe. Wurden Tausendertrennzeichen oder Leerzeichen entfernt,
+ * zeigt ein Hinweis den verstandenen Wert ohne Gruppierung (z. B. „→ 1000 cm“).
+ */
 export function NumberInput(props: {
   value: number;
   onChange: (v: number) => void;
@@ -20,7 +34,7 @@ export function NumberInput(props: {
   decimals?: number;
   testId?: string;
 }) {
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   const fmt = (v: number) => {
     const d = Math.pow(10, props.decimals ?? 3);
     const s = String(Math.round(v * d) / d);
@@ -32,8 +46,10 @@ export function NumberInput(props: {
     if (!focused.current) setText(fmt(props.value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.value]);
-  const v = parseNum(text);
+  const parsed = parseLocaleNumInfo(text, lang);
+  const v = parsed.value;
   const invalid = !Number.isFinite(v) || (props.min !== undefined && v < props.min) || (props.max !== undefined && v > props.max);
+  const readAs = parsed.regrouped && !invalid ? `${fmt(v)}${props.suffix ? ` ${props.suffix}` : ''}` : null;
   return (
     <span className={`numin ${invalid ? 'invalid' : ''}`}>
       <input
@@ -51,11 +67,16 @@ export function NumberInput(props: {
         }}
         onChange={(e) => {
           setText(e.target.value);
-          const nv = parseNum(e.target.value);
+          const nv = parseLocaleNum(e.target.value, lang);
           if (Number.isFinite(nv) && (props.min === undefined || nv >= props.min) && (props.max === undefined || nv <= props.max)) props.onChange(nv);
         }}
       />
       {props.suffix && <span className="suffix">{props.suffix}</span>}
+      {readAs && (
+        <span className="numin-hint" role="status" title={t('num.readAs', { v: readAs })} data-testid={props.testId ? `${props.testId}-hint` : undefined}>
+          → {readAs}
+        </span>
+      )}
     </span>
   );
 }
@@ -104,19 +125,61 @@ export function Toggle(props: { checked: boolean; onChange: (v: boolean) => void
   );
 }
 
+/**
+ * Dialog. Jeder offene Dialog hat einen eigenen Verlaufseintrag (siehe modalHistory.ts): Zurück-Taste/-Geste
+ * schließt zuerst den obersten Dialog, ✕/Esc/Hintergrund gehen über den Verlauf zurück, programmatisches
+ * Schließen (Speichern, Abbrechen) entfernt den eigenen Eintrag wieder. Esc wirkt nur auf den obersten Dialog.
+ * Der Hintergrund schließt nur, wenn Drücken und Loslassen beide auf dem Hintergrund lagen – ein verirrter
+ * Maus-/Klick-Nachläufer einer Touch-Geste kann den Dialog so nicht schließen.
+ */
 export function Modal(props: { title: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean; footer?: ReactNode }) {
   const { t } = useI18n();
+  const onCloseRef = useRef(props.onClose);
+  onCloseRef.current = props.onClose;
+  const handle = useRef<ModalHandle | null>(null);
+  const downOnBackdrop = useRef(false);
+  const upOnBackdrop = useRef(false);
+  const requestClose = () => {
+    if (handle.current) handle.current.requestClose();
+    else onCloseRef.current();
+  };
   useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === 'Escape' && props.onClose();
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [props]);
+    const h = getModalHistory()?.register(() => onCloseRef.current()) ?? null;
+    handle.current = h;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (h && !h.isTop()) return;
+      if (h) h.requestClose();
+      else onCloseRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      if (handle.current === h) handle.current = null;
+      h?.release();
+    };
+  }, []);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
+    <div
+      className="modal-backdrop"
+      onPointerDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget;
+        upOnBackdrop.current = false;
+      }}
+      onPointerUp={(e) => {
+        upOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        const ok = downOnBackdrop.current && upOnBackdrop.current && e.target === e.currentTarget;
+        downOnBackdrop.current = false;
+        upOnBackdrop.current = false;
+        if (ok) requestClose();
+      }}
+    >
       <div className={`modal ${props.wide ? 'wide' : ''}`} role="dialog" aria-modal="true">
         <div className="modal-head">
           <h3>{props.title}</h3>
-          <button className="icon-btn" onClick={props.onClose} aria-label={t('common.close')}>
+          <button className="icon-btn" onClick={requestClose} aria-label={t('common.close')} data-testid="modal-close">
             ✕
           </button>
         </div>

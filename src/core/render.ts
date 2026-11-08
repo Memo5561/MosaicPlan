@@ -5,11 +5,29 @@
 import { hexToRgb, rgbToHex, textColorFor } from './color';
 import { area, bbox, centroid } from './geometry';
 import { cellStoneMix, footprints, hexToLinear, linearPalette, linToSrgb8 } from './grout';
-import { indexAt, type Layout, type SectionGrid } from './layout';
+import { indexAt, rowLabel, type Layout, type SectionGrid } from './layout';
 import { cellPieces } from './pieces';
+import type { Range } from './stats';
 import { CellKind, type MosaicData, type PaletteColor } from './types';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** Rechteck in Bildschirmpixeln (CSS-px) */
+export interface ScreenRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Vergleich Foto/Mosaik: das bearbeitete Foto links der Trennlinie (siehe compareSplitX). */
+export interface CompareOptions {
+  image: CanvasImageSource;
+  /** 0…1 – Anteil der sichtbaren Mosaikbreite links der Trennlinie */
+  split: number;
+  /** Beschriftung links/rechts der Trennlinie (z. B. „Foto“ / „Mosaik“); render.ts selbst ist sprachneutral */
+  labels?: { left: string; right: string } | null;
+}
 
 export interface View {
   /** Pixel pro Millimeter */
@@ -40,6 +58,239 @@ export interface RenderOptions {
   /** Fortschritts-Overlay zur Übersicht (buildProgressOverlayRGBA), nur mit progressMode gezeichnet */
   overviewProgress?: CanvasImageSource | null;
   background?: string;
+  /**
+   * Zeilen-/Spaltenlineal: oben ein Band mit Spaltennummern (col+1), links eines mit Zeilenbuchstaben (rowLabel) –
+   * dieselben Bezeichnungen wie in den Stein-IDs (cellId) und im PDF. Beschriftet wird jede Zeile/Spalte ab
+   * RULER_MIN_LABEL_PX Abstand, sonst jede 5./10./50. … (rulerLabelStep). Zeile und Spalte von `highlight`
+   * sind hervorgehoben. Die Bänder decken RULER_PX (oben) bzw. rulerLeftPx(rows) (links) der Ansicht ab.
+   */
+  rulers?: boolean;
+  /**
+   * Nur dieser Zellbereich (z. B. ein Abschnitt) ist aktiv: alles außerhalb wird mit einem halbdeckenden
+   * Schleier überdeckt (Steinansicht und Übersicht gleich). Grenze = Fugenmitte um den Bereich.
+   */
+  focusRange?: Range | null;
+  /** Foto/Mosaik-Vergleich: Foto exakt auf der Mosaikfläche (0, 0, finishedW, finishedH) links der Trennlinie */
+  compare?: CompareOptions | null;
+}
+
+// ---------------------------------------------------------------- Lineal (Zeilen/Spalten)
+
+/** Höhe des oberen Lineals und Mindestbreite des linken Lineals (CSS-px) */
+export const RULER_PX = 18;
+/** Ab diesem Abstand (CSS-px) zwischen zwei Beschriftungen wird jede Zeile/Spalte beschriftet */
+export const RULER_MIN_LABEL_PX = 14;
+/** Beschriftungsschritte wie im PDF (pdf.ts labelStep: 1, 5, 10, 50), für große Projekte fortgesetzt */
+export const RULER_STEPS = [1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 50000] as const;
+
+/**
+ * Jede wievielte Zeile/Spalte beschriftet wird: der kleinste Schritt aus RULER_STEPS, bei dem zwei
+ * Beschriftungen mindestens `minSpacingPx` auseinanderliegen. Bei ≥ 14 px Raster also jede, darunter jede
+ * 5., 10., 50. … – dieselbe Schrittfolge wie die Verlegeblätter im PDF, dort aus dem Raster auf Papier.
+ */
+export function rulerLabelStep(pitchPx: number, minSpacingPx: number = RULER_MIN_LABEL_PX): number {
+  if (!(pitchPx > 0)) return RULER_STEPS[RULER_STEPS.length - 1];
+  for (const s of RULER_STEPS) if (pitchPx * s >= minSpacingPx - 1e-9) return s;
+  return RULER_STEPS[RULER_STEPS.length - 1];
+}
+
+/**
+ * Zu beschriftende Indizes im Bereich [i0, i1): immer die erste Zeile/Spalte des Mosaiks (A bzw. 1) und jede
+ * `step`-te wie im PDF ((i + 1) % step === 0 → 5, 10, 15 … bzw. E, J, O …).
+ */
+export function rulerLabelIndices(i0: number, i1: number, step: number): number[] {
+  const out: number[] = [];
+  const a = Math.max(0, Math.floor(i0));
+  const b = Math.floor(i1);
+  if (b <= a) return out;
+  if (a === 0) out.push(0);
+  const s = Math.max(1, Math.floor(step));
+  // erster Index ≥ a mit (i + 1) % s === 0
+  let i = Math.ceil((a + 1) / s) * s - 1;
+  if (i === 0) i += s; // Index 0 ist schon enthalten
+  for (; i < b; i += s) out.push(i);
+  return out;
+}
+
+/** Spaltenbeschriftung im Lineal: Spaltennummer wie in der Stein-ID (ohne führende Nullen, wie im PDF) */
+export function rulerColLabel(col: number): string {
+  return String(col + 1);
+}
+
+/** Zeilenbeschriftung im Lineal: Buchstaben wie in der Stein-ID (A … Z, AA …) */
+export function rulerRowLabel(row: number): string {
+  return rowLabel(row);
+}
+
+/** Breite des linken Lineals: 18 px für bis zu zwei Buchstaben, je weiterem Buchstaben 6 px mehr */
+export function rulerLeftPx(rows: number): number {
+  const len = rowLabel(Math.max(0, rows - 1)).length;
+  return RULER_PX + Math.max(0, len - 2) * 6;
+}
+
+/** Vom Lineal belegte Ränder der Ansicht (oben/links), 0 ohne Lineal */
+export function rulerInsets(layout: Pick<Layout, 'rows'>, rulers: boolean | undefined): { top: number; left: number } {
+  return rulers ? { top: RULER_PX, left: rulerLeftPx(layout.rows) } : { top: 0, left: 0 };
+}
+
+// ---------------------------------------------------------------- Bereichsfokus
+
+/**
+ * Weltrechteck (mm) eines Zellbereichs bis zur Fugenmitte ringsum, am Mosaikrand ohne Außenfuge –
+ * wie die gezeichneten Abschnittsgrenzen. Leerer Bereich → null.
+ */
+export function rangeWorldRect(layout: Layout, rg: Range): { x0: number; y0: number; x1: number; y1: number } | null {
+  const c0 = Math.max(0, Math.min(layout.cols, Math.floor(rg.c0)));
+  const c1 = Math.max(0, Math.min(layout.cols, Math.floor(rg.c1)));
+  const r0 = Math.max(0, Math.min(layout.rows, Math.floor(rg.r0)));
+  const r1 = Math.max(0, Math.min(layout.rows, Math.floor(rg.r1)));
+  if (c1 <= c0 || r1 <= r0) return null;
+  const hj = layout.joint / 2;
+  return {
+    x0: Math.max(0, layout.colX[c0] - hj),
+    y0: Math.max(0, layout.rowY[r0] - hj),
+    x1: Math.min(layout.finishedW, layout.colX[c1 - 1] + layout.colW[c1 - 1] + hj),
+    y1: Math.min(layout.finishedH, layout.rowY[r1 - 1] + layout.rowH[r1 - 1] + hj),
+  };
+}
+
+/**
+ * Bildschirmrechtecke, die die Ansicht außerhalb des Bereichs genau abdecken (oben, unten, links, rechts;
+ * ohne Überlappung, leere weggelassen). Zusammen mit dem sichtbaren Teil des Bereichs ergeben sie die
+ * ganze Ansicht. Leerer Bereich → die ganze Ansicht.
+ */
+export function focusOverlayRects(layout: Layout, rg: Range, view: View): ScreenRect[] {
+  const W = view.width;
+  const H = view.height;
+  const wr = rangeWorldRect(layout, rg);
+  if (!wr) return W > 0 && H > 0 ? [{ x: 0, y: 0, w: W, h: H }] : [];
+  const cl = (v: number, max: number) => Math.max(0, Math.min(max, v));
+  const X0 = cl(view.ox + wr.x0 * view.scale, W);
+  const X1 = cl(view.ox + wr.x1 * view.scale, W);
+  const Y0 = cl(view.oy + wr.y0 * view.scale, H);
+  const Y1 = cl(view.oy + wr.y1 * view.scale, H);
+  const out: ScreenRect[] = [];
+  const push = (x: number, y: number, w: number, h: number) => {
+    if (w > 0 && h > 0) out.push({ x, y, w, h });
+  };
+  push(0, 0, W, Y0);
+  push(0, Y1, W, H - Y1);
+  push(0, Y0, X0, Y1 - Y0);
+  push(X1, Y0, W - X1, Y1 - Y0);
+  return out;
+}
+
+/** Schleier außerhalb des fokussierten Bereichs (dunkel wie ein Lichtkegel; anders als Verlegt-Ton und Farbfokus) */
+export const FOCUS_RANGE_FILL = 'rgba(24,32,44,0.58)';
+
+// ---------------------------------------------------------------- Foto/Mosaik-Vergleich
+
+/** Sichtbarer Teil der Mosaikfläche in Bildschirm-x (CSS-px), oder null, wenn nichts davon sichtbar ist */
+export function visibleMosaicSpanX(layout: Pick<Layout, 'finishedW'>, view: View): { x0: number; x1: number } | null {
+  const x0 = Math.max(0, view.ox);
+  const x1 = Math.min(view.width, view.ox + layout.finishedW * view.scale);
+  return x1 > x0 ? { x0, x1 } : null;
+}
+
+/**
+ * Bildschirm-x der Trennlinie: `split` (0…1) des SICHTBAREN Teils der Mosaikbreite. In der Gesamtansicht ist das
+ * der Anteil der Mosaikbreite; hineingezoomt bleibt die Linie so immer im Bild. null = Mosaik nicht sichtbar.
+ */
+export function compareSplitX(layout: Pick<Layout, 'finishedW'>, view: View, split: number): number | null {
+  const s = visibleMosaicSpanX(layout, view);
+  if (!s) return null;
+  const f = Number.isFinite(split) ? Math.max(0, Math.min(1, split)) : 0.5;
+  return s.x0 + f * (s.x1 - s.x0);
+}
+
+/** Umkehrung von compareSplitX: Anteil für eine Bildschirm-x (z. B. beim Ziehen der Trennlinie) */
+export function compareSplitAt(layout: Pick<Layout, 'finishedW'>, view: View, x: number): number | null {
+  const s = visibleMosaicSpanX(layout, view);
+  if (!s) return null;
+  return Math.max(0, Math.min(1, (x - s.x0) / (s.x1 - s.x0)));
+}
+
+/**
+ * Bearbeitetes Foto links der Trennlinie, mit derselben Transformation wie die Steine auf das Weltrechteck
+ * (0, 0, finishedW, finishedH) gelegt. Deckungsgleich, weil die Berechnung das Foto genau auf diesem Rechteck
+ * abtastet (computeMosaic: sx = Bildbreite / finishedW).
+ */
+function drawComparePhoto(ctx: Ctx2D, layout: Layout, view: View, c: CompareOptions): void {
+  const sx = compareSplitX(layout, view, c.split);
+  if (sx === null) return;
+  const X = view.ox;
+  const Y = view.oy;
+  const W = layout.finishedW * view.scale;
+  const H = layout.finishedH * view.scale;
+  const left = Math.max(0, X);
+  if (sx <= left) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, Y, sx - left, H);
+  ctx.clip();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(c.image, X, Y, W, H);
+  ctx.restore();
+}
+
+/** Trennlinie mit Griff und Beschriftung (über allem, auch über dem Lineal) */
+function drawCompareHandle(ctx: Ctx2D, layout: Layout, view: View, c: CompareOptions, top: number): void {
+  const sx = compareSplitX(layout, view, c.split);
+  if (sx === null) return;
+  const x = Math.round(sx) + 0.5;
+  const y0 = Math.max(top, view.oy);
+  const y1 = Math.min(view.height, view.oy + layout.finishedH * view.scale);
+  if (y1 <= y0) return;
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(20,28,40,0.55)';
+  ctx.beginPath();
+  ctx.moveTo(x, y0);
+  ctx.lineTo(x, y1);
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  // Griff in der Mitte des sichtbaren Teils
+  const cy = (y0 + y1) / 2;
+  ctx.beginPath();
+  ctx.arc(x, cy, 13, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(20,28,40,0.7)';
+  ctx.stroke();
+  ctx.fillStyle = '#1d2a3a';
+  ctx.beginPath();
+  ctx.moveTo(x - 9, cy);
+  ctx.lineTo(x - 3, cy - 5);
+  ctx.lineTo(x - 3, cy + 5);
+  ctx.closePath();
+  ctx.moveTo(x + 9, cy);
+  ctx.lineTo(x + 3, cy - 5);
+  ctx.lineTo(x + 3, cy + 5);
+  ctx.closePath();
+  ctx.fill();
+  if (c.labels) {
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    // unten im sichtbaren Teil: oben links stehen die Abschnittsbezeichnungen
+    const ly = y1 - 16;
+    const pill = (text: string, right: boolean) => {
+      const w = ctx.measureText(text).width + 12;
+      const px = right ? x + 6 : x - 6 - w;
+      if (px < 0 || px + w > view.width) return;
+      ctx.fillStyle = 'rgba(20,28,40,0.72)';
+      ctx.fillRect(px, ly - 9, w, 18);
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(text, px + 6, ly + 0.5);
+    };
+    if (c.split > 0.001) pill(c.labels.left, false);
+    if (c.split < 0.999) pill(c.labels.right, true);
+  }
+  ctx.restore();
 }
 
 const glazeCache = new Map<string, CanvasImageSource>();
@@ -183,15 +434,53 @@ const OV_MAGENTA: [number, number, number] = [1, 0, 1];
 export const LAID_TINT: [number, number, number] = [112, 146, 122];
 export const LAID_ALPHA = 0.62;
 const LAID_FILL = `rgba(${LAID_TINT[0]},${LAID_TINT[1]},${LAID_TINT[2]},${LAID_ALPHA})`;
-/** Abblenden nicht hervorgehobener Farben (focusColor): Weiß mit dieser Deckkraft darüber. */
+/**
+ * Abblenden nicht hervorgehobener Farben (focusColor) – ein GRAUER Schleier: der Stein wird zuerst entsättigt
+ * (Canvas-Mischmodus „saturation“ mit Grau = Helligkeit Lum = 0,3·R + 0,59·G + 0,11·B) und dann mit dieser
+ * Deckkraft zu einem neutralen Grau hin überblendet. Abgeblendete Steine sind so farblos und nicht mit dem
+ * grau-grünen Verlegt-Ton (LAID_TINT) zu verwechseln.
+ * Das Grau richtet sich nach der hervorgehobenen Farbe: zu einer dunklen/mittleren Farbe hin Weiß (abgeblendete
+ * Steine werden hellgrau, 199…255), zu einer hellen Farbe hin Dunkelgrau (43…100) – die hervorgehobene Farbe
+ * hebt sich damit immer ab, auch wenn sie selbst fast weiß ist.
+ */
 export const DIM_ALPHA = 0.78;
-const DIM_FILL = `rgba(255,255,255,${DIM_ALPHA})`;
+/** Ziel-Grau des Schleiers bei dunkler/mittlerer bzw. heller hervorgehobener Farbe */
+export const DIM_WASH_LIGHT = 255;
+export const DIM_WASH_DARK = 56;
+/** Helligkeit (Lum, 0…255), ab der die hervorgehobene Farbe als hell gilt (Mitte zwischen beiden Schleierbereichen) */
+export const DIM_LIGHT_FOCUS_LUM = 149;
+
+/** Helligkeit wie im Canvas-Mischmodus „saturation“/„luminosity“ (W3C Compositing: 0,3·R + 0,59·G + 0,11·B) */
+export function blendLum(r: number, g: number, b: number): number {
+  return 0.3 * r + 0.59 * g + 0.11 * b;
+}
+
+/** Ziel-Grau des Abblend-Schleiers für diese hervorgehobene Farbe (siehe DIM_ALPHA) */
+export function dimWashGrey(palette: PaletteColor[], focus: number | null | undefined): number {
+  const p = focus !== null && focus !== undefined ? palette[focus] : undefined;
+  if (!p) return DIM_WASH_LIGHT;
+  try {
+    const [r, g, b] = hexToRgb(p.hex);
+    return blendLum(r, g, b) > DIM_LIGHT_FOCUS_LUM ? DIM_WASH_DARK : DIM_WASH_LIGHT;
+  } catch {
+    return DIM_WASH_LIGHT;
+  }
+}
+
+/** Abgeblendete Farbe (sRGB 0…255) eines Steins: entsättigt, dann zum Grau `wash` hin überblendet */
+export function dimmedRgb(rgb: readonly [number, number, number], wash: number): [number, number, number] {
+  const L = Math.max(0, Math.min(255, blendLum(rgb[0], rgb[1], rgb[2])));
+  const v = L * (1 - DIM_ALPHA) + wash * DIM_ALPHA;
+  return [v, v, v];
+}
 
 /**
- * Palette für die Übersicht bei hervorgehobener Farbe: alle anderen Farben so aufgehellt, wie die
- * Steinansicht sie mit dem weißen Schleier zeigt (Überblendung in sRGB wie im Canvas).
+ * Palette für die Übersicht bei hervorgehobener Farbe: alle anderen Farben so, wie die Steinansicht sie mit dem
+ * grauen Schleier zeigt (Entsättigung + Überblendung in sRGB wie im Canvas). Die Fuge wird – wie in der
+ * Steinansicht – nicht abgeblendet.
  */
 export function dimmedPalette(palette: PaletteColor[], focus: number): PaletteColor[] {
+  const wash = dimWashGrey(palette, focus);
   return palette.map((p, i) => {
     if (i === focus) return p;
     let rgb: [number, number, number];
@@ -200,9 +489,22 @@ export function dimmedPalette(palette: PaletteColor[], focus: number): PaletteCo
     } catch {
       return p;
     }
-    const [r, g, b] = rgb.map((v) => v * (1 - DIM_ALPHA) + 255 * DIM_ALPHA);
+    const [r, g, b] = dimmedRgb(rgb, wash);
     return { ...p, hex: rgbToHex(r, g, b) };
   });
+}
+
+/** Grauen Schleier auf das aktuelle Rechteck/den aktuellen Pfad legen (Steinansicht) */
+function dimShape(ctx: Ctx2D, washFill: string, rect: [number, number, number, number] | null): void {
+  const op = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = 'saturation';
+  ctx.fillStyle = '#808080';
+  if (rect) ctx.fillRect(rect[0], rect[1], rect[2], rect[3]);
+  else ctx.fill();
+  ctx.globalCompositeOperation = op;
+  ctx.fillStyle = washFill;
+  if (rect) ctx.fillRect(rect[0], rect[1], rect[2], rect[3]);
+  else ctx.fill();
 }
 
 /**
@@ -272,7 +574,13 @@ export function visibleRange(layout: Layout, view: View): { r0: number; r1: numb
   };
 }
 
-export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palette: PaletteColor[], view: View, opt: RenderOptions): void {
+/** Rückgabe von renderMosaic: was zusätzlich gezeichnet wurde */
+export interface RenderInfo {
+  /** gezeichnete Linealbeschriftungen (null ohne Lineal) */
+  rulers: RulerPlan | null;
+}
+
+export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palette: PaletteColor[], view: View, opt: RenderOptions): RenderInfo {
   const { scale, ox, oy } = view;
   ctx.save();
   ctx.fillStyle = opt.background ?? '#e9e5de';
@@ -298,6 +606,8 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
     const gl = drawHighlights ? glaze(opt.surface) : null;
     const codeFont = opt.showCodes && pitchPx >= 18;
     const dim = opt.focusColor !== undefined && opt.focusColor !== null;
+    const washGrey = dim ? dimWashGrey(palette, opt.focusColor) : DIM_WASH_LIGHT;
+    const DIM_FILL = `rgba(${washGrey},${washGrey},${washGrey},${DIM_ALPHA})`;
     const checkInk = opt.progressMode ? checkInks(palette) : null;
     for (let row = vr.r0; row < vr.r1; row++) {
       for (let col = vr.c0; col < vr.c1; col++) {
@@ -314,10 +624,7 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
           ctx.fillStyle = vs[Math.floor(hash(idx) * vs.length)];
           ctx.fillRect(x, y, w, h);
           if (gl) ctx.drawImage(gl, x, y, w, h);
-          if (dim && ci !== opt.focusColor) {
-            ctx.fillStyle = DIM_FILL;
-            ctx.fillRect(x, y, w, h);
-          }
+          if (dim && ci !== opt.focusColor) dimShape(ctx, DIM_FILL, [x, y, w, h]);
           if (opt.progressMode && prog & 1) {
             ctx.fillStyle = LAID_FILL;
             ctx.fillRect(x, y, w, h);
@@ -350,10 +657,7 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
               ctx.stroke();
             }
             const b = bbox(p.poly);
-            if (dim && p.color !== opt.focusColor) {
-              ctx.fillStyle = DIM_FILL;
-              ctx.fill();
-            }
+            if (dim && p.color !== opt.focusColor) dimShape(ctx, DIM_FILL, null);
             if (opt.progressMode && (prog >> i) & 1) {
               ctx.fillStyle = LAID_FILL;
               ctx.fill();
@@ -377,6 +681,15 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
       }
     }
   }
+
+  // Bereichsfokus: Schleier außerhalb (Steinansicht und Übersicht)
+  if (opt.focusRange) {
+    ctx.fillStyle = FOCUS_RANGE_FILL;
+    for (const r of focusOverlayRects(layout, opt.focusRange, view)) ctx.fillRect(r.x, r.y, r.w, r.h);
+  }
+
+  // Foto/Mosaik-Vergleich: Foto links der Trennlinie
+  if (opt.compare) drawComparePhoto(ctx, layout, view, opt.compare);
 
   // Abschnittsgrenzen
   if (opt.sections) {
@@ -429,7 +742,202 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
       }
     }
   }
+
+  const rulers = opt.rulers ? drawRulers(ctx, layout, view, opt.highlight ?? null, opt.focusRange ?? null) : null;
+  if (opt.compare) drawCompareHandle(ctx, layout, view, opt.compare, opt.rulers ? RULER_PX : 0);
   ctx.restore();
+  return { rulers };
+}
+
+const RULER_BAND = 'rgba(250,248,244,0.95)';
+const RULER_EDGE = 'rgba(29,42,58,0.28)';
+const RULER_INK = '#1d2a3a';
+const RULER_TICK = 'rgba(29,42,58,0.45)';
+const RULER_TICK_MINOR = 'rgba(29,42,58,0.2)';
+const RULER_HL = '#b6452b';
+const RULER_FOCUS = 'rgba(182,69,43,0.16)';
+
+/** Schrift so verkleinern, dass `text` in `maxW` passt (mind. 6 px) */
+function fitFont(ctx: Ctx2D, text: string, sizePx: number, maxW: number): number {
+  let fs = sizePx;
+  ctx.font = `600 ${fs}px system-ui, sans-serif`;
+  const w = ctx.measureText(text).width;
+  if (w > maxW && w > 0) {
+    fs = Math.max(6, (sizePx * maxW) / w);
+    ctx.font = `600 ${fs}px system-ui, sans-serif`;
+  }
+  return fs;
+}
+
+/** Eine Linealbeschriftung: Zeilen-/Spaltenindex, Text, Mitte auf dem Bildschirm (x bzw. y in CSS-px) */
+export interface RulerLabel {
+  index: number;
+  label: string;
+  pos: number;
+}
+
+/** Was das Lineal bei dieser Ansicht zeigt (ohne Zeichnen; von drawRulers verwendet und getestet) */
+export interface RulerPlan {
+  top: number;
+  left: number;
+  colStep: number;
+  rowStep: number;
+  cols: RulerLabel[];
+  rows: RulerLabel[];
+}
+
+/**
+ * Linealbeschriftungen für eine Ansicht: sichtbare Zeilen/Spalten (visibleRange), Schritt nach rulerLabelStep
+ * mit dem Raster (Stein + Fuge) als Abstand, Position = Zellmitte (colX + colW/2 bzw. rowY + rowH/2).
+ * `colLabelPx`: Breite der breitesten Spaltennummer, `rowLabelPx`: Schrifthöhe der Zeilenbuchstaben – größere
+ * Beschriftungen bekommen entsprechend mehr Abstand. Beschriftungen unter dem jeweils anderen Band entfallen.
+ */
+export function rulerPlan(layout: Layout, view: View, colLabelPx = 12, rowLabelPx = 10): RulerPlan {
+  const top = RULER_PX;
+  const left = rulerLeftPx(layout.rows);
+  const { scale, ox, oy } = view;
+  const vr = visibleRange(layout, view);
+  const colStep = rulerLabelStep((layout.tileW + layout.joint) * scale, Math.max(RULER_MIN_LABEL_PX, colLabelPx + 4));
+  const rowStep = rulerLabelStep((layout.tileH + layout.joint) * scale, Math.max(RULER_MIN_LABEL_PX, rowLabelPx + 4));
+  const cols: RulerLabel[] = [];
+  for (const c of rulerLabelIndices(vr.c0, vr.c1, colStep)) {
+    const x = ox + (layout.colX[c] + layout.colW[c] / 2) * scale;
+    if (x < left || x > view.width) continue;
+    cols.push({ index: c, label: rulerColLabel(c), pos: x });
+  }
+  const rows: RulerLabel[] = [];
+  for (const r of rulerLabelIndices(vr.r0, vr.r1, rowStep)) {
+    const y = oy + (layout.rowY[r] + layout.rowH[r] / 2) * scale;
+    if (y < top || y > view.height) continue;
+    rows.push({ index: r, label: rulerRowLabel(r), pos: y });
+  }
+  return { top, left, colStep, rowStep, cols, rows };
+}
+
+/**
+ * Zeilen-/Spaltenlineal (siehe RenderOptions.rulers). Beschriftungen stehen in der Mitte ihrer Zelle
+ * (colX + colW/2 bzw. rowY + rowH/2) und lauten genau wie die Teile der Stein-ID. Gibt die gezeichneten
+ * Beschriftungen zurück (für Tests und Barrierefreiheit).
+ */
+function drawRulers(ctx: Ctx2D, layout: Layout, view: View, hl: { row: number; col: number } | null, focus: Range | null): RulerPlan | null {
+  const { scale, ox, oy } = view;
+  const W = view.width;
+  const H = view.height;
+  const top = RULER_PX;
+  const left = rulerLeftPx(layout.rows);
+  if (W <= left || H <= top) return null;
+  ctx.save();
+  // Bänder
+  ctx.fillStyle = RULER_BAND;
+  ctx.fillRect(0, 0, W, top);
+  ctx.fillRect(0, top, left, H - top);
+  ctx.fillStyle = RULER_EDGE;
+  ctx.fillRect(0, top - 1, W, 1);
+  ctx.fillRect(left - 1, top, 1, H - top);
+  // fokussierter Bereich: seine Spalten und Zeilen im Lineal hinterlegt
+  const fr = focus ? rangeWorldRect(layout, focus) : null;
+  if (fr) {
+    ctx.fillStyle = RULER_FOCUS;
+    const fx0 = Math.max(left, ox + fr.x0 * scale);
+    const fx1 = Math.min(W, ox + fr.x1 * scale);
+    if (fx1 > fx0) ctx.fillRect(fx0, 0, fx1 - fx0, top - 1);
+    const fy0 = Math.max(top, oy + fr.y0 * scale);
+    const fy1 = Math.min(H, oy + fr.y1 * scale);
+    if (fy1 > fy0) ctx.fillRect(0, fy0, left - 1, fy1 - fy0);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const colPitch = (layout.tileW + layout.joint) * scale;
+  const rowPitch = (layout.tileH + layout.joint) * scale;
+  // stark hineingezoomt etwas größere Schrift
+  const colFs = colPitch >= 28 ? 10.5 : 9.5;
+  ctx.font = `600 ${colFs}px system-ui, sans-serif`;
+  const colLabelW = ctx.measureText(rulerColLabel(layout.cols - 1)).width;
+  const rowFs = fitFont(ctx, rulerRowLabel(layout.rows - 1), rowPitch >= 28 ? 10.5 : 9.5, left - 4);
+  const plan = rulerPlan(layout, view, colLabelW, rowFs);
+  const hlCol = hl && hl.col >= 0 && hl.col < layout.cols ? hl.col : -1;
+  const hlRow = hl && hl.row >= 0 && hl.row < layout.rows ? hl.row : -1;
+
+  // ---- Spalten (oben)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, 0, W - left, top);
+  ctx.clip();
+  ctx.font = `600 ${colFs}px system-ui, sans-serif`;
+  const colCenter = (c: number) => ox + (layout.colX[c] + layout.colW[c] / 2) * scale;
+  let hlColBox: [number, number] | null = null;
+  if (hlCol >= 0) {
+    const x0 = ox + layout.colX[hlCol] * scale;
+    const x1 = ox + (layout.colX[hlCol] + layout.colW[hlCol]) * scale;
+    const tw = ctx.measureText(rulerColLabel(hlCol)).width + 6;
+    const cx = (x0 + x1) / 2;
+    const bw = Math.max(x1 - x0, tw);
+    hlColBox = [cx - bw / 2 - 2, cx + bw / 2 + 2];
+  }
+  if (colPitch >= 4) {
+    const vr = visibleRange(layout, view);
+    ctx.fillStyle = RULER_TICK_MINOR;
+    for (let c = vr.c0; c < vr.c1; c++) ctx.fillRect(Math.round(colCenter(c)) - 0.5, top - 3, 1, 2);
+  }
+  const cols = plan.cols.filter((l) => !(hlColBox && l.pos + colLabelW / 2 > hlColBox[0] && l.pos - colLabelW / 2 < hlColBox[1]));
+  for (const l of cols) {
+    ctx.fillStyle = RULER_TICK;
+    ctx.fillRect(Math.round(l.pos) - 0.5, top - 5, 1, 4);
+    ctx.fillStyle = RULER_INK;
+    ctx.fillText(l.label, l.pos, 8);
+  }
+  if (hlCol >= 0 && hlColBox) {
+    ctx.fillStyle = RULER_HL;
+    ctx.fillRect(hlColBox[0], 0, hlColBox[1] - hlColBox[0], top - 1);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(rulerColLabel(hlCol), (hlColBox[0] + hlColBox[1]) / 2, 8.5);
+  }
+  ctx.restore();
+
+  // ---- Zeilen (links)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, top, left, H - top);
+  ctx.clip();
+  ctx.font = `600 ${rowFs}px system-ui, sans-serif`;
+  const rowCenter = (r: number) => oy + (layout.rowY[r] + layout.rowH[r] / 2) * scale;
+  let hlRowBox: [number, number] | null = null;
+  if (hlRow >= 0) {
+    const y0 = oy + layout.rowY[hlRow] * scale;
+    const y1 = oy + (layout.rowY[hlRow] + layout.rowH[hlRow]) * scale;
+    const cy = (y0 + y1) / 2;
+    const bh = Math.max(y1 - y0, rowFs + 6);
+    hlRowBox = [cy - bh / 2 - 2, cy + bh / 2 + 2];
+  }
+  if (rowPitch >= 4) {
+    const vr = visibleRange(layout, view);
+    ctx.fillStyle = RULER_TICK_MINOR;
+    for (let r = vr.r0; r < vr.r1; r++) ctx.fillRect(left - 3, Math.round(rowCenter(r)) - 0.5, 2, 1);
+  }
+  const rows = plan.rows.filter((l) => !(hlRowBox && l.pos + rowFs / 2 > hlRowBox[0] && l.pos - rowFs / 2 < hlRowBox[1]));
+  for (const l of rows) {
+    ctx.fillStyle = RULER_TICK;
+    ctx.fillRect(left - 5, Math.round(l.pos) - 0.5, 4, 1);
+    ctx.fillStyle = RULER_INK;
+    ctx.fillText(l.label, (left - 4) / 2, l.pos + 0.5);
+  }
+  if (hlRow >= 0 && hlRowBox) {
+    ctx.fillStyle = RULER_HL;
+    ctx.fillRect(0, hlRowBox[0], left - 1, hlRowBox[1] - hlRowBox[0]);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(rulerRowLabel(hlRow), (left - 1) / 2, (hlRowBox[0] + hlRowBox[1]) / 2 + 0.5);
+  }
+  ctx.restore();
+
+  // Ecke
+  ctx.fillStyle = RULER_BAND;
+  ctx.fillRect(0, 0, left, top);
+  ctx.fillStyle = RULER_EDGE;
+  ctx.fillRect(0, top - 1, left, 1);
+  ctx.fillRect(left - 1, 0, 1, top);
+  ctx.restore();
+  return { ...plan, cols, rows };
 }
 
 function drawCode(ctx: Ctx2D, p: PaletteColor | undefined, x: number, y: number, size: number) {

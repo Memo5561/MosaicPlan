@@ -1,0 +1,54 @@
+/* Schnittvorlage, Einschnitte und Formknöpfe im Steindetail (w1-cut-correctness) */
+.cut-template {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+.cut-difficult .badge {
+  white-space: normal;
+  line-height: 1.35;
+}
+.cut-list li.cut-notch {
+  color: #9a4a00;
+}
+.cut-list li.cut-notch::marker {
+  color: #ef6c00;
+}
+.cut-list li.cut-invalid {
+  color: var(--err);
+  font-weight: 600;
+}
+.stone-width-note {
+  margin-top: 6px;
+}
+.stone-width-note .badge {
+  white-space: normal;
+  line-height: 1.35;
+}
+.kind-reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.kind-reasons b {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.btn.small:disabled.primary {
+  opacity: 0.6;
+}
+/* Hinweise im Schritt Steinformen */
+.shape-note {
+  margin: 2px 0 12px;
+}
+.shape-note .badge {
+  white-space: normal;
+  line-height: 1.35;
+}
+.cut-raw-caption {
+  font-size: 0.78rem;
+  margin-top: -2px;
+}

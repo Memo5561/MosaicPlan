@@ -1,32 +1,64 @@
 import { useMemo, useState } from 'react';
 import { deltaE2000 } from '../../core/color';
-import { bbox, centroid, type Pt } from '../../core/geometry';
+import { bbox, centroid, minCaliperWidth, type Pt } from '../../core/geometry';
 import { cellId, sectionOfCell, type Layout, type SectionGrid } from '../../core/layout';
-import { analyzeCut, cellPieces, cellRect, type CutInfo } from '../../core/pieces';
-import { neighbors, setCellKind, setFreePieces, setPieceColor, togglePiecePlaced, setCellPlaced, validateFreePieces } from '../../core/edits';
+import { analyzeCut, cellPieces, cellRect, pieceCuttable, type CutInfo } from '../../core/pieces';
+import {
+  allowedCellKinds,
+  checkCellKind,
+  neighbors,
+  sameCellKind,
+  setCellKind,
+  setFreePieces,
+  setPieceColor,
+  togglePiecePlaced,
+  setCellPlaced,
+  validateFreePieces,
+  type KindChange,
+} from '../../core/edits';
 import { makeRawSizeFn } from '../../core/stats';
 import { CellKind, Rec, type FreePiece, type Material, type MosaicData, type PaletteColor } from '../../core/types';
 import { useI18n, type TFunc } from '../../i18n';
 import { Badge, Modal, NumberInput, Swatch } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
+import '../css/w1-cut-correctness.css';
 
-export function cutInstruction(info: CutInfo, t: TFunc, n: (v: number, d?: number) => string): string[] {
-  if (!info.fits) return [t('cut.notFit', { w: n(info.w, 1), h: n(info.h, 1), rw: n(info.rawW, 1), rh: n(info.rawH, 1) })];
-  if (!info.needsCut) return [t('cut.none', { w: n(info.w, 1), h: n(info.h, 1) })];
-  const out: string[] = [];
+export interface CutInstructionItem {
+  text: string;
+  kind: 'info' | 'through' | 'notch' | 'invalid';
+}
+
+/** Schnittanweisung als Zeilen. Alle Maße stammen aus analyzeCut (exakte Polygon-Geometrie). */
+export function cutInstructionItems(info: CutInfo, t: TFunc, n: (v: number, d?: number) => string): CutInstructionItem[] {
+  if (info.invalid) return [{ text: t('cut.invalid'), kind: 'invalid' }];
+  if (!info.fits) return [{ text: t('cut.notFit', { w: n(info.w, 1), h: n(info.h, 1), rw: n(info.rawW, 1), rh: n(info.rawH, 1) }), kind: 'info' }];
+  if (!info.needsCut) return [{ text: t('cut.none', { w: n(info.w, 1), h: n(info.h, 1) }), kind: 'info' }];
+  const out: CutInstructionItem[] = [];
+  const info1 = (text: string) => out.push({ text, kind: 'info' });
   if (info.shape === 'rectangle' || info.shape === 'square') {
     if (info.polyInRaw.length === 4 && info.cutLines.every(([a, b]) => Math.abs(a.x - b.x) < 1e-6 || Math.abs(a.y - b.y) < 1e-6))
-      out.push(t('cut.rect', { w: n(info.w, 1), h: n(info.h, 1) }));
+      info1(t('cut.rect', { w: n(info.w, 1), h: n(info.h, 1) }));
   } else if (info.shape === 'triangle') {
     const e = [...info.edges].sort((a, b) => a - b);
-    out.push(t('cut.triangle', { a: n(e[0], 1), b: n(e[1], 1), c: n(e[2], 1) }));
+    info1(t('cut.triangle', { a: n(e[0], 1), b: n(e[1], 1), c: n(e[2], 1) }));
   } else {
-    out.push(t('cut.polygon', { k: info.polyInRaw.length }));
+    info1(t('cut.polygon', { k: info.polyInRaw.length }));
   }
-  info.cutLines.forEach(([a, b], i) => out.push(t('cut.line', { i: i + 1, x1: n(a.x, 1), y1: n(a.y, 1), x2: n(b.x, 1), y2: n(b.y, 1) })));
-  out.push(t('cut.angles', { a: info.angles.map((a) => `${n(a, 1)}°`).join(', ') }));
-  if (!info.convex) out.push(t('cut.nonConvex'));
+  const isVertex = (p: Pt) => info.polyInRaw.some((q) => Math.abs(q.x - p.x) < 1e-6 && Math.abs(q.y - p.y) < 1e-6);
+  let through = 0;
+  let notch = 0;
+  info.cutLines.forEach(([a, b], i) => {
+    const pts = { x1: n(a.x, 1), y1: n(a.y, 1), x2: n(b.x, 1), y2: n(b.y, 1) };
+    if ((info.cutKinds[i] ?? 'through') === 'notch') out.push({ text: t(isVertex(b) ? 'cut.notch' : 'cut.notchEdge', { i: ++notch, ...pts }), kind: 'notch' });
+    else out.push({ text: t('cut.line', { i: ++through, ...pts }), kind: 'through' });
+  });
+  info1(t('cut.angles', { a: info.angles.map((a) => `${n(a, 1)}°`).join(', ') }));
+  if (!info.convex) info1(t('cut.nonConvex'));
   return out;
+}
+
+export function cutInstruction(info: CutInfo, t: TFunc, n: (v: number, d?: number) => string): string[] {
+  return cutInstructionItems(info, t, n).map((x) => x.text);
 }
 
 interface Props {
@@ -81,9 +113,30 @@ export function StoneDialog(p: Props) {
   const b = bbox(piece.poly);
   const ctr = centroid(piece.poly);
   const shapeKind = data.kind[idx];
+  const isCutKind = shapeKind === CellKind.DIAG_A || shapeKind === CellKind.DIAG_B || shapeKind === CellKind.LINE || shapeKind === CellKind.SUB || shapeKind === CellKind.FREE;
+  // Gespeicherte Teile, die nach der aktuellen Mindestbreite nicht schneidbar sind (z. B. ältere Berechnung)
+  const belowMin = !info.invalid && isCutKind && !pieceCuttable(piece.poly, p.minPieceMm);
+  const allowed = allowedCellKinds(layout, data, p.row, p.col, p.minPieceMm);
+  const lineChange: KindChange = { kind: CellKind.LINE, angleDeg: lineAngle, offsetMm: lineOffset };
+  const lineErr = checkCellKind(layout, p.row, p.col, lineChange, p.minPieceMm);
+  const reason = (err: string | null) => (err ? t(`edit.err.${err}`) : undefined);
+  const reasons: { label: string; text: string }[] = [];
+  if (allowed.diagA && allowed.diagA === allowed.diagB) reasons.push({ label: t('edit.diag'), text: t(`edit.err.${allowed.diagA}`) });
+  else {
+    if (allowed.diagA) reasons.push({ label: t('edit.diagA'), text: t(`edit.err.${allowed.diagA}`) });
+    if (allowed.diagB) reasons.push({ label: t('edit.diagB'), text: t(`edit.err.${allowed.diagB}`) });
+  }
+  if (allowed.sub2) reasons.push({ label: '2×2', text: t(`edit.err.${allowed.sub2}`) });
+  if (allowed.sub3) reasons.push({ label: '3×3', text: t(`edit.err.${allowed.sub3}`) });
+  if (lineErr) reasons.push({ label: `${t('edit.lineCut')} ${n(lineAngle, 1)}° / ${n(lineOffset, 1)} mm`, text: t(`edit.err.${lineErr}`) });
 
-  const setKind = (kind: number, extra: { k?: 2 | 3; angleDeg?: number; offsetMm?: number } = {}) => {
-    const err = setCellKind(layout, data, p.row, p.col, { kind: kind as 0, ...extra }, p.minPieceMm);
+  const setKind = (ch: KindChange) => {
+    // Unveränderte Form: nichts tun (Verlegestatus und gewähltes Teil bleiben erhalten)
+    if (sameCellKind(layout, data, p.row, p.col, ch)) {
+      setMsg(null);
+      return;
+    }
+    const err = setCellKind(layout, data, p.row, p.col, ch, p.minPieceMm);
     if (err) setMsg(t(`edit.err.${err}`));
     else {
       setMsg(null);
@@ -137,6 +190,11 @@ export function StoneDialog(p: Props) {
                 <th>{t('stone.size')}</th>
                 <td data-testid="stone-size">
                   {n(info.w, 2)} × {n(info.h, 2)} mm · {t('stone.area')} {n(info.area, 2)} mm²
+                  {!info.invalid && info.needsCut && info.convex && (
+                    <small className="muted block" data-testid="stone-min-width">
+                      {t('stone.minWidth', { w: n(minCaliperWidth(piece.poly), 2) })}
+                    </small>
+                  )}
                 </td>
               </tr>
               <tr>
@@ -183,16 +241,25 @@ export function StoneDialog(p: Props) {
           </table>
 
           <h4>{t('stone.cut')}</h4>
-          {info.needsCut ? (
+          {info.invalid ? (
+            <Badge kind="error">{t('stone.invalid')}</Badge>
+          ) : info.needsCut ? (
             <Badge kind="ok">{t('stone.computedTemplate')}</Badge>
           ) : (
             <Badge kind="info">{t('stone.noCut')}</Badge>
           )}
           <ul className="cut-list" data-testid="cut-instructions">
-            {cutInstruction(info, t, n).map((l, i) => (
-              <li key={i}>{l}</li>
+            {cutInstructionItems(info, t, n).map((l, i) => (
+              <li key={i} className={`cut-${l.kind}`}>
+                {l.text}
+              </li>
             ))}
           </ul>
+          {belowMin && (
+            <div className="stone-width-note" data-testid="stone-below-min">
+              <Badge kind="warn">{t('stone.belowMin', { min: n(p.minPieceMm, 1) })}</Badge>
+            </div>
+          )}
           {rec !== 0 && (
             <div className="recommend">
               <Badge kind="warn">{t('stone.recommendation')}</Badge>
@@ -253,23 +320,47 @@ export function StoneDialog(p: Props) {
           </div>
 
           <h4>{t('edit.shape')}</h4>
-          <div className="btn-row wrap">
-            <button className={`btn small ${shapeKind === CellKind.FULL ? 'primary' : ''}`} onClick={() => setKind(CellKind.FULL)}>
+          <div className="btn-row wrap" data-testid="shape-buttons">
+            <button className={`btn small ${shapeKind === CellKind.FULL ? 'primary' : ''}`} onClick={() => setKind({ kind: CellKind.FULL })} data-testid="kind-full">
               {t('edit.full')}
             </button>
-            <button className={`btn small ${shapeKind === CellKind.DIAG_A ? 'primary' : ''}`} onClick={() => setKind(CellKind.DIAG_A)}>
+            <button
+              className={`btn small ${shapeKind === CellKind.DIAG_A ? 'primary' : ''}`}
+              disabled={!!allowed.diagA}
+              title={reason(allowed.diagA)}
+              onClick={() => setKind({ kind: CellKind.DIAG_A })}
+              data-testid="kind-diagA"
+            >
               {t('edit.diagA')}
             </button>
-            <button className={`btn small ${shapeKind === CellKind.DIAG_B ? 'primary' : ''}`} onClick={() => setKind(CellKind.DIAG_B)}>
+            <button
+              className={`btn small ${shapeKind === CellKind.DIAG_B ? 'primary' : ''}`}
+              disabled={!!allowed.diagB}
+              title={reason(allowed.diagB)}
+              onClick={() => setKind({ kind: CellKind.DIAG_B })}
+              data-testid="kind-diagB"
+            >
               {t('edit.diagB')}
             </button>
-            <button className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 4 ? 'primary' : ''}`} onClick={() => setKind(CellKind.SUB, { k: 2 })}>
+            <button
+              className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 4 ? 'primary' : ''}`}
+              disabled={!!allowed.sub2}
+              title={reason(allowed.sub2)}
+              onClick={() => setKind({ kind: CellKind.SUB, k: 2 })}
+              data-testid="kind-sub2"
+            >
               2×2
             </button>
-            <button className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 9 ? 'primary' : ''}`} onClick={() => setKind(CellKind.SUB, { k: 3 })}>
+            <button
+              className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 9 ? 'primary' : ''}`}
+              disabled={!!allowed.sub3}
+              title={reason(allowed.sub3)}
+              onClick={() => setKind({ kind: CellKind.SUB, k: 3 })}
+              data-testid="kind-sub3"
+            >
               3×3
             </button>
-            <button className={`btn small ${shapeKind === CellKind.FREE ? 'primary' : ''}`} onClick={() => setFreeOpen(true)}>
+            <button className={`btn small ${shapeKind === CellKind.FREE ? 'primary' : ''}`} onClick={() => setFreeOpen(true)} data-testid="kind-free">
               {t('edit.free')}
             </button>
           </div>
@@ -277,11 +368,26 @@ export function StoneDialog(p: Props) {
             <span className="small">{t('edit.lineCut')}:</span>
             <NumberInput value={lineAngle} onChange={setLineAngle} min={0} max={180} suffix="°" width={56} label={t('edit.angle')} />
             <NumberInput value={lineOffset} onChange={setLineOffset} min={-20} max={20} suffix="mm" width={56} label={t('edit.offset')} />
-            <button className={`btn small ${shapeKind === CellKind.LINE ? 'primary' : ''}`} onClick={() => setKind(CellKind.LINE, { angleDeg: lineAngle, offsetMm: lineOffset })}>
+            <button
+              className={`btn small ${shapeKind === CellKind.LINE ? 'primary' : ''}`}
+              disabled={!!lineErr}
+              title={reason(lineErr)}
+              onClick={() => setKind(lineChange)}
+              data-testid="kind-line"
+            >
               {t('common.apply')}
             </button>
           </div>
           <small className="muted block">{t('edit.lineHint')}</small>
+          {reasons.length > 0 && (
+            <ul className="kind-reasons" data-testid="kind-reasons" aria-label={t('edit.notPossible')}>
+              {reasons.map((r) => (
+                <li key={r.label}>
+                  <b>{r.label}</b> – {t('edit.notPossible')} {r.text}
+                </li>
+              ))}
+            </ul>
+          )}
           {msg && <p className="error">{msg}</p>}
         </div>
       </div>

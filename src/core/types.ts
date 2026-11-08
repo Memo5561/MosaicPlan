@@ -75,7 +75,7 @@ export interface ShapeOptions {
   autoDetail: boolean;
   /** Hauttöne schützen/bevorzugen */
   skinProtect: boolean;
-  /** kleinstes zulässiges Schnittteil in mm */
+  /** Mindestbreite: schmalste Stelle eines geschnittenen Teils (Dreieck, Kantenschnitt, Teilstein) in mm */
   minPieceMm: number;
 }
 
@@ -170,7 +170,7 @@ export const DEFAULT_SHAPES: ShapeOptions = {
   detailLevel: 0.5,
   autoDetail: true,
   skinProtect: true,
-  minPieceMm: 1.5,
+  minPieceMm: 2,
 };
 
 export const DEFAULT_ADJUST: ImageAdjust = {

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { diagA, diagB, pieceCuttable, subdivisionCuttable } from '../../core/pieces';
 import type { Region } from '../../core/types';
 import { useI18n } from '../../i18n';
 import { Badge, Field, NumberInput, Segmented, Slider, Toggle } from '../components';
 import { detectFaces, renderCropped } from './imagePrep';
 import type { ProjectApi } from './useProject';
 import { uid } from '../../storage/db';
+import '../css/w1-cut-correctness.css';
 
 export function StepShapes({ api }: { api: ProjectApi }) {
   const { t, n } = useI18n();
@@ -14,11 +16,20 @@ export function StepShapes({ api }: { api: ProjectApi }) {
   const k = sh.subdivK;
   const subSize = (s.tileW - (k - 1) * s.joint) / k;
   const subSizeH = (s.tileH - (k - 1) * s.joint) / k;
+  // Dieselbe Prüfung wie in der Berechnung (pieceCuttable auf den exakten Teilen eines ganzen Rastersteins)
+  const tile = { x: 0, y: 0, w: s.tileW, h: s.tileH };
+  const subOk = subdivisionCuttable(tile, k, s.joint, sh.minPieceMm);
+  const diagOk = [...diagA(tile, s.joint), ...diagB(tile, s.joint)].every((p) => pieceCuttable(p, sh.minPieceMm));
   return (
     <div className="two-col">
       <div>
         <p className="muted small">{t('shapes.intro')}</p>
         <Toggle checked={sh.diagonal} onChange={(v) => set({ diagonal: v })} label={t('shapes.diagonal')} hint={t('shapes.diagonalHint')} />
+        {sh.diagonal && !diagOk && (
+          <div className="shape-note" data-testid="diag-too-small">
+            <Badge kind="warn">{t('shapes.diagTooSmall', { w: n(s.tileW, 1), h: n(s.tileH, 1), g: n(s.joint, 1), min: n(sh.minPieceMm, 1) })}</Badge>
+          </div>
+        )}
         <Toggle checked={sh.line} onChange={(v) => set({ line: v })} label={t('shapes.line')} hint={t('shapes.lineHint')} />
         <Toggle checked={sh.subdivide} onChange={(v) => set({ subdivide: v })} label={t('shapes.subdivide')} hint={t('shapes.subdivideHint')} />
         {sh.subdivide && (
@@ -26,11 +37,15 @@ export function StepShapes({ api }: { api: ProjectApi }) {
             <Segmented value={sh.subdivK} options={[{ value: 2, label: '2 × 2' }, { value: 3, label: '3 × 3' }]} onChange={(v) => set({ subdivK: v })} />
           </Field>
         )}
-        {sh.subdivide && Math.min(subSize, subSizeH) < sh.minPieceMm && <Badge kind="warn">{t('shapes.subTooSmall')}</Badge>}
+        {sh.subdivide && !subOk && (
+          <div className="shape-note" data-testid="sub-too-small">
+            <Badge kind="warn">{t('shapes.subTooSmallW', { w: n(Math.max(0, subSize), 2), h: n(Math.max(0, subSizeH), 2), min: n(sh.minPieceMm, 1) })}</Badge>
+          </div>
+        )}
         <Slider label={t('shapes.detail')} value={Math.round(sh.detailLevel * 100)} min={0} max={100} onChange={(v) => set({ detailLevel: v / 100 })} format={(v) => `${v} %`} />
         <Toggle checked={sh.autoDetail} onChange={(v) => set({ autoDetail: v })} label={t('shapes.autoDetail')} hint={t('shapes.autoDetailHint')} />
         <Toggle checked={sh.skinProtect} onChange={(v) => set({ skinProtect: v })} label={t('shapes.skin')} hint={t('shapes.skinHint')} />
-        <Field label={t('shapes.minPiece')}>
+        <Field label={t('shapes.minPiece')} hint={t('shapes.minPieceHint')}>
           <NumberInput value={sh.minPieceMm} onChange={(v) => set({ minPieceMm: v })} min={0.5} max={10} suffix="mm" />
         </Field>
         <div className="note">

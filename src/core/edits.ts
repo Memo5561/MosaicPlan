@@ -5,7 +5,7 @@ import { hexToLab, describeColor, NearestColorMatcher, type ColorNameLang } from
 import { area, cleanPoly, isSimple, polygonsOverlap, type Pt } from './geometry';
 import type { Layout } from './layout';
 import type { Range } from './stats';
-import { cellPieceCount, cellPieces, cellRect, lineSplit, pieceCuttable } from './pieces';
+import { cellPieceCount, cellPieces, cellRect, diagA, diagB, isDegeneratePiece, lineSplit, pieceCuttable, subdivisionCuttable } from './pieces';
 import { CellKind, type CellKindValue, type FreePiece, type MosaicData, type PaletteColor } from './types';
 
 export function setPieceColor(data: MosaicData, idx: number, piece: number, color: number): void {
@@ -31,42 +31,118 @@ export interface KindChange {
   offsetMm?: number;
 }
 
-/** Ändert die Zellart; Farben werden sinnvoll übernommen. Liefert Fehlermeldung oder null. */
-export function setCellKind(layout: Layout, data: MosaicData, row: number, col: number, ch: KindChange, minPieceMm: number): string | null {
-  const idx = row * layout.cols + col;
-  const before = cellPieces(layout, data, row, col);
-  const colA = before[0]?.color ?? data.c1[idx];
-  const colB = before[1]?.color ?? colA;
+/**
+ * Fehlercodes von checkCellKind/setCellKind (Übersetzung unter `edit.err.<code>`):
+ * - line-outside: die Schnittlinie trifft den Stein nicht (ein Teil wäre leer)
+ * - diag-empty: die Fuge ist breiter als der Stein, ein Dreieck wäre leer
+ * - too-small: ein Teil wäre schmaler als die Mindestbreite eines Schnittteils
+ * - use-setFreePieces: Freiform nur über setFreePieces
+ */
+export type CellKindError = 'line-outside' | 'diag-empty' | 'too-small' | 'use-setFreePieces';
+
+/** Parameter eines Kantenschnitts so, wie sie gespeichert werden (Float32), damit Prüfung = gespeicherte Geometrie. */
+function lineParams(ch: KindChange): [number, number, number] {
+  const a = ((ch.angleDeg ?? 0) * Math.PI) / 180;
+  return [Math.fround(Math.cos(a)), Math.fround(Math.sin(a)), Math.fround(ch.offsetMm ?? 0)];
+}
+
+/**
+ * Prüft eine Formänderung, ohne etwas zu verändern. Es gelten dieselben Regeln wie in der
+ * automatischen Berechnung (pieceCuttable auf den exakten Teilpolygonen).
+ */
+export function checkCellKind(layout: Layout, row: number, col: number, ch: KindChange, minPieceMm: number): CellKindError | null {
   const r = cellRect(layout, row, col);
   switch (ch.kind) {
     case CellKind.FULL:
-      break;
+      return null;
     case CellKind.DIAG_A:
-    case CellKind.DIAG_B:
-      break;
+    case CellKind.DIAG_B: {
+      const [p, q] = (ch.kind === CellKind.DIAG_A ? diagA : diagB)(r, layout.joint);
+      if (cleanPoly(p).length < 3 || cleanPoly(q).length < 3) return 'diag-empty';
+      if (!pieceCuttable(p, minPieceMm) || !pieceCuttable(q, minPieceMm)) return 'too-small';
+      return null;
+    }
     case CellKind.LINE: {
-      const a = ((ch.angleDeg ?? 0) * Math.PI) / 180;
-      const nx = Math.cos(a);
-      const ny = Math.sin(a);
-      const d = ch.offsetMm ?? 0;
+      const [nx, ny, d] = lineParams(ch);
       const [p, q] = lineSplit(r, nx, ny, d, layout.joint);
       if (p.length < 3 || q.length < 3) return 'line-outside';
       if (!pieceCuttable(p, minPieceMm) || !pieceCuttable(q, minPieceMm)) return 'too-small';
-      data.line.set(idx, new Float32Array([nx, ny, d]));
-      break;
+      return null;
     }
-    case CellKind.SUB: {
-      const k = ch.k ?? 2;
-      const sw = (r.w - (k - 1) * layout.joint) / k;
-      const sh = (r.h - (k - 1) * layout.joint) / k;
-      if (Math.min(sw, sh) < minPieceMm) return 'too-small';
-      const arr = new Uint16Array(k * k);
-      for (let i = 0; i < arr.length; i++) arr[i] = before[i]?.color ?? colA;
-      data.sub.set(idx, arr);
-      break;
-    }
+    case CellKind.SUB:
+      return subdivisionCuttable(r, ch.k ?? 2, layout.joint, minPieceMm) ? null : 'too-small';
     case CellKind.FREE:
       return 'use-setFreePieces';
+  }
+  return null;
+}
+
+/** Entspricht die Zelle bereits genau dieser Zellart mit denselben Parametern? */
+export function sameCellKind(layout: Layout, data: MosaicData, row: number, col: number, ch: KindChange): boolean {
+  const idx = row * layout.cols + col;
+  if (data.kind[idx] !== ch.kind) return false;
+  switch (ch.kind) {
+    case CellKind.FULL:
+    case CellKind.DIAG_A:
+    case CellKind.DIAG_B:
+      return true;
+    case CellKind.SUB: {
+      const s = data.sub.get(idx);
+      return !!s && s.length === (ch.k ?? 2) ** 2;
+    }
+    case CellKind.LINE: {
+      const prm = data.line.get(idx);
+      if (!prm) return false;
+      const [nx, ny, d] = lineParams(ch);
+      return Math.abs(prm[0] - nx) < 1e-6 && Math.abs(prm[1] - ny) < 1e-6 && Math.abs(prm[2] - d) < 1e-6;
+    }
+    default:
+      return false;
+  }
+}
+
+/** Ergebnis von allowedCellKinds: null = möglich, sonst der Fehlercode (Grund). */
+export interface AllowedCellKinds {
+  full: null;
+  diagA: CellKindError | null;
+  diagB: CellKindError | null;
+  sub2: CellKindError | null;
+  sub3: CellKindError | null;
+}
+
+/**
+ * Trockenlauf von setCellKind für die Formknöpfe im Steindetail (gleiche Prüfungen).
+ * Die aktuelle Zellart wird dabei nicht bevorzugt: Ist z. B. eine gespeicherte Diagonale nach
+ * heutiger Regel zu schmal, steht hier der Grund – ein erneuter Klick ändert sie aber nicht.
+ */
+export function allowedCellKinds(layout: Layout, _data: MosaicData, row: number, col: number, minPieceMm: number): AllowedCellKinds {
+  return {
+    full: null,
+    diagA: checkCellKind(layout, row, col, { kind: CellKind.DIAG_A }, minPieceMm),
+    diagB: checkCellKind(layout, row, col, { kind: CellKind.DIAG_B }, minPieceMm),
+    sub2: checkCellKind(layout, row, col, { kind: CellKind.SUB, k: 2 }, minPieceMm),
+    sub3: checkCellKind(layout, row, col, { kind: CellKind.SUB, k: 3 }, minPieceMm),
+  };
+}
+
+/**
+ * Ändert die Zellart; Farben werden sinnvoll übernommen. Liefert Fehlercode oder null.
+ * Ist die Zelle bereits genau so geformt, bleibt alles unverändert – auch der Verlegestatus.
+ */
+export function setCellKind(layout: Layout, data: MosaicData, row: number, col: number, ch: KindChange, minPieceMm: number): CellKindError | null {
+  const idx = row * layout.cols + col;
+  if (sameCellKind(layout, data, row, col, ch)) return null;
+  const err = checkCellKind(layout, row, col, ch, minPieceMm);
+  if (err) return err;
+  const before = cellPieces(layout, data, row, col);
+  const colA = before[0]?.color ?? data.c1[idx];
+  const colB = before[1]?.color ?? colA;
+  if (ch.kind === CellKind.LINE) data.line.set(idx, new Float32Array(lineParams(ch)));
+  if (ch.kind === CellKind.SUB) {
+    const k = ch.k ?? 2;
+    const arr = new Uint16Array(k * k);
+    for (let i = 0; i < arr.length; i++) arr[i] = before[i]?.color ?? colA;
+    data.sub.set(idx, arr);
   }
   if (ch.kind !== CellKind.LINE) data.line.delete(idx);
   if (ch.kind !== CellKind.SUB) data.sub.delete(idx);
@@ -76,6 +152,35 @@ export function setCellKind(layout: Layout, data: MosaicData, row: number, col: 
   data.c2[idx] = colB;
   data.progress[idx] = 0;
   return null;
+}
+
+/**
+ * Repariert Zellen mit leeren Teilen (z. B. aus älteren Projekten, in denen eine Dreiecksteilung
+ * trotz zu breiter Fuge gespeichert wurde): Diagonal-, Kantenschnitt- und Unterteilungszellen, von
+ * denen ein Teil keine Fläche hat (oder deren Parameter fehlen), werden zu ganzen Steinen in der
+ * Farbe des ersten Teils (c1); ihr Verlegestatus wird zurückgesetzt. Zellen, die nur schmaler als die Mindestbreite
+ * sind, bleiben unverändert (die Mindestbreite ist eine Einstellung des Benutzers).
+ * Liefert die Anzahl reparierter Zellen.
+ */
+export function repairDegenerateCells(layout: Layout, data: MosaicData): number {
+  let n = 0;
+  for (let row = 0; row < layout.rows; row++)
+    for (let col = 0; col < layout.cols; col++) {
+      const idx = row * layout.cols + col;
+      const kind = data.kind[idx];
+      if (kind !== CellKind.DIAG_A && kind !== CellKind.DIAG_B && kind !== CellKind.LINE && kind !== CellKind.SUB) continue;
+      const missing = (kind === CellKind.LINE && !data.line.has(idx)) || (kind === CellKind.SUB && !data.sub.has(idx));
+      const ps = cellPieces(layout, data, row, col);
+      if (!missing && !ps.some((p) => isDegeneratePiece(p.poly))) continue;
+      // Farbe des ersten Teils (bei Diagonale/Kantenschnitt = c1, bei Unterteilung = erster Teilstein)
+      if (kind === CellKind.SUB && ps[0]) data.c1[idx] = ps[0].color;
+      data.kind[idx] = CellKind.FULL;
+      data.line.delete(idx);
+      data.sub.delete(idx);
+      data.progress[idx] = 0;
+      n++;
+    }
+  return n;
 }
 
 export interface FreeValidation {

@@ -1,0 +1,184 @@
+/* w2-photo-intake: Foto laden, Zuschnitt mit dem Finger, Foto sicher ersetzen */
+
+/* ---------- Zuschnitt */
+.w2pi-crop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crop-box.w2pi-box:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.crop-box.w2pi-box.w2pi-dragging {
+  border-color: #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 0 0 3px rgba(255, 255, 255, 0.35);
+}
+/* Eckgriffe: transparente Trefferfläche (bis 44 × 44 px) INNERHALB des Rahmens – das overflow:hidden des
+   Halters kann sie nie abschneiden. Sichtbar ist ein 18-px-Punkt in der Ecke. */
+.crop-box .crop-handle.w2pi-handle {
+  position: absolute;
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  touch-action: none;
+  z-index: 1;
+}
+.crop-box .crop-handle.w2pi-handle::after {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  transition: transform 0.1s ease;
+}
+.crop-box .crop-handle.w2pi-handle.active::after,
+.crop-box .crop-handle.w2pi-handle:hover::after {
+  transform: scale(1.18);
+}
+.crop-box .crop-handle.w2pi-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.crop-box .crop-handle.w2pi-nw::after {
+  left: 2px;
+  top: 2px;
+}
+.crop-box .crop-handle.w2pi-ne {
+  right: 0;
+  top: 0;
+  cursor: nesw-resize;
+}
+.crop-box .crop-handle.w2pi-ne::after {
+  right: 2px;
+  top: 2px;
+}
+.crop-box .crop-handle.w2pi-sw {
+  left: 0;
+  bottom: 0;
+  cursor: nesw-resize;
+}
+.crop-box .crop-handle.w2pi-sw::after {
+  left: 2px;
+  bottom: 2px;
+}
+.crop-box .crop-handle.w2pi-se {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+.crop-box .crop-handle.w2pi-se::after {
+  right: 2px;
+  bottom: 2px;
+}
+.w2pi-zoom {
+  margin-top: 4px;
+}
+.w2pi-readout {
+  margin: 0;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Laden, Fehler, Hinweise */
+.w2pi-error {
+  margin: 8px 0;
+  font-weight: 500;
+}
+.w2pi-loading {
+  display: flex;
+  align-items: center;
+  justify-content: inherit;
+  gap: 8px;
+  margin: 8px 0;
+}
+.dropzone .w2pi-loading {
+  justify-content: center;
+}
+.w2pi-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: w2pi-spin 0.8s linear infinite;
+}
+@keyframes w2pi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w2pi-spinner {
+    animation: none;
+  }
+}
+.w2pi-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 8px 8px 8px 12px;
+  background: #f8f6f1;
+  border-left: 3px solid var(--teal);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+.w2pi-tip > span {
+  flex: 1;
+  padding-top: 4px;
+}
+
+/* ---------- Dialog „Anderes Foto verwenden“ */
+.w2pi-replace p {
+  margin: 0 0 6px;
+}
+.w2pi-facts {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+.w2pi-choice {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.w2pi-choice.w2pi-recommended {
+  border-color: var(--teal);
+  background: #f3f8f7;
+}
+.w2pi-choice .btn {
+  width: 100%;
+  justify-content: center;
+  white-space: normal;
+  text-align: center;
+}
+.w2pi-choice p {
+  margin: 6px 0 0;
+}
+.w2pi-keep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 32px;
+}
+.w2pi-keep input {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}

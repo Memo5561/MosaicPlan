@@ -32,7 +32,9 @@ import {
 } from '../../storage/db';
 import { beginCompute, isComputing, onComputeLock } from '../../storage/computeLock';
 import { buildProjectExport, duplicateProject } from '../../storage/projects';
-import { cancelChannel, runWorker } from '../../workers/client';
+import { cancelChannel, runWorker, type Channel } from '../../workers/client';
+import { attachProject, cancelJob, editCount, JobBusyError, jobFor, noteEdit, projectHandler, renameJob, runningJob, startJob, subscribeJobs, anyJob, type JobInfo, type JobProgress } from '../../workers/jobs';
+import type { RawImage, WorkerRequest } from '../../workers/protocol';
 import {
   canvasToJpeg,
   canvasToRaw,
@@ -41,12 +43,14 @@ import {
   loadWorkingBitmap,
   needsFullResolution,
   PhotoSaveError,
+  rawToCanvas,
   renderCropped,
   renderRotated,
   rotatedSize,
   workingSize,
   type WorkingBitmap,
 } from './imagePrep';
+import { estimatePreviewMs, isSlowDevice, isTypingTarget, previewDebounceMs, previewPolicy, type PreviewManualReason } from './previewPolicy';
 import type { Lang } from '../../i18n';
 import { announceNotice } from '../SaveResultNote';
 
@@ -176,7 +180,7 @@ export interface RejectedMosaic {
  * angezeigten Mosaik weitergearbeitet wurde (Steine verlegt, Abschnitt fertig, Steine geändert). Übernehmen
  * würde diese Arbeit verwerfen – das entscheidet der Benutzer (siehe applyPending/discardPending).
  */
-interface PendingCommit {
+export interface PendingCommit {
   fields: ComputeFields;
   pk: { mosaic: StoredMosaicNoProgress; progress: Uint16Array };
   data: MosaicDataWithRev;
@@ -185,6 +189,8 @@ interface PendingCommit {
   lp: LayoutParams;
   /** Projektstand beim Start der Berechnung (Rückfall, falls kein neuerer vorliegt) */
   started: ProjectRecord;
+  /** 'preview': übernommene Live-Vorschau (keine zweite Berechnung), 'compute': Berechnung über „Berechnen“ */
+  origin: 'compute' | 'preview';
 }
 
 /** Was über ein wartendes Ergebnis angezeigt wird. */
@@ -260,6 +266,349 @@ function packWithoutProgress(d: MosaicData, rev: string | undefined): { mosaic: 
   return { mosaic: withRev(rest, rev), progress };
 }
 
+// ---------- Gemeinsamer Rechenweg für Live-Vorschau und Berechnung (Paket w3-live-preview)
+// Vorschau und „Berechnen“ benutzen GENAU diese Schritte: describeComputeInputs → runComputeWith →
+// prepareCommit → persistCommit. Was die Vorschau zeigt, ist deshalb Stein für Stein das, was „Übernehmen“
+// speichert (die Berechnung ist deterministisch, siehe tests/w3-live-preview.test.ts).
+
+/** Umgebung der Berechnung: Arbeitskopie des Fotos, Maße des Originals, Materialien, Sprache. */
+export interface ComputeEnv {
+  /** Arbeitskopie (für die Identität des Bildes; in Tests null) */
+  bitmap: ImageBitmap | null;
+  /** Pixelmaße der Arbeitskopie */
+  bw: number;
+  bh: number;
+  /** Pixelmaße des Originals (nach EXIF-Ausrichtung) */
+  srcW: number;
+  srcH: number;
+  /** Arbeitskopie verkleinert? */
+  reduced: boolean;
+  /** Original-Datei vorhanden (für den vollen Zuschnitt bei verkleinerter Arbeitskopie) */
+  hasOriginal: boolean;
+  materials: readonly Material[];
+  lang: Lang;
+}
+
+type ComputeRequest = Omit<Extract<WorkerRequest, { type: 'compute' }>, 'id' | 'image'>;
+
+/** Vollständig beschriebene Eingaben einer Berechnung (ohne die Bildpunkte selbst). */
+export interface ComputeInputs {
+  ok: true;
+  /** Projektstand, dessen Einstellungen berechnet werden */
+  rec: ProjectRecord;
+  /** computeKey(rec) */
+  key: string;
+  /**
+   * Fingerabdruck ALLER Eingaben des Workers (Anfrage ohne Bild + Zuschnitt, Arbeitsauflösung, volle Auflösung,
+   * Foto-Identität). Gleicher Fingerabdruck + gleiche Arbeitskopie ⇒ gleiches Ergebnis.
+   */
+  sig: string;
+  lang: Lang;
+  layout: Layout;
+  lp: LayoutParams;
+  cells: number;
+  /** tatsächlich verwendeter Zuschnitt (normiert, auf dem gedrehten Original) */
+  crop: { x: number; y: number; w: number; h: number };
+  /** Arbeitsauflösung */
+  ws: { w: number; h: number };
+  /** Original wird für diesen Zuschnitt voll gelesen (verkleinerte Arbeitskopie hat zu wenig Pixel) */
+  full: boolean;
+  request: ComputeRequest;
+  bitmap: ImageBitmap | null;
+}
+export type ComputeInputsResult = ComputeInputs | { ok: false; error: string };
+
+/**
+ * Beschreibt die Eingaben einer Berechnung für den Projektstand `r` (reine Funktion): Raster, Zuschnitt und
+ * Arbeitsauflösung aus den Maßen des ORIGINALS (wie bei voller Dekodierung), feste Palette (mit Farbnummern,
+ * Namensschlüsseln und Bestand), Worker-Anfrage und Fingerabdruck. Fehler: 'layout', 'no-materials', 'no-palette'.
+ */
+export function describeComputeInputs(r: ProjectRecord, env: ComputeEnv): ComputeInputsResult {
+  const s = r.settings;
+  const lp = layoutParamsOf(s);
+  let layout: Layout;
+  try {
+    layout = computeLayout(lp);
+  } catch {
+    return { ok: false, error: 'layout' };
+  }
+  const cells = layout.cols * layout.rows;
+  const { w: rw, h: rh } = rotatedSize(env.srcW, env.srcH, r.adjust);
+  const crop = fitCrop(r.adjust.crop, rw, rh, layout.finishedW / layout.finishedH);
+  const ws = workingSize(cells, layout.finishedW / layout.finishedH, crop.w * rw * crop.h * rh);
+  const { w: bw, h: bh } = rotatedSize(env.bw, env.bh, r.adjust);
+  const full = env.hasOriginal && needsFullResolution(env.reduced, crop, bw, bh, ws);
+  let fixed: FixedColor[] | undefined;
+  try {
+    fixed = buildFixedPalette(s, r.palette, env.materials);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  const request: ComputeRequest = {
+    type: 'compute',
+    adjust: { ...r.adjust, crop: null },
+    regions: r.regions,
+    layoutParams: lp,
+    params: { shapes: s.shapes, paletteMode: s.paletteMode, colorCount: s.colorCount, dither: s.dither, deltaE: s.deltaE, fixedPalette: fixed, regions: r.regions, lang: env.lang },
+  };
+  const key = computeKey(r);
+  const sig = JSON.stringify({ q: request, c: crop, ws, f: full, im: r.imageRev ?? null, sw: env.srcW, sh: env.srcH });
+  return { ok: true, rec: r, key, sig, lang: env.lang, layout, lp, cells, crop, ws, full, request, bitmap: env.bitmap };
+}
+
+/** Ergebnis einer Berechnung (Vorschau oder „Berechnen“), noch nicht gespeichert. */
+export interface ComputeOutput {
+  sig: string;
+  key: string;
+  lang: Lang;
+  ws: { w: number; h: number };
+  full: boolean;
+  layout: Layout;
+  layoutParams: LayoutParams;
+  data: MosaicDataWithRev;
+  palette: PaletteColor[];
+  diagnostics: ComputeDiagnostics;
+  /** Foto nach Bildoptimierung in Arbeitsauflösung (Vergleich Foto/Mosaik) */
+  processed: RawImage;
+  /** Projektstand, dessen Einstellungen berechnet wurden */
+  snapshot: ProjectRecord;
+  cells: number;
+  /** Dauer (ms) inkl. Bildvorbereitung */
+  ms: number;
+  bitmap: ImageBitmap | null;
+}
+
+/** Zwischengespeichertes Arbeitsbild (nur Geometrie bestimmt die Bildpunkte; Farbregler wirken erst im Worker). */
+export interface RawCache {
+  current: { bitmap: ImageBitmap | null; key: string; raw: RawImage } | null;
+}
+
+/** Schlüssel des Arbeitsbilds: Drehung, Spiegeln, Zuschnitt, Arbeitsauflösung, volle Auflösung. */
+export function rawCacheKey(inp: Pick<ComputeInputs, 'rec' | 'crop' | 'ws' | 'full'>): string {
+  const a = inp.rec.adjust;
+  return JSON.stringify({ r: a.rotation, f: a.fineRotate, h: a.flipH, c: inp.crop, ws: inp.ws, full: inp.full });
+}
+
+async function rawFor(inp: ComputeInputs, cache: RawCache, original: Blob | null): Promise<RawImage> {
+  const bmp = inp.bitmap;
+  if (!bmp) throw new Error('no-photo');
+  const ck = rawCacheKey(inp);
+  let raw: RawImage;
+  const hit = cache.current;
+  if (hit && hit.bitmap === bmp && hit.key === ck) raw = hit.raw;
+  else {
+    // Hat die verkleinerte Arbeitskopie im Zuschnitt zu wenig Pixel, wird das Original vorübergehend voll gelesen
+    let fullBmp: ImageBitmap | null = null;
+    if (inp.full && original) {
+      try {
+        fullBmp = await loadBitmap(original);
+      } catch (e) {
+        // z. B. zu wenig Speicher: mit der Arbeitskopie rechnen (gleiche Pixelzahl, etwas weniger Bilddetail)
+        console.warn('Original konnte nicht voll gelesen werden – Berechnung mit der Arbeitskopie', e);
+      }
+    }
+    try {
+      raw = canvasToRaw(renderCropped(fullBmp ?? bmp, inp.rec.adjust, inp.crop, inp.ws.w, inp.ws.h));
+    } finally {
+      fullBmp?.close(); // volle Auflösung nur für diesen einen Zuschnitt im Speicher halten
+    }
+    // Vorschau und Berechnung derselben Geometrie rechnen mit genau diesen Bildpunkten
+    cache.current = { bitmap: bmp, key: ck, raw };
+  }
+  // Kopie für die Übergabe an den Worker (das Original bleibt im Zwischenspeicher)
+  return { width: raw.width, height: raw.height, data: new Uint8ClampedArray(raw.data) };
+}
+
+/** Rechnet die beschriebenen Eingaben im Worker des Kanals (Vorschau: 'preview', Berechnung: 'compute'). */
+export async function runComputeWith(inp: ComputeInputs, channel: Channel, onProgress: (phase: string, fraction: number) => void, cache: RawCache, original: Blob | null): Promise<ComputeOutput> {
+  const t0 = performance.now();
+  const raw = await rawFor(inp, cache, original);
+  const res = await runWorker<'compute'>(channel, { ...inp.request, image: raw }, [raw.data.buffer as ArrayBuffer], onProgress);
+  const data: MosaicDataWithRev = unpackMosaic(res.mosaic);
+  return {
+    sig: inp.sig,
+    key: inp.key,
+    lang: inp.lang,
+    ws: inp.ws,
+    full: inp.full,
+    layout: inp.layout,
+    layoutParams: inp.lp,
+    data,
+    palette: res.palette,
+    diagnostics: res.diagnostics as ComputeDiagnostics,
+    processed: res.processed,
+    snapshot: inp.rec,
+    cells: inp.cells,
+    ms: performance.now() - t0,
+    bitmap: inp.bitmap,
+  };
+}
+
+/**
+ * Ergebnisfelder einer Berechnung (reine Funktion). Schlüssel der tatsächlich berechneten Eingaben
+ * (Momentaufnahme; bei eigener Palette mit der neu nummerierten Ergebnispalette) – nie des neuesten Stands:
+ * Änderungen während der Berechnung erscheinen so korrekt als „Einstellungen geändert“.
+ */
+export function commitFieldsOf(out: Pick<ComputeOutput, 'snapshot' | 'palette' | 'diagnostics'>, o: { thumb?: string; now: number; rev: string }): ComputeFields {
+  const r = out.snapshot;
+  const custom = r.settings.paletteMode === 'custom';
+  const keyRec: ProjectRecord = custom ? { ...r, palette: out.palette } : r;
+  return {
+    palette: out.palette,
+    diagnostics: out.diagnostics,
+    computedWith: computeKey(keyRec),
+    mosaicRev: o.rev,
+    computedImageRev: r.imageRev,
+    thumb: o.thumb,
+    updatedAt: o.now,
+    // Eigene Palette ist eine Eingabe: Änderungen während der Berechnung nicht überschreiben
+    ...(custom ? { customInput: r.palette } : {}),
+  };
+}
+
+/** Bereitet ein Ergebnis zum Speichern vor (Miniatur mit der aktuellen Fugenfarbe, gepacktes Raster mit neuer Revision). */
+export async function prepareCommit(out: ComputeOutput, groutHex: string, origin: PendingCommit['origin']): Promise<PendingCommit> {
+  const thumbCanvas = renderFull(out.layout, out.data, out.palette, 320, { groutHex, realistic: false });
+  const thumb = await canvasToJpeg(thumbCanvas, 0.8);
+  const fields = commitFieldsOf(out, { thumb, now: Date.now(), rev: uid() });
+  return { fields, pk: packWithoutProgress(out.data, fields.mosaicRev), data: out.data, proc: rawToCanvas(out.processed), layout: out.layout, lp: out.layoutParams, started: out.snapshot, origin };
+}
+
+/** Wie ein Auftrag endete. */
+export type JobOutcome = 'committed' | 'held' | 'dropped' | 'deleted' | 'failed';
+
+/**
+ * Die gerade geöffnete Ansicht eines Projekts (useProject), bei jobs.ts angemeldet. Ein Auftrag fragt sie,
+ * ob am angezeigten Mosaik Arbeit auf dem Spiel steht, und übergibt ihr das gespeicherte Ergebnis.
+ */
+interface ProjectHandler {
+  instance: string;
+  latestPalette(): PaletteColor[] | null;
+  groutHex(): string | null;
+  workAtRisk(): boolean;
+  hold(job: PendingCommit): void;
+  applyCommitted(job: PendingCommit, committed: ProjectRecord | null, saveFailure: unknown): void;
+  onError(code: string): void;
+}
+
+/**
+ * Schreibt ein Ergebnis fest (Projekt, Raster, Fortschritt in EINER Transaktion, siehe commitComputed) – auch
+ * wenn keine Ansicht des Projekts mehr offen ist – und übergibt es der angemeldeten Ansicht.
+ * Wirft bei geänderter eigener Palette (PALETTE_CHANGED).
+ */
+async function persistCommit(id: string, job: PendingCommit, fallbackSource: string): Promise<JobOutcome> {
+  const h0 = projectHandler<ProjectHandler>(id);
+  let committed: ProjectRecord | null = null;
+  let saveFailure: unknown = null;
+  try {
+    committed = await commitComputed(id, job.fields, job.pk.mosaic, job.pk.progress, h0?.instance ?? fallbackSource);
+  } catch (e) {
+    if (isDeletedError(e)) {
+      // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
+      projectHandler<ProjectHandler>(id)?.onError('deleted');
+      return 'deleted';
+    }
+    // Eigene Palette wurde anderswo verkürzt/umsortiert: nichts gespeichert, Palette und altes Raster bleiben
+    if (isPaletteChangedError(e)) throw e;
+    saveFailure = e;
+  }
+  const h = projectHandler<ProjectHandler>(id);
+  if (h) {
+    h.applyCommitted(job, committed, saveFailure);
+    return 'committed';
+  }
+  if (saveFailure) {
+    console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
+    return 'failed';
+  }
+  return 'committed';
+}
+
+/**
+ * Schluss eines Auftrags: vorbereiten, prüfen, speichern. Wurde während des Auftrags am angezeigten Mosaik
+ * gearbeitet (verlegt, Abschnitt fertig, Steine geändert), wird das Ergebnis NICHT still übernommen: Es wartet
+ * in der geöffneten Ansicht auf die Entscheidung des Benutzers; ist keine offen, bleibt die Arbeit und das
+ * Ergebnis wird mit Hinweis verworfen.
+ */
+async function finishJob(id: string, out: ComputeOutput, startEdits: number, origin: PendingCommit['origin'], source: string): Promise<JobOutcome> {
+  const job = await prepareCommit(out, projectHandler<ProjectHandler>(id)?.groutHex() ?? out.snapshot.settings.groutHex, origin);
+  const h = projectHandler<ProjectHandler>(id);
+  // Wurde die eigene Palette hier während der Berechnung verkürzt oder umsortiert, passt das Ergebnis nicht mehr
+  const pal = h?.latestPalette();
+  if (pal && !resolveComputedPalette(pal, job.fields)) throw new Error(PALETTE_CHANGED);
+  if (editCount(id) !== startEdits) {
+    if (!h) {
+      console.warn('Berechnung nicht übernommen: während der Berechnung wurde am Mosaik gearbeitet');
+      announceNotice('w2ws.pending.dropped');
+      return 'dropped';
+    }
+    if (h.workAtRisk()) {
+      h.hold(job);
+      return 'held';
+    }
+  }
+  return persistCommit(id, job, source);
+}
+
+/** Zuletzt gemessene Rechendauer (Vorschau oder Berechnung) in dieser Sitzung – Grundlage des Richtwerts */
+let lastMeasured: { ms: number; cells: number } | null = null;
+function noteMeasured(out: Pick<ComputeOutput, 'ms' | 'cells'>) {
+  if (out.ms > 0 && out.cells > 0) lastMeasured = { ms: out.ms, cells: out.cells };
+}
+
+// Wird ein Projekt gelöscht (auch in einem anderen Tab), endet seine Berechnung sofort
+let deleteHookInstalled = false;
+function installDeleteHook() {
+  if (deleteHookInstalled) return;
+  deleteHookInstalled = true;
+  onStoreEvent((e) => {
+    if (e.type === 'deleted') cancelJob(e.id);
+  });
+}
+
+/** Zustand der Live-Vorschau (nie gespeichert). */
+interface PreviewState {
+  /** letzte fertige Vorschau (kann veraltet sein: sig ≠ aktuelle Eingaben) */
+  result: ComputeOutput | null;
+  /** laufende Vorschau */
+  running: { sig: string; progress: JobProgress } | null;
+  /** letzte fehlgeschlagene Vorschau (wird für diese Eingaben nicht von selbst wiederholt) */
+  error: { sig: string; msg: string } | null;
+  /** Dauer und Größe der letzten Vorschau (für Automatik und Richtwert) */
+  last: { ms: number; cells: number } | null;
+}
+
+/** Was die Live-Vorschau anzeigen kann (siehe LivePreview.tsx). */
+export interface PreviewInfo {
+  /** letzte fertige Vorschau (evtl. veraltet) */
+  result: ComputeOutput | null;
+  /** result gehört zu den aktuellen Einstellungen (sonst: abgedunkelt anzeigen) */
+  current: boolean;
+  /** Fortschritt der laufenden Vorschau (null: keine läuft) */
+  running: JobProgress | null;
+  /** die laufende Vorschau rechnet die aktuellen Einstellungen */
+  runningCurrent: boolean;
+  /** Vorschau wartet nach einer Änderung (Entprellen) */
+  scheduled: boolean;
+  /** Fehlermeldung der Vorschau für die aktuellen Einstellungen */
+  error: string | null;
+  /** keine Vorschau möglich: 'no-photo', 'layout', 'no-materials', 'no-palette' */
+  inputError: string | null;
+  /** Rasterpositionen der aktuellen Einstellungen */
+  cells: number;
+  /** rechnet von selbst (sonst „Vorschau aktualisieren“) */
+  auto: boolean;
+  reason: PreviewManualReason | null;
+  /** Richtwert der Dauer (ms) */
+  estimateMs: number;
+  /** Dauer der letzten Vorschau (ms) */
+  lastMs: number | null;
+  /** angehalten, solange eine Berechnung läuft */
+  paused: boolean;
+  /** das gespeicherte Mosaik entspricht den aktuellen Einstellungen (dann zeigt die Vorschau dieses) */
+  committedCurrent: boolean;
+}
+
 export function useProject(id: string, materials: Material[], lang: Lang) {
   const [rec, setRecState] = useState<ProjectRecord | null>(null);
   const [image, setImageState] = useState<ImageRecord | null>(null);
@@ -272,7 +621,17 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const [computed, setComputedState] = useState<ComputedState | null>(null);
   const [version, setVersion] = useState(0);
   const [progressVersion, setProgressVersion] = useState(0);
-  const [computing, setComputing] = useState<ComputeProgress | null>(null);
+  /**
+   * Fortschritt der Berechnung DIESES Projekts – aus dem Auftragsregister (jobs.ts), also auch, wenn sie in
+   * einer früheren Ansicht gestartet wurde und beim Verlassen weiterlief.
+   */
+  const [computing, setComputing] = useState<ComputeProgress | null>(() => jobFor(id)?.progress ?? null);
+  /** Berechnung eines ANDEREN Projekts, die gerade läuft (app-weit nur eine) */
+  const [otherJob, setOtherJob] = useState<JobInfo | null>(() => runningJob(id));
+  /** Läuft irgendein Auftrag? (Vorschau wartet so lange) */
+  const [jobsActive, setJobsActive] = useState(() => anyJob());
+  /** Zeitpunkt des letzten in dieser Ansicht übernommenen Ergebnisses (für „Berechnung fertig“) */
+  const [committedAt, setCommittedAt] = useState(0);
   const [computeError, setComputeError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [sectionStats, setSectionStats] = useState<Map<string, Stats>>(new Map());
@@ -290,11 +649,22 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   /** Ergebnis, das wegen Änderungen während der Berechnung auf die Entscheidung des Benutzers wartet */
   const [pendingResult, setPendingResult] = useState<PendingResult | null>(null);
   const pendingRef = useRef<PendingCommit | null>(null);
-  /**
-   * Zählt jede Bearbeitung des angezeigten Rasters (Steinfarbe/-form, verlegt, Abschnitt fertig). Eine
-   * Berechnung merkt sich den Stand beim Start; weicht er beim Ende ab, wird ihr Ergebnis nicht still übernommen.
-   */
-  const editTick = useRef(0);
+  // Bearbeitungen des angezeigten Rasters (Steinfarbe/-form, verlegt, Abschnitt fertig) zählt jobs.ts je Projekt
+  // (noteEdit/editCount) – über alle Ansichten hinweg. Ein Auftrag vergleicht den Stand bei Start und Ende.
+
+  // ---------- Live-Vorschau (nie gespeichert)
+  const [preview, setPreview] = useState<PreviewState>({ result: null, running: null, error: null, last: null });
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  /** Anzahl angezeigter Vorschauen (LivePreview) – nur dann wird gerechnet */
+  const [previewWatchers, setPreviewWatchers] = useState(0);
+  const [previewScheduled, setPreviewScheduled] = useState(false);
+  /** Zähler der Vorschau-Anfragen: Ergebnisse älterer Anfragen werden verworfen */
+  const previewReq = useRef(0);
+  /** laufende Vorschau; `promoted`: wird von „Übernehmen“ als Berechnung weiterverwendet */
+  const previewInflight = useRef<{ sig: string; my: number; promise: Promise<ComputeOutput>; listeners: Set<(p: JobProgress) => void>; promoted: boolean } | null>(null);
+  /** Arbeitsbild (gemeinsam für Vorschau und Berechnung) */
+  const rawCache = useRef<RawCache['current']>(null);
 
   // Die Refs sind die maßgebliche Quelle (sofort aktuell, auch in Ereignis-Handlern beim Verlassen
   // der Seite); der React-State spiegelt sie für das Rendern.
@@ -537,6 +907,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         announceNotice('w2ws.pending.dropped');
       }
       window.clearTimeout(sv.current.retryTimer);
+      // Vorschau gehört zu dieser Ansicht: abbrechen (eine als Berechnung übernommene läuft als Auftrag weiter)
+      const inf = previewInflight.current;
+      if (inf && !inf.promoted) cancelChannel('preview');
+      previewInflight.current = null;
+      rawCache.current = null;
     };
   }, []);
 
@@ -608,10 +983,24 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     return onComputeLock(() => setPaletteLocked(isComputing(id)));
   }, [id]);
 
+  // Berechnungsaufträge (jobs.ts): Fortschritt dieses Projekts – auch einer Berechnung, die in einer früheren
+  // Ansicht gestartet wurde – und eine laufende Berechnung eines anderen Projekts
+  useEffect(() => {
+    installDeleteHook();
+    const sync = () => {
+      setComputing(jobFor(id)?.progress ?? null);
+      setOtherJob(runningJob(id));
+      setJobsActive(anyJob());
+    };
+    sync();
+    return subscribeJobs(sync);
+  }, [id]);
+
   // Foto freigeben, sobald es ersetzt wurde oder die Ansicht geschlossen wird (große Fotos belegen viel Speicher)
   useEffect(() => {
     if (!bitmap) return;
     return () => {
+      if (rawCache.current?.bitmap === bitmap) rawCache.current = null;
       try {
         bitmap.close();
       } catch {
@@ -694,19 +1083,26 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const setRegions = useCallback((regions: Region[]) => update((r) => ({ ...r, regions })), [update]);
   const setPalette = useCallback((palette: PaletteColor[]) => update((r) => ({ ...r, palette })), [update]);
 
-  /** Nach manuellen Änderungen am Raster aufrufen (Steinfarbe/-form, Farbe entfernt). */
-  const touchMosaic = useCallback(() => {
-    editTick.current++;
-    setVersion((v) => v + 1);
-    markDirty('mosaic');
-    update((r) => ({ ...r, meta: { ...r.meta, manualEdits: (r.meta.manualEdits ?? 0) + 1 } }));
-  }, [markDirty, update]);
+  /**
+   * Nach manuellen Änderungen am Raster aufrufen (Steinfarbe/-form, Farbe entfernt).
+   * `_dirtyCells`: geänderte Zellen (Vertrag für Welle 4 – wird noch nicht ausgewertet).
+   */
+  const touchMosaic = useCallback(
+    (_dirtyCells?: number[]) => {
+      noteEdit(id);
+      setVersion((v) => v + 1);
+      markDirty('mosaic');
+      update((r) => ({ ...r, meta: { ...r.meta, manualEdits: (r.meta.manualEdits ?? 0) + 1 } }));
+    },
+    [id, markDirty, update],
+  );
 
-  const touchProgress = useCallback(() => {
-    editTick.current++;
+  /** Nach Änderungen am Verlegefortschritt aufrufen. `_dirtyCells`: Vertrag für Welle 4 (noch nicht ausgewertet). */
+  const touchProgress = useCallback((_dirtyCells?: number[]) => {
+    noteEdit(id);
     setProgressVersion((v) => v + 1);
     markDirty('progress');
-  }, [markDirty]);
+  }, [id, markDirty]);
 
   // ---------- Foto
   /**
@@ -857,33 +1253,51 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [computed, version, progressVersion, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
 
-  // ---------- Berechnung
+  // ---------- Berechnung und Live-Vorschau (gemeinsamer Rechenweg, siehe describeComputeInputs)
+  /** Eingaben einer Berechnung für den Projektstand `r` mit dem aktuellen Foto, den Materialien und der Sprache. */
+  const describeNow = useCallback(
+    (r: ProjectRecord): ComputeInputsResult | null =>
+      bitmap
+        ? describeComputeInputs(r, {
+            bitmap,
+            bw: bitmap.width,
+            bh: bitmap.height,
+            srcW: srcW || bitmap.width,
+            srcH: srcH || bitmap.height,
+            reduced: !!sourceSize?.reduced,
+            hasOriginal: !!image?.original,
+            materials,
+            lang,
+          })
+        : null,
+    [bitmap, srcW, srcH, sourceSize, image, materials, lang],
+  );
+  /** Eingaben der aktuellen Einstellungen (Fingerabdruck für Vorschau und „Übernehmen“) */
+  const inputsNow = useMemo(() => (rec ? describeNow(rec) : null), [rec, describeNow]);
+  const inputsNowRef = useRef(inputsNow);
+  inputsNowRef.current = inputsNow;
+
+  // Meldungen in anderen Projekten nennen den aktuellen Namen
+  const recName = rec?.meta.name;
+  useEffect(() => {
+    if (recName !== undefined) renameJob(id, recName);
+  }, [id, recName]);
+
+  /** Gibt es am angezeigten Mosaik jetzt etwas, das ein Übernehmen verwerfen würde (verlegt, manuell geändert)? */
+  const displayedWorkAtRisk = useCallback((): boolean => {
+    const c = computedRef.current;
+    if (!c) return false;
+    return progressOf(c.layout, c.data).placed > 0 || (recRef.current?.meta.manualEdits ?? 0) > 0;
+  }, []);
+
   /**
-   * Schreibt ein fertiges Ergebnis fest (Projekt, Raster, Fortschritt in EINER Transaktion) und zeigt es an.
-   * Wirft bei geänderter eigener Palette (PALETTE_CHANGED); false, wenn das Projekt gelöscht wurde.
+   * Übernimmt ein gespeichertes Ergebnis in diese Ansicht (wird vom Auftrag aufgerufen – auch, wenn er in einer
+   * früheren Ansicht dieses Projekts gestartet wurde).
    */
-  const commitJob = useCallback(
-    async (job: PendingCommit): Promise<boolean> => {
-      const { fields, pk, data, proc, layout, lp } = job;
-      let saveFailure: unknown = null;
-      let committed: ProjectRecord | null = null;
-      try {
-        // Projekt (neuester gespeicherter Stand + Ergebnisfelder), Raster und Fortschritt in EINER Transaktion
-        committed = await commitComputed(id, fields, pk.mosaic, pk.progress, instanceRef.current);
-      } catch (e) {
-        if (isDeletedError(e)) {
-          // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
-          if (mounted.current) setComputeError('deleted');
-          return false;
-        }
-        // Eigene Palette wurde anderswo verkürzt/umsortiert: nichts gespeichert, Palette und altes Raster bleiben
-        if (isPaletteChangedError(e)) throw e;
-        saveFailure = e;
-      }
-      if (!mounted.current) {
-        if (saveFailure) console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
-        return !saveFailure;
-      }
+  const applyCommitted = useCallback(
+    (job: PendingCommit, committed: ProjectRecord | null, saveFailure: unknown) => {
+      if (!mounted.current) return;
+      const { fields, data, proc, layout, lp } = job;
       setProcessed(proc);
       data.rev = fields.mosaicRev;
       const latest = recRef.current ?? job.started;
@@ -910,9 +1324,13 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       setComputedBoth({ layout, layoutParams: lp, data });
       setIntegrityError(null);
       setRejected(null);
+      setComputeError(null);
       discardGrid(); // ausstehende Speicherungen gehören zum ersetzten Raster
       setVersion((v) => v + 1);
       setProgressVersion((v) => v + 1);
+      // Eine übernommene Vorschau teilt ihr Raster jetzt mit dem gespeicherten Mosaik: nicht weiter als Vorschau führen
+      if (job.origin === 'preview') setPreview((p) => (p.result && p.result.data === data ? { ...p, result: null } : p));
+      setCommittedAt(Date.now());
       if (saveFailure) {
         // Ergebnis ist berechnet, aber nicht gespeichert: im Speicher behalten, vollständig nachspeichern
         console.warn('Ergebnis konnte nicht gespeichert werden', saveFailure);
@@ -923,134 +1341,111 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         markDirty('progress');
         setError(classifySaveError(saveFailure));
       }
-      return true;
     },
-    [id, discardGrid, markDirty, setError, setRecBoth, setComputedBoth],
+    [discardGrid, markDirty, setError, setRecBoth, setComputedBoth],
   );
 
-  /** Gibt es am angezeigten Mosaik jetzt etwas, das ein Übernehmen verwerfen würde (verlegt, manuell geändert)? */
-  const displayedWorkAtRisk = useCallback((): boolean => {
-    const c = computedRef.current;
-    if (!c) return false;
-    return progressOf(c.layout, c.data).placed > 0 || (recRef.current?.meta.manualEdits ?? 0) > 0;
-  }, []);
+  // Diese Ansicht beim Auftragsregister anmelden: Ergebnisse (auch einer Berechnung, die vor dem erneuten Öffnen
+  // gestartet wurde) landen hier, und hier wird gefragt, ob am angezeigten Mosaik Arbeit auf dem Spiel steht.
+  const handlerImpl = useRef({ applyCommitted, displayedWorkAtRisk });
+  handlerImpl.current = { applyCommitted, displayedWorkAtRisk };
+  useEffect(() => {
+    const handler: ProjectHandler = {
+      instance: instanceRef.current,
+      latestPalette: () => recRef.current?.palette ?? null,
+      groutHex: () => recRef.current?.settings.groutHex ?? null,
+      workAtRisk: () => handlerImpl.current.displayedWorkAtRisk(),
+      hold: (job) => {
+        pendingRef.current = job;
+        setPendingResult({ at: Date.now() });
+      },
+      applyCommitted: (job, committed, saveFailure) => handlerImpl.current.applyCommitted(job, committed, saveFailure),
+      onError: (code) => {
+        if (mounted.current) setComputeError(code);
+      },
+    };
+    return attachProject(id, handler);
+  }, [id]);
 
-  const compute = useCallback(async () => {
+  /**
+   * Berechnen bzw. Übernehmen. Passt eine fertige Live-Vorschau genau zu den aktuellen Eingaben (gleicher
+   * Fingerabdruck, gleiches Foto), wird sie ohne zweite Berechnung gespeichert; rechnet sie gerade, wird sie
+   * weiterverwendet. Die Berechnung läuft als Auftrag (jobs.ts): Sie endet und speichert auch, wenn die Ansicht
+   * geschlossen wird. App-weit läuft höchstens eine Berechnung. Liefert true, wenn ein Ergebnis übernommen wurde.
+   */
+  const compute = useCallback(async (): Promise<boolean> => {
     // Momentaufnahme NUR für die Eingaben der Berechnung; das Ergebnis wird später in den neuesten Stand übernommen
     const r = recRef.current;
-    if (!r || !bitmap || !layoutInfo.layout) return false;
+    const inp = r ? describeNow(r) : null;
+    if (!r || !inp) return false;
+    if (!inp.ok) {
+      setComputeError(inp.error);
+      return false;
+    }
+    if (jobFor(id)) return false;
+    const pv = previewRef.current.result;
+    const direct = pv && pv.sig === inp.sig && pv.bitmap === inp.bitmap ? pv : null;
+    const inflight = previewInflight.current;
+    const reuse = !direct && inflight && inflight.sig === inp.sig && !inflight.promoted ? inflight : null;
+    if (!direct && runningJob(id)) {
+      setComputeError('busy');
+      return false;
+    }
+    // Eine Vorschau anderer Einstellungen würde die Berechnung nur bremsen
+    if (!direct && !reuse && inflight && !inflight.promoted) cancelChannel('preview');
     // Ein noch wartendes Ergebnis wird durch diese Berechnung ersetzt
     pendingRef.current = null;
     setPendingResult(null);
-    // Stand der Bearbeitungen am angezeigten Mosaik beim Start (siehe editTick)
-    const startTick = editTick.current;
-    // Foto zum Zeitpunkt des Starts (ein Fotowechsel während der Berechnung macht das Ergebnis „veraltet“)
-    const original = imageRef.current?.original ?? null;
-    const reduced = !!sourceSize?.reduced;
-    const sw = srcW || bitmap.width;
-    const sh = srcH || bitmap.height;
     setComputeError(null);
-    setComputing({ phase: 'prepare', fraction: 0 });
-    // Palette sperren (auch für andere Ansichten/Tabs), bis das Ergebnis gespeichert oder verworfen ist
-    const endLock = beginCompute(id);
+    // Stand der Bearbeitungen am angezeigten Mosaik beim Start (siehe noteEdit)
+    const startEdits = editCount(id);
+    const source = uid();
+    const original = imageRef.current?.original ?? null;
+    let handle: { promise: Promise<JobOutcome> };
     try {
-      const layout = layoutInfo.layout;
-      const lp = layoutParamsOf(r.settings);
-      // Zuschnitt und Arbeitsauflösung aus den Maßen des ORIGINALS – genau wie bei voller Dekodierung
-      const { w: rw, h: rh } = rotatedSize(sw, sh, r.adjust);
-      const crop = fitCrop(r.adjust.crop, rw, rh, layout.finishedW / layout.finishedH);
-      const ws = workingSize(layout.cols * layout.rows, layout.finishedW / layout.finishedH, crop.w * rw * crop.h * rh);
-      // Hat die verkleinerte Arbeitskopie im Zuschnitt zu wenig Pixel, wird das Original vorübergehend voll gelesen
-      const { w: bw, h: bh } = rotatedSize(bitmap.width, bitmap.height, r.adjust);
-      let full: ImageBitmap | null = null;
-      if (original && needsFullResolution(reduced, crop, bw, bh, ws)) {
-        try {
-          full = await loadBitmap(original);
-        } catch (e) {
-          // z. B. zu wenig Speicher: mit der Arbeitskopie rechnen (gleiche Pixelzahl, etwas weniger Bilddetail)
-          console.warn('Original konnte nicht voll gelesen werden – Berechnung mit der Arbeitskopie', e);
-        }
-      }
-      const raw = (() => {
-        try {
-          return canvasToRaw(renderCropped(full ?? bitmap, r.adjust, crop, ws.w, ws.h));
-        } finally {
-          full?.close(); // volle Auflösung nur für diesen einen Zuschnitt im Speicher halten
-        }
-      })();
-      const s = r.settings;
-      // mit Farbnummer: eigene Paletten behalten ihre Nummern (auch Lücken nach dem Entfernen einer Farbe)
-      const fixed = buildFixedPalette(s, r.palette, materials);
-      const res = await runWorker<'compute'>(
-        'compute',
-        {
-          type: 'compute',
-          image: raw,
-          adjust: { ...r.adjust, crop: null },
-          regions: r.regions,
-          layoutParams: lp,
-          params: {
-            shapes: s.shapes,
-            paletteMode: s.paletteMode,
-            colorCount: s.colorCount,
-            dither: s.dither,
-            deltaE: s.deltaE,
-            fixedPalette: fixed,
-            regions: r.regions,
-            lang,
-          },
+      handle = startJob<JobOutcome>({
+        projectId: id,
+        projectName: r.meta.name,
+        exclusive: !direct,
+        phase: direct ? 'commit' : 'prepare',
+        // Übernehmen einer fertigen Vorschau ist sofort fertig und benutzt keinen Worker: nichts abzubrechen
+        // (ein Abbruch des Kanals 'compute' träfe sonst die Berechnung eines anderen Projekts)
+        cancel: direct ? () => {} : () => cancelChannel(reuse ? 'preview' : 'compute'),
+        run: async (ctx) => {
+          // Palette sperren (auch für andere Ansichten/Tabs), bis das Ergebnis gespeichert oder verworfen ist
+          const endLock = beginCompute(id);
+          try {
+            let out: ComputeOutput;
+            if (direct) out = direct;
+            else if (reuse) {
+              reuse.promoted = true;
+              reuse.listeners.add((p) => ctx.report(p));
+              out = await reuse.promise;
+            } else {
+              out = await runComputeWith(inp, 'compute', (phase, fraction) => ctx.report({ phase, fraction }), rawCache, original);
+              noteMeasured(out);
+            }
+            if (ctx.cancelled) throw new Error('abgebrochen');
+            ctx.report({ phase: 'commit', fraction: 0 });
+            return await finishJob(id, out, startEdits, direct || reuse ? 'preview' : 'compute', source);
+          } finally {
+            endLock();
+          }
         },
-        [raw.data.buffer],
-        (phase, fraction) => setComputing({ phase, fraction }),
-      );
-      const data: MosaicDataWithRev = unpackMosaic(res.mosaic);
-      const proc = document.createElement('canvas');
-      proc.width = res.processed.width;
-      proc.height = res.processed.height;
-      proc.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(res.processed.data), res.processed.width, res.processed.height), 0, 0);
-      const thumbCanvas = renderFull(layout, data, res.palette, 320, { groutHex: s.groutHex, realistic: false });
-      const thumb = await canvasToJpeg(thumbCanvas, 0.8);
-      // Schlüssel der tatsächlich berechneten Eingaben (Momentaufnahme; bei eigener Palette mit der
-      // neu nummerierten Ergebnispalette) – nie des neuesten Stands: Änderungen während der Berechnung
-      // erscheinen so korrekt als „Einstellungen geändert“.
-      const keyRec: ProjectRecord = s.paletteMode === 'custom' ? { ...r, palette: res.palette } : r;
-      const fields: ComputeFields = {
-        palette: res.palette,
-        diagnostics: res.diagnostics as ComputeDiagnostics,
-        computedWith: computeKey(keyRec),
-        mosaicRev: uid(),
-        computedImageRev: r.imageRev,
-        thumb,
-        updatedAt: Date.now(),
-        // Eigene Palette ist eine Eingabe: Änderungen während der Berechnung nicht überschreiben
-        ...(s.paletteMode === 'custom' ? { customInput: r.palette } : {}),
-      };
-      // Wurde die eigene Palette hier während der Berechnung verkürzt oder umsortiert, passt das Ergebnis nicht mehr
-      if (mounted.current && recRef.current && !resolveComputedPalette(recRef.current.palette, fields)) throw new Error(PALETTE_CHANGED);
-      const job: PendingCommit = { fields, pk: packWithoutProgress(data, fields.mosaicRev), data, proc, layout, lp, started: r };
-      // Während der Berechnung wurde am angezeigten Mosaik gearbeitet (verlegt, Abschnitt fertig, Steine geändert):
-      // NICHT still ersetzen – das Ergebnis wartet, der Benutzer entscheidet (mit Sicherungskopie wie vor dem Start).
-      if (editTick.current !== startTick && displayedWorkAtRisk()) {
-        if (!mounted.current) {
-          // Ansicht schon geschlossen: niemand kann gefragt werden – die Arbeit bleibt, das Ergebnis nicht
-          console.warn('Berechnung nicht übernommen: während der Berechnung wurde am Mosaik gearbeitet');
-          announceNotice('w2ws.pending.dropped');
-          return false;
-        }
-        pendingRef.current = job;
-        setPendingResult({ at: Date.now() });
-        return false;
-      }
-      return await commitJob(job);
+      });
+    } catch (e) {
+      if (e instanceof JobBusyError) setComputeError('busy');
+      return false;
+    }
+    try {
+      return (await handle.promise) === 'committed';
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== 'abgebrochen' && mounted.current) setComputeError(msg);
+      // Fehler erscheinen in der Ansicht, die jetzt geöffnet ist (auch nach Verlassen und erneutem Öffnen)
+      if (msg !== 'abgebrochen') projectHandler<ProjectHandler>(id)?.onError(msg);
       return false;
-    } finally {
-      endLock();
-      setComputing(null);
     }
-  }, [bitmap, sourceSize, srcW, srcH, layoutInfo.layout, materials, id, lang, commitJob, displayedWorkAtRisk]);
+  }, [id, describeNow]);
 
   /**
    * Übernimmt das wartende Ergebnis (verwirft dabei Fortschritt und Änderungen am bisherigen Mosaik – der Aufrufer
@@ -1066,14 +1461,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     try {
       // Eigene Palette inzwischen verkürzt/umsortiert: das Ergebnis passt nicht mehr
       if (recRef.current && !resolveComputedPalette(recRef.current.palette, job.fields)) throw new Error(PALETTE_CHANGED);
-      return await commitJob(job);
+      return (await persistCommit(id, job, instanceRef.current)) === 'committed';
     } catch (e) {
       if (mounted.current) setComputeError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {
       endLock();
     }
-  }, [id, commitJob]);
+  }, [id]);
 
   /** Verwirft das wartende Ergebnis; das angezeigte Mosaik mit seinem Fortschritt bleibt. */
   const discardPending = useCallback(() => {
@@ -1081,7 +1476,113 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     setPendingResult(null);
   }, []);
 
-  const cancelCompute = useCallback(() => cancelChannel('compute'), []);
+  /** Bricht die Berechnung dieses Projekts ab – auch eine, die vor dem erneuten Öffnen gestartet wurde. */
+  const cancelCompute = useCallback(() => void cancelJob(id), [id]);
+  /** Bricht die laufende Berechnung eines anderen Projekts ab (app-weit läuft nur eine). */
+  const cancelOtherJob = useCallback(() => {
+    const o = runningJob(id);
+    if (o) cancelJob(o.projectId);
+  }, [id]);
+
+  // ---------- Live-Vorschau: rechnet die aktuellen Einstellungen, ohne etwas zu speichern
+  /** Startet eine Vorschau für diese Eingaben (verwirft eine laufende ältere; deren Ergebnis wird nie angezeigt). */
+  const runPreview = useCallback(async (inp: ComputeInputs) => {
+    if (!mounted.current) return;
+    const prev = previewInflight.current;
+    if (prev?.promoted) return; // läuft als Berechnung weiter – Vorschau wartet ohnehin, solange ein Auftrag läuft
+    const my = ++previewReq.current;
+    if (prev) cancelChannel('preview');
+    previewInflight.current = null;
+    const listeners = new Set<(p: JobProgress) => void>();
+    setPreview((p) => ({ ...p, running: { sig: inp.sig, progress: { phase: 'prepare', fraction: 0 } } }));
+    const onProgress = (phase: string, fraction: number) => {
+      for (const l of listeners) l({ phase, fraction });
+      if (mounted.current && my === previewReq.current) setPreview((p) => (p.running?.sig === inp.sig ? { ...p, running: { sig: inp.sig, progress: { phase, fraction } } } : p));
+    };
+    const promise = runComputeWith(inp, 'preview', onProgress, rawCache, imageRef.current?.original ?? null);
+    const entry = { sig: inp.sig, my, promise, listeners, promoted: false };
+    previewInflight.current = entry;
+    try {
+      const out = await promise;
+      if (previewInflight.current === entry) previewInflight.current = null;
+      if (!mounted.current || my !== previewReq.current) return;
+      noteMeasured(out);
+      setPreview((p) => ({ ...p, result: out, running: null, error: null, last: { ms: out.ms, cells: out.cells } }));
+    } catch (e) {
+      if (previewInflight.current === entry) previewInflight.current = null;
+      if (!mounted.current || my !== previewReq.current) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      // abgebrochen (neue Einstellungen, Berechnung gestartet): kein Fehler
+      setPreview((p) => ({ ...p, running: null, error: msg === 'abgebrochen' ? p.error : { sig: inp.sig, msg } }));
+    }
+  }, []);
+  const runPreviewRef = useRef(runPreview);
+  runPreviewRef.current = runPreview;
+
+  /** LivePreview meldet sich an, solange sie angezeigt wird (nur dann rechnet die Vorschau). */
+  const watchPreview = useCallback(() => {
+    setPreviewWatchers((w) => w + 1);
+    return () => setPreviewWatchers((w) => w - 1);
+  }, []);
+
+  /** „Vorschau aktualisieren“: sofort rechnen (auch bei großen Mosaiken oder nach einer langsamen Vorschau). */
+  const refreshPreview = useCallback(() => {
+    const inp = inputsNowRef.current;
+    if (!inp || !inp.ok || anyJob()) return;
+    setPreview((p) => (p.error?.sig === inp.sig ? { ...p, error: null } : p));
+    void runPreviewRef.current(inp);
+  }, []);
+
+  const slowDevice = useMemo(() => {
+    try {
+      return isSlowDevice(typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined, typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
+    } catch {
+      return false;
+    }
+  }, []);
+  const committedCurrent = !!computed && !stale;
+  const sigNow = inputsNow?.ok ? inputsNow.sig : null;
+  const cellsNow = inputsNow?.ok ? inputsNow.cells : layoutInfo.layout ? layoutInfo.layout.cols * layoutInfo.layout.rows : 0;
+  const policy = previewPolicy({ cells: cellsNow, slow: slowDevice, lastMs: preview.last?.ms ?? null });
+
+  // Nach jeder Änderung (entprellt) neu rechnen – nur wenn eine Vorschau angezeigt wird, das gespeicherte Mosaik die
+  // Einstellungen nicht schon zeigt, keine Berechnung läuft und das Mosaik klein bzw. die letzte Vorschau schnell war.
+  const previewHasCurrent = !!preview.result && preview.result.sig === sigNow && preview.result.bitmap === bitmap;
+  const previewFailedNow = !!sigNow && preview.error?.sig === sigNow;
+  useEffect(() => {
+    if (previewWatchers <= 0 || !sigNow || committedCurrent || jobsActive || !policy.auto || previewHasCurrent || previewFailedNow) return;
+    if (previewInflight.current?.sig === sigNow) return;
+    const active = typeof document !== 'undefined' ? (document.activeElement as { tagName?: string; type?: string } | null) : null;
+    setPreviewScheduled(true);
+    const timer = window.setTimeout(() => {
+      setPreviewScheduled(false);
+      const inp = inputsNowRef.current;
+      if (inp?.ok && inp.sig === sigNow) void runPreviewRef.current(inp);
+    }, previewDebounceMs(isTypingTarget(active)));
+    return () => {
+      window.clearTimeout(timer);
+      setPreviewScheduled(false);
+    };
+  }, [previewWatchers, sigNow, committedCurrent, jobsActive, policy.auto, previewHasCurrent, previewFailedNow]);
+
+  const previewInfo: PreviewInfo = {
+    result: preview.result,
+    current: previewHasCurrent,
+    running: preview.running?.progress ?? null,
+    runningCurrent: !!preview.running && preview.running.sig === sigNow,
+    scheduled: previewScheduled,
+    error: previewFailedNow ? (preview.error?.msg ?? null) : null,
+    inputError: !bitmap ? 'no-photo' : inputsNow && !inputsNow.ok ? inputsNow.error : null,
+    cells: cellsNow,
+    auto: policy.auto,
+    reason: policy.reason,
+    estimateMs: estimatePreviewMs(cellsNow, preview.last ?? lastMeasured, slowDevice, rec?.settings.dither ?? 0),
+    lastMs: preview.last?.ms ?? null,
+    paused: jobsActive,
+    committedCurrent,
+  };
+  /** „Übernehmen“ speichert die fertige Vorschau ohne zweite Berechnung */
+  const previewCommittable = previewHasCurrent && !committedCurrent;
 
   const originalPreview = useCallback((maxPx: number) => (bitmap && rec ? renderRotated(bitmap, rec.adjust, maxPx) : null), [bitmap, rec]);
 
@@ -1131,9 +1632,21 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     sectionStats,
     progress,
     statsBusy,
+    /** Fortschritt der Berechnung dieses Projekts (auch einer vor dem erneuten Öffnen gestarteten) */
     computing,
+    /** laufende Berechnung eines anderen Projekts (app-weit nur eine) – „Berechnung für „X“ läuft noch“ */
+    otherJob,
+    cancelOtherJob,
+    /** Zeitpunkt, zu dem diese Ansicht zuletzt ein Ergebnis übernommen hat (0 = noch keins) */
+    committedAt,
     computeError,
     stale,
+    /** Live-Vorschau der aktuellen Einstellungen (nie gespeichert) */
+    preview: previewInfo,
+    /** „Übernehmen“ speichert die fertige Vorschau ohne zweite Berechnung */
+    previewCommittable,
+    watchPreview,
+    refreshPreview,
     effectiveCrop,
     processed,
     /** Speicherstatus für die Anzeige („Gespeichert ✓ / Speichert … / Nicht gespeichert“) */

@@ -1,0 +1,12 @@
+face-pd-portrait.png – Testbild für die Offline-Gesichtserkennung (tests/w4-face-detector.test.ts,
+e2e/w4-face-detector.e2e.cjs)
+
+Motiv:   Astronautin Eileen Collins, offizielles NASA-Porträt.
+Quelle:  scikit-image 0.26.0, skimage/data/astronaut.png (512 × 512), dort beschrieben als
+         "downloaded from the NASA Great Images database <https://flic.kr/p/r9qvLn>.
+          No known copyright restrictions, released into the public domain."
+Lizenz:  gemeinfrei (Werk der NASA / US-Bundesregierung).
+Änderung: auf 320 × 320 px verkleinert (ImageMagick -resize 320x320 -strip), sonst unverändert.
+
+Von Hand markierter Gesichtsbereich (Haut von Stirn bis Kinn, Wange bis Wange), normiert 0..1:
+  x 0,35 … 0,54, y 0,15 … 0,36. Augenmitten etwa bei (0,395 | 0,197) und (0,488 | 0,197).

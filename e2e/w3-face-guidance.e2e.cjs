@@ -158,7 +158,8 @@ async function touchDrag(cdp, page, x0, y0, dx, dy, steps = 12, end = 'touchEnd'
   // ---------- Steinformen am Desktop: Maus zeichnet direkt; Hinweis „Bereiche geändert“
   await gotoStep(page, 'shapes');
   await page.waitForSelector('[data-testid="region-holder"] canvas');
-  check('Chromium: kein „Gesichter erkennen“ (keine FaceDetector-API)', (await page.$('[data-testid="detect-faces"]')) === null);
+  // seit w4-face-detector gibt es die Offline-Erkennung immer; mit vorhandenem Gesichtsbereich sucht sie nicht von selbst
+  check('„Gesichter erkennen“ vorhanden (Offline-Erkennung), mit Gesichtsbereich kein automatischer Vorschlag', (await page.$('[data-testid="detect-faces"]')) !== null && (await page.$('[data-testid="face-suggestion-card"]')) === null);
   check('Mit Gesichtsbereich: keine Karte „Gesicht von Hand markieren“', (await page.$('[data-testid="face-manual-card"]')) === null);
   const spanList = Number(await page.getAttribute('[data-testid="region-face-span"]', 'data-cols'));
   check('Liste: Gesicht 1 zeigt dieselbe Steinzahl wie der Detailgrad', spanList === 31, String(spanList));
@@ -212,7 +213,7 @@ async function touchDrag(cdp, page, x0, y0, dx, dy, steps = 12, end = 'touchEnd'
   await page.click('[data-testid="detail-go-shapes"]');
   await page.waitForSelector('[data-testid="region-holder"] canvas');
   check('„Gesicht markieren (Schritt 6)“ öffnet Steinformen', /\/shapes$/.test(page.url()), page.url());
-  check('Chromium: „Gesichter erkennen“ fehlt, Karte zum Markieren von Hand ist sichtbar', (await page.$('[data-testid="detect-faces"]')) === null && (await page.isVisible('[data-testid="face-manual-card"]')));
+  check('„Gesichter erkennen“ vorhanden (Offline-Erkennung), Karte zum Markieren von Hand ist sichtbar', (await page.$('[data-testid="detect-faces"]')) !== null && (await page.isVisible('[data-testid="face-manual-card"]')));
   await page.screenshot({ path: path.join(OUT, '05-shapes-manual-card.png'), fullPage: true });
   await page.click('[data-testid="face-manual-start"]');
   check('Karte schaltet Zeichenmodus ein (aria-pressed)', (await page.getAttribute('[data-testid="region-draw-toggle"]', 'aria-pressed')) === 'true');

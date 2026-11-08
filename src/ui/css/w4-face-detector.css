@@ -1,0 +1,246 @@
+/* w4-face-detector: Gesichtsvorschläge (gestrichelt, erst nach „Übernehmen“ gespeichert), Auswahl mit
+   Verschieben/Größe ändern (Griffe mit 44 px Trefferfläche) */
+
+/* ---------- Suche */
+.w4fd-detect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 2px;
+}
+.w4fd-status {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.w4fd-scope {
+  margin: 4px 0 8px;
+}
+.w4fd-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: w4fd-spin 0.8s linear infinite;
+}
+@keyframes w4fd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w4fd-spinner {
+    animation: none;
+  }
+}
+
+/* ---------- Vorschlagskarten */
+.w4fd-suggs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+.w4fd-suggs > .btn {
+  align-self: flex-start;
+}
+.w4fd-sugg-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border: 1px dashed #c2185b;
+  border-left: 4px solid #c2185b;
+  border-radius: 8px;
+  background: #fff6fa;
+}
+.w4fd-letter {
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  background: #c2185b;
+  color: #fff;
+  font: 700 13px/26px Inter, system-ui, sans-serif;
+  text-align: center;
+}
+.w4fd-sugg-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.w4fd-sugg-text .badge {
+  margin-left: 4px;
+}
+.w4fd-sugg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* ---------- Bild: Vorschläge gestrichelt, Auswahl mit Griffen */
+/* Griffe am Bildrand nicht abschneiden (das Bild behält seine runden Ecken) */
+.region-holder.w4fd-holder {
+  overflow: visible;
+}
+.region-holder.w4fd-holder > canvas {
+  border-radius: 8px;
+}
+.w4fd-sugg {
+  position: absolute;
+  border: 2px dashed;
+  border-radius: 50%;
+  pointer-events: none;
+  /* heller Rand, damit die Striche auf dunklen und hellen Bildern sichtbar bleiben */
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+}
+.w4fd-sugg-face {
+  border-color: #c2185b;
+  background: rgba(194, 24, 91, 0.08);
+}
+.w4fd-sugg-eyes {
+  border-color: #1565c0;
+  background: rgba(21, 101, 192, 0.1);
+}
+.w4fd-sugg-tag {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #c2185b;
+  color: #fff;
+  font: 700 12px/22px Inter, system-ui, sans-serif;
+  text-align: center;
+}
+.w4fd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin: 6px 0 0;
+}
+.w4fd-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.w4fd-key {
+  display: inline-block;
+  width: 18px;
+  height: 10px;
+  border: 2px dashed;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+.w4fd-key-face {
+  border-color: #c2185b;
+}
+.w4fd-key-eyes {
+  border-color: #1565c0;
+}
+
+/* Ausgewählter Bereich: verschiebbar (auch mit dem Finger – kein Scrollen auf dem Bereich) */
+.region.w4fd-sel {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: move;
+  z-index: 2;
+  border-width: 3px;
+  outline: 1px dashed rgba(29, 42, 58, 0.75);
+  outline-offset: 0;
+}
+.region.ellipse.w4fd-sel {
+  /* Ellipse: der gestrichelte Rahmen zeigt das Rechteck, an dessen Ecken die Griffe sitzen */
+  outline-offset: 2px;
+}
+.region.w4fd-sel:focus-visible {
+  outline: 3px solid var(--focus);
+}
+.w4fd-h {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 3;
+}
+.w4fd-h::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.w4fd-h-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.w4fd-h-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.w4fd-h-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.w4fd-h-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+
+/* ---------- Auswahlleiste und Liste */
+.w4fd-selbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef3fb;
+  border-left: 4px solid var(--focus);
+}
+.w4fd-selbar > div {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.w4fd-selhint {
+  margin: 8px 0 0;
+}
+.w3fg-list li.w4fd-item-sel {
+  background: #eef3fb;
+}
+.btn.w4fd-pick {
+  flex: none;
+  min-height: 44px;
+}
+.w4fd-msg {
+  margin: 8px 0 0;
+}

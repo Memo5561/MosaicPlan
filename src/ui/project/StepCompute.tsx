@@ -1,11 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { exportProject } from '../../storage/projects';
 import { tCount, useI18n } from '../../i18n';
 import { Badge, downloadBlob, ProgressBar, safeFileName } from '../components';
+import { EmptyState } from './EmptyState';
+import { lossList, lossOf } from './RecomputeGuard';
+import { computedDeltaE, deltaERating, isRestorable, restoreComputedSettings, staleReasonLabels, type StaleReason } from './staleReasons';
 import { LayoutSummary } from './StepGeometry';
+import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
+import '../css/w2-workspace-shell.css';
 
-export function StepCompute({ api, onDone }: { api: ProjectApi; onDone: () => void }) {
+export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi; onCompute: () => void; onGo: (s: Step) => void; reasons: StaleReason[] }) {
   const { t, n } = useI18n();
   const s = api.rec!.settings;
   const d = api.rec!.diagnostics;
@@ -15,12 +20,37 @@ export function StepCompute({ api, onDone }: { api: ProjectApi; onDone: () => vo
   const pIdx = api.computing ? Math.max(0, phases.indexOf(api.computing.phase)) : 0;
   const overall = api.computing ? (pIdx + api.computing.fraction) / phases.length : 0;
   const [backupMsg, setBackupMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [discarded, setDiscarded] = useState(false);
+  // Hinweis „wiederhergestellt“ gilt nur, bis wieder etwas geändert oder neu berechnet wird
+  useEffect(() => {
+    if (api.stale || api.computing) setDiscarded(false);
+  }, [api.stale, api.computing]);
   // Nicht angezeigtes gespeichertes Mosaik mit Verlegefortschritt: Neuberechnen ersetzt es
   const lostPlaced = !api.computed && api.integrityError ? (api.rejected?.placed ?? 0) : 0;
   const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  // Was ein Neuberechnen jetzt verwerfen würde (exakte Zahlen; vor dem Berechnen wird nachgefragt)
+  const loss = api.computed ? lossOf(api) : null;
+  // Änderungen seit der letzten Berechnung
+  const reasonLabels = staleReasonLabels(reasons, t, n);
+  const restorable = reasons.filter(isRestorable);
+  const notRestorable = reasons.filter((r) => !isRestorable(r));
+  // Bewertung der Farbabweichung nur für die Formel, mit der das angezeigte Ergebnis berechnet wurde
+  const resultDE = computedDeltaE(api.rec!.computedWith) ?? (api.stale ? null : s.deltaE);
+  const rating = d && resultDE === '2000' ? deltaERating(d.meanDeltaE) : null;
+  const ratingText = rating === 'low' ? t('w2ws.de.low') : rating === 'mid' ? t('w2ws.de.mid') : rating === 'high' ? t('w2ws.de.high') : '';
+  const photoUnreadable = !api.bitmap && !!api.image;
   return (
     <div className="two-col">
       <div>
+        {!api.bitmap && (
+          <EmptyState
+            icon="🖼"
+            testId="compute-no-photo"
+            title={photoUnreadable ? t('w2ws.empty.photoUnreadable.title') : t('w2ws.empty.noPhoto.title')}
+            text={photoUnreadable ? t('w2ws.empty.photoUnreadable.text') : t('w2ws.empty.noPhoto.text')}
+            actions={[{ label: t('w2ws.empty.goPhoto'), onClick: () => onGo('photo'), primary: true, testId: 'empty-go-photo' }]}
+          />
+        )}
         <h3>{t('compute.summary')}</h3>
         <table className="kv">
           <tbody>
@@ -60,28 +90,61 @@ export function StepCompute({ api, onDone }: { api: ProjectApi; onDone: () => vo
           </tbody>
         </table>
         <LayoutSummary api={api} />
-        {!api.bitmap && <Badge kind="warn">{t('compute.needPhoto')}</Badge>}
         {cells > 5_000_000 && <Badge kind="warn">{t('compute.huge')}</Badge>}
-        <div className="btn-row" style={{ marginTop: 12 }}>
-          {!api.computing ? (
-            <button
-              className="btn primary big"
-              data-testid="compute-btn"
-              disabled={!api.bitmap || !api.layout}
-              onClick={async () => {
-                if (await api.compute()) onDone();
-              }}
-            >
-              {api.computed ? t('compute.recompute') : t('compute.start')}
-            </button>
+        {api.computed && api.stale && !api.computing && (
+          <div className="w2ws-stale" data-testid="stale-reasons">
+            <p className="warn small">
+              <b>{t('w2ws.stale.lead', { list: reasonLabels.join(', ') })}</b> {t('w2ws.stale.keep')}
+            </p>
+            {restorable.length > 0 && (
+              <div className="btn-row wrap">
+                <button
+                  className="btn small"
+                  data-testid="discard-changes"
+                  title={t('w2ws.stale.discardHint', { list: staleReasonLabels(restorable, t, n).join(', ') })}
+                  onClick={() => {
+                    api.update((r) => restoreComputedSettings(r) ?? r);
+                    setDiscarded(true);
+                  }}
+                >
+                  ↶ {t('w2ws.stale.discard')}
+                </button>
+                <small className="muted">{t('w2ws.stale.discardHint', { list: staleReasonLabels(restorable, t, n).join(', ') })}</small>
+              </div>
+            )}
+            {notRestorable.length > 0 && <p className="muted small">{t('w2ws.stale.notRestorable', { list: staleReasonLabels(notRestorable, t, n).join(', ') })}</p>}
+          </div>
+        )}
+        {discarded && !api.stale && api.computed && (
+          <p className="ok small" role="status" data-testid="discard-msg">
+            {t('w2ws.stale.discarded')}
+          </p>
+        )}
+        {api.bitmap && (
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            {!api.computing ? (
+              <button className="btn primary big" data-testid="compute-btn" disabled={!api.layout} onClick={onCompute}>
+                {api.computed ? t('compute.recompute') : t('compute.start')}
+              </button>
+            ) : (
+              <button className="btn danger" onClick={api.cancelCompute}>
+                {t('common.cancel')}
+              </button>
+            )}
+          </div>
+        )}
+        {api.computed && !api.computing && api.stale && reasons.length === 0 && <p className="warn small">{t('compute.staleWarn')}</p>}
+        {api.computed &&
+          !api.computing &&
+          (loss ? (
+            <p className="warn small w2ws-overwrite" data-testid="overwrite-warn">
+              {t('w2ws.overwriteCounts', { list: lossList(loss, t, n) })}
+            </p>
           ) : (
-            <button className="btn danger" onClick={api.cancelCompute}>
-              {t('common.cancel')}
-            </button>
-          )}
-        </div>
-        {api.computed && !api.computing && api.stale && <p className="warn small">{t('compute.staleWarn')}</p>}
-        {api.computed && !api.computing && <p className="muted small">{t('compute.overwriteWarn')}</p>}
+            <p className="muted small" data-testid="overwrite-warn">
+              {t('w2ws.overwriteNone')}
+            </p>
+          ))}
         {lostPlaced > 0 && !api.computing && (
           <div className="w1fx-banner" role="alert" data-testid="placed-loss">
             <span>{tCount(t, 'integrity.placedLoss', lostPlaced, { n: n(lostPlaced) })}</span>
@@ -134,7 +197,10 @@ export function StepCompute({ api, onDone }: { api: ProjectApi; onDone: () => vo
               <tbody>
                 <tr>
                   <th>{t('compute.meanDE')}</th>
-                  <td>{n(d.meanDeltaE, 2)}</td>
+                  <td data-testid="mean-de">
+                    {n(d.meanDeltaE, 2)}
+                    {ratingText && <span className={`w2ws-rating ${rating}`}> – {ratingText}</span>}
+                  </td>
                 </tr>
                 <tr>
                   <th>{t('compute.p95DE')}</th>

@@ -1,5 +1,5 @@
 {
- "_info": "Referenz der ALTEN Implementierung (vor w1-mosaic-core) im Modus „Eigene Palette“, Porträt, Seed 7: Stückzahlen je HEX. Die alte Version hat unbenutzte Farben entfernt und nach Helligkeit neu nummeriert; die Zuordnung der Steine war aber dieselbe. Die neue Version muss je HEX dieselben Stückzahlen liefern. Nicht neu erzeugen.",
+ "_info": "Referenz der ALTEN Implementierung (mosaic.ts vor w1-mosaic-core, Schnittregeln nach w1-cut-correctness) im Modus „Eigene Palette“, Porträt, Seed 7: Stückzahlen je HEX. Die alte Version hat unbenutzte Farben entfernt und nach Helligkeit neu nummeriert; die Zuordnung der Steine war aber dieselbe. Die neue Version muss je HEX dieselben Stückzahlen liefern. Nur bewusst und nur mit der alten mosaic.ts (Stand vor w1-mosaic-core) neu erzeugen, z. B. nach geänderten Schnittregeln in pieces.ts.",
  "custom8/dither0": {
   "oldPalette": [
    "01=Weiß #F4F1EA",
@@ -10,15 +10,15 @@
    "06=Braun #4E2C1C",
    "07=Schwarz #1E1A18"
   ],
-  "totalPieces": 5972,
+  "totalPieces": 6030,
   "perHex": {
-   "#F4F1EA": 38,
-   "#E8B494": 939,
-   "#7FA0BA": 2294,
-   "#A02432": 754,
-   "#2E4A62": 1106,
-   "#4E2C1C": 822,
-   "#1E1A18": 19
+   "#F4F1EA": 37,
+   "#E8B494": 965,
+   "#7FA0BA": 2301,
+   "#A02432": 761,
+   "#2E4A62": 1121,
+   "#4E2C1C": 828,
+   "#1E1A18": 17
   }
  },
  "custom8/dither0.6": {
@@ -31,15 +31,15 @@
    "06=Braun #4E2C1C",
    "07=Schwarz #1E1A18"
   ],
-  "totalPieces": 5972,
+  "totalPieces": 6030,
   "perHex": {
-   "#F4F1EA": 47,
-   "#E8B494": 922,
-   "#7FA0BA": 2239,
-   "#A02432": 661,
-   "#2E4A62": 1154,
-   "#4E2C1C": 885,
-   "#1E1A18": 64
+   "#F4F1EA": 46,
+   "#E8B494": 946,
+   "#7FA0BA": 2247,
+   "#A02432": 670,
+   "#2E4A62": 1168,
+   "#4E2C1C": 888,
+   "#1E1A18": 65
   }
  },
  "materials12/dither0": {
@@ -57,20 +57,20 @@
    "11=Dunkelbraun #33190F",
    "12=Schwarz #141414"
   ],
-  "totalPieces": 5972,
+  "totalPieces": 6030,
   "perHex": {
-   "#F7F4EE": 31,
-   "#F0C8A8": 387,
-   "#9BBDD3": 913,
-   "#D2946E": 564,
-   "#5F7F99": 2122,
-   "#A52A36": 294,
-   "#2F5A44": 14,
-   "#2C4258": 355,
-   "#5A341F": 452,
-   "#6A1420": 501,
-   "#33190F": 330,
-   "#141414": 9
+   "#F7F4EE": 32,
+   "#F0C8A8": 398,
+   "#9BBDD3": 916,
+   "#D2946E": 580,
+   "#5F7F99": 2133,
+   "#A52A36": 336,
+   "#2F5A44": 22,
+   "#2C4258": 358,
+   "#5A341F": 450,
+   "#6A1420": 461,
+   "#33190F": 338,
+   "#141414": 6
   }
  },
  "materials12/dither0.6": {
@@ -88,20 +88,20 @@
    "11=Dunkelbraun #33190F",
    "12=Schwarz #141414"
   ],
-  "totalPieces": 5972,
+  "totalPieces": 6030,
   "perHex": {
-   "#F7F4EE": 31,
-   "#F0C8A8": 362,
-   "#9BBDD3": 824,
-   "#D2946E": 589,
-   "#5F7F99": 2140,
-   "#A52A36": 310,
-   "#2F5A44": 14,
-   "#2C4258": 426,
-   "#5A341F": 423,
-   "#6A1420": 485,
-   "#33190F": 359,
-   "#141414": 9
+   "#F7F4EE": 32,
+   "#F0C8A8": 373,
+   "#9BBDD3": 827,
+   "#D2946E": 605,
+   "#5F7F99": 2151,
+   "#A52A36": 313,
+   "#2F5A44": 22,
+   "#2C4258": 429,
+   "#5A341F": 418,
+   "#6A1420": 484,
+   "#33190F": 370,
+   "#141414": 6
   }
  }
 }

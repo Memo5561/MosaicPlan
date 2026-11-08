@@ -24,6 +24,14 @@ function useHash(): [string, (h: string) => void] {
   return [hash, go];
 }
 
+/** Hauptbereiche (Anforderung 15): Start, Projekte, Materialverwaltung, Einstellungen. */
+const NAV: { key: 'home' | 'projects' | 'materials' | 'settings'; hash: string; isActive: (route: string) => boolean }[] = [
+  { key: 'home', hash: '#/', isActive: (r) => r === '' },
+  { key: 'projects', hash: '#/projects', isActive: (r) => r === 'projects' || r === 'project' },
+  { key: 'materials', hash: '#/materials', isActive: (r) => r === 'materials' },
+  { key: 'settings', hash: '#/settings', isActive: (r) => r === 'settings' },
+];
+
 export function App() {
   const [app, setAppState] = useState<AppSettings>(DEFAULT_APP);
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -63,24 +71,40 @@ export function App() {
   return (
     <I18nContext.Provider value={i18n}>
       <header className="topbar">
-        <button className="brand" onClick={() => go('#/')}>
+        <button className="brand" onClick={() => go('#/')} aria-label="MosaicPlan">
           <img src="icon.svg" alt="" width={28} height={28} />
           <span>MosaicPlan</span>
         </button>
-        <nav className="mainnav">
-          <button className={route === '' ? 'active' : ''} onClick={() => go('#/')}>
-            {t('nav.home')}
-          </button>
-          <button className={route === 'projects' || route === 'project' ? 'active' : ''} onClick={() => go('#/projects')}>
-            {t('nav.projects')}
-          </button>
-          <button className={route === 'materials' ? 'active' : ''} onClick={() => go('#/materials')}>
-            {t('nav.materials')}
-          </button>
-          <button className={route === 'settings' ? 'active' : ''} onClick={() => go('#/settings')}>
-            {t('nav.settings')}
-          </button>
+        <nav className="mainnav" aria-label={t('nav.main')}>
+          {NAV.map((it) => {
+            const active = it.isActive(route);
+            const long = t(`nav.${it.key}`);
+            const short = t(`nav.${it.key}Short`);
+            return (
+              <button
+                key={it.key}
+                className={active ? 'active' : ''}
+                aria-current={active ? 'page' : undefined}
+                aria-label={short !== long ? long : undefined}
+                onClick={() => go(it.hash)}
+                data-testid={`nav-${it.key}`}
+              >
+                {/* Auf schmalen Bildschirmen die kurze Bezeichnung, damit alle vier Bereiche ohne Scrollen sichtbar sind */}
+                {short === long ? (
+                  long
+                ) : (
+                  <>
+                    <span className="nav-long">{long}</span>
+                    <span className="nav-short" aria-hidden="true">
+                      {short}
+                    </span>
+                  </>
+                )}
+              </button>
+            );
+          })}
         </nav>
+        {/* Sprache auch in den Einstellungen; auf dem Handy nur dort (Platz für die Hauptnavigation) */}
         <select className="lang" value={app.lang} onChange={(e) => setApp({ ...app, lang: e.target.value as Lang })} aria-label={t('settings.lang')}>
           <option value="de">DE</option>
           <option value="en">EN</option>

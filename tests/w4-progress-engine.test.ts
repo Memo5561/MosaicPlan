@@ -436,7 +436,8 @@ describe('Pflichtfarben erreichen die Berechnung', () => {
     const list = [{ hex: '#1d1f1b', name: 'Pupille' }, { hex: 'abc' }, { hex: '#1D1F1B' }, { hex: 'xyz' }, { hex: '  #FFFFFF ', name: '  ' }];
     const out = pinnedFixedColors({ paletteMode: 'auto', pinnedColors: list })!;
     expect(out.map((f) => f.hex)).toEqual(['#1D1F1B', '#AABBCC', '#FFFFFF']);
-    expect(out[0]).toEqual({ hex: '#1D1F1B', lab: hexToLab('#1D1F1B'), name: 'Pupille' });
+    // Notiz geht nicht in die Anfrage (sonst rechnete die Live-Vorschau bei jedem Tastendruck neu)
+    expect(out[0]).toEqual({ hex: '#1D1F1B', lab: hexToLab('#1D1F1B'), name: '#1D1F1B' });
     expect(out[2].name).toBe('#FFFFFF');
     expect(pinnedFixedColors({ paletteMode: 'auto-snap', pinnedColors: list })?.length).toBe(3);
     expect(pinnedFixedColors({ paletteMode: 'materials', pinnedColors: list })).toBeUndefined();
@@ -454,6 +455,10 @@ describe('Pflichtfarben erreichen die Berechnung', () => {
     expect(empty.sig).toBe(plain.sig);
     expect(pinned.request.params.pinnedColors).toEqual([{ hex: '#101010', lab: hexToLab('#101010'), name: '#101010' }]);
     expect(pinned.sig).not.toBe(plain.sig);
+    // eine geänderte Notiz ändert den Fingerabdruck nicht
+    const noted = describeComputeInputs(srec({ pinnedColors: [{ hex: '#101010', name: 'Pupille' }] }), ENV);
+    if (!noted.ok) throw new Error('Eingaben ungültig');
+    expect(noted.sig).toBe(pinned.sig);
     // in Modi ohne Wirkung: keine Pflichtfarben, gleicher Fingerabdruck
     const custom = describeComputeInputs(srec({ paletteMode: 'custom', pinnedColors: [{ hex: '#101010' }] }), ENV);
     expect(custom.ok).toBe(false); // eigene Palette leer → 'no-palette' (unverändertes Verhalten)

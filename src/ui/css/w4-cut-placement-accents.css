@@ -151,3 +151,16 @@ input.text.w4cpa-pin-note {
     max-width: none;
   }
 }
+
+/* Schritt 7 am Handy: die neuen, langen Zeilenköpfe („Schnitte außerhalb markierter Bereiche“) dürfen umbrechen.
+   Mit `white-space: nowrap` aus table.kv wurde die Tabelle bei 360 px breiter als der Bildschirm (Seite seitlich
+   verschiebbar, Handy-Ansicht verkleinert). */
+@media (max-width: 600px) {
+  table.kv[data-testid='diagnostics'] th,
+  table.kv[data-testid='preview-diagnostics'] th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-width: 0;
+    width: 58%;
+  }
+}

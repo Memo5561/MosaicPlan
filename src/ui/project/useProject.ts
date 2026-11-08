@@ -116,7 +116,7 @@ export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'mate
 /**
  * Pflichtfarben als Eingabe der Berechnung (reine Funktion, von describeComputeInputs verwendet): nur in den Modi
  * „Automatisch aus dem Foto“ und „Meine Steine – begrenzte Farbanzahl“, mit dem Lab-Wert aus dem HEX-Wert. Ungültige
- * HEX-Werte fallen weg, gleiche zählen einmal. undefined, wenn es keine gibt – die Worker-Anfrage (und damit ihr
+ * HEX-Werte fallen weg, gleiche zählen einmal; die Notiz bleibt draußen (name = HEX). undefined, wenn es keine gibt – die Worker-Anfrage (und damit ihr
  * Fingerabdruck) älterer Projekte bleibt dann unverändert.
  */
 export function pinnedFixedColors(s: Pick<ProjectSettings, 'paletteMode' | 'pinnedColors'>): FixedColor[] | undefined {
@@ -131,8 +131,10 @@ export function pinnedFixedColors(s: Pick<ProjectSettings, 'paletteMode' | 'pinn
     const hex = `#${h}`;
     if (seen.has(hex)) continue;
     seen.add(hex);
-    const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : hex;
-    out.push({ lab: hexToLab(hex), hex, name });
+    // Die Notiz (p.name) ist nur eine Beschriftung der Liste und geht bewusst nicht in die Anfrage: sonst änderte
+    // jeder Tastendruck im Notizfeld den Fingerabdruck und startete die Live-Vorschau neu. Die Berechnung nutzt
+    // nur HEX/Lab.
+    out.push({ lab: hexToLab(hex), hex, name: hex });
   }
   return out.length ? out : undefined;
 }

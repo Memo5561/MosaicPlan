@@ -121,7 +121,7 @@ function perHexOf(palette: PaletteColor[], stats: { perColor: { pieces: number }
   return out;
 }
 
-/** Palette → FixedColor wie useProject (mit Nummer, sobald useProject p.code durchreicht). */
+/** Palette → FixedColor wie useProject.compute (mit Farbnummer; ohne nur für den Rückfall 1…n). */
 const fixedOf = (pal: PaletteColor[], withCode = true): FixedColor[] => pal.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, ...(withCode ? { code: p.code } : {}) }));
 
 describe('Eigene Palette: Farben, Reihenfolge und Nummern bleiben erhalten', () => {

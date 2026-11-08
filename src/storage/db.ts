@@ -242,7 +242,12 @@ export type StoreEvent =
   /** Eine Berechnung wurde gespeichert (Projekt, Raster und Fortschritt gemeinsam) */
   | { type: 'computed'; id: string; mosaicRev: string; source?: string }
   /** Projekt wurde gelöscht */
-  | { type: 'deleted'; id: string; source?: string };
+  | { type: 'deleted'; id: string; source?: string }
+  /**
+   * Eine Berechnung für dieses Projekt läuft (active, regelmäßig wiederholt) bzw. ist beendet.
+   * `source` kennzeichnet die Berechnung; nur für andere Tabs (siehe computeLock.ts).
+   */
+  | { type: 'computing'; id: string; active: boolean; source: string };
 
 const listeners = new Set<(e: StoreEvent) => void>();
 let channel: BroadcastChannel | null | undefined;
@@ -265,7 +270,7 @@ function getChannel(): BroadcastChannel | null {
       const ch = new BroadcastChannel('mosaicplan');
       ch.onmessage = (ev: MessageEvent) => {
         const e = ev.data as StoreEvent | null;
-        if (e && typeof e === 'object' && (e.type === 'computed' || e.type === 'deleted') && typeof e.id === 'string') deliver(e);
+        if (e && typeof e === 'object' && (e.type === 'computed' || e.type === 'deleted' || e.type === 'computing') && typeof e.id === 'string') deliver(e);
       };
       (ch as unknown as { unref?: () => void }).unref?.();
       channel = ch;
@@ -287,6 +292,11 @@ export function onStoreEvent(fn: (e: StoreEvent) => void): () => void {
 
 function emit(e: StoreEvent) {
   deliver(e);
+  broadcast(e);
+}
+
+/** Nur an andere Tabs senden (nicht an die Empfänger in dieser Seite). */
+export function broadcast(e: StoreEvent) {
   try {
     getChannel()?.postMessage(e);
   } catch {
@@ -347,6 +357,49 @@ export interface ComputeFields {
   computedImageRev?: string;
   thumb?: string;
   updatedAt: number;
+  /**
+   * Nur bei eigener Palette: die Palette, mit der gerechnet wurde (Momentaufnahme). Die eigene
+   * Palette ist eine Eingabe des Benutzers; wurde sie während der Berechnung geändert, wird sie
+   * nicht blind durch das Ergebnis ersetzt (siehe resolveComputedPalette).
+   */
+  customInput?: PaletteColor[];
+}
+
+/** Fehlertext: die eigene Palette wurde während der Berechnung so geändert, dass das Ergebnis nicht mehr passt. */
+export const PALETTE_CHANGED = 'palette-changed';
+export const isPaletteChangedError = (e: unknown) => e instanceof Error && e.message === PALETTE_CHANGED;
+
+function sameColor(a: PaletteColor, b: PaletteColor): boolean {
+  return a.code === b.code && a.hex === b.hex && a.name === b.name && (a.materialId ?? null) === (b.materialId ?? null) && a.lab.every((v, i) => v === b.lab[i]);
+}
+
+export function samePalette(a: readonly PaletteColor[], b: readonly PaletteColor[]): boolean {
+  return a.length === b.length && a.every((c, i) => sameColor(c, b[i]));
+}
+
+/**
+ * Passt ein Raster, dessen Farbindizes auf die Palette `base` zeigen, auch zur Palette `current`?
+ * Ja, wenn jede Farbe von `base` an derselben Stelle mit derselben Farbnummer erhalten ist – Farben
+ * wurden also nur angehängt oder an Ort und Stelle umbenannt, umgefärbt oder anders verknüpft.
+ * Wurde eine Farbe entfernt oder umsortiert, zeigten die Indizes auf falsche Farben.
+ */
+export function paletteExtends(current: readonly PaletteColor[], base: readonly PaletteColor[]): boolean {
+  if (current.length < base.length) return false;
+  for (let i = 0; i < base.length; i++) if (current[i].code !== base[i].code) return false;
+  return true;
+}
+
+/**
+ * Welche Palette gehört nach einer Berechnung in den Projektstand `latestPalette`?
+ *  - automatisch/Materialien oder eigene Palette unverändert: die Ergebnispalette,
+ *  - eigene Palette nur ergänzt bzw. an Ort und Stelle geändert: die Palette des Benutzers bleibt
+ *    (`kept`; das Projekt gilt dann über `computedWith` als geändert → „Einstellungen geändert“),
+ *  - eigene Palette verkürzt/umsortiert: `null` – das Ergebnis darf nicht übernommen werden.
+ */
+export function resolveComputedPalette(latestPalette: readonly PaletteColor[], f: ComputeFields): { palette: PaletteColor[]; kept: boolean } | null {
+  if (!f.customInput || samePalette(latestPalette, f.customInput)) return { palette: f.palette, kept: false };
+  if (!paletteExtends(latestPalette, f.customInput)) return null;
+  return { palette: [...latestPalette], kept: true };
 }
 
 function dropUndefined<T extends object>(o: T): T {
@@ -354,11 +407,16 @@ function dropUndefined<T extends object>(o: T): T {
   return o;
 }
 
-/** Übernimmt das Ergebnis einer Berechnung in den neuesten Projektstand (Name, Einstellungen usw. bleiben). */
+/**
+ * Übernimmt das Ergebnis einer Berechnung in den neuesten Projektstand (Name, Einstellungen usw. bleiben).
+ * Wirft Error(PALETTE_CHANGED), wenn die eigene Palette inzwischen nicht mehr zum Ergebnis passt.
+ */
 export function mergeComputeFields(latest: ProjectRecord, f: ComputeFields): ProjectRecord {
+  const pal = resolveComputedPalette(latest.palette, f);
+  if (!pal) throw new Error(PALETTE_CHANGED);
   return dropUndefined({
     ...latest,
-    palette: f.palette,
+    palette: pal.palette,
     diagnostics: f.diagnostics,
     computedWith: f.computedWith,
     mosaicRev: f.mosaicRev,
@@ -367,15 +425,35 @@ export function mergeComputeFields(latest: ProjectRecord, f: ComputeFields): Pro
   });
 }
 
+/** Wurde das gespeicherte Raster mit eigener Palette berechnet? (aus dem Berechnungsschlüssel) */
+function computedWithCustom(r: ProjectRecord): boolean {
+  if (!r.computedWith) return false;
+  try {
+    return (JSON.parse(r.computedWith) as { pm?: string }).pm === 'custom';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Eigene Palette, die in dieser Instanz bearbeitet wurde, während anderswo neu berechnet wurde:
+ * Sie bleibt erhalten, wenn das gespeicherte Raster mit eigener Palette berechnet wurde und die
+ * bearbeitete Palette dessen Palette nur ergänzt bzw. an Ort und Stelle ändert (Indizes bleiben gültig).
+ */
+function keepMyCustomPalette(mine: ProjectRecord, stored: ProjectRecord, paletteEdited: boolean): boolean {
+  return paletteEdited && computedWithCustom(stored) && paletteExtends(mine.palette, stored.palette) && !samePalette(mine.palette, stored.palette);
+}
+
 /**
  * Für eine Instanz, deren Raster veraltet ist (anderswo neu berechnet): eigene Bearbeitungen
  * (Name, Einstellungen, Foto-Anpassungen, Bereiche, PDF-Optionen …) behalten, aber alles, was zum
- * gespeicherten Raster gehört, aus dem gespeicherten Stand übernehmen.
+ * gespeicherten Raster gehört, aus dem gespeicherten Stand übernehmen. Ausnahme: eine hier
+ * bearbeitete eigene Palette, die zum gespeicherten Raster passt (`paletteEdited`, siehe oben).
  */
-export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectRecord): ProjectRecord {
+export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectRecord, opts: { paletteEdited?: boolean } = {}): ProjectRecord {
   return dropUndefined({
     ...mine,
-    palette: stored.palette,
+    palette: keepMyCustomPalette(mine, stored, !!opts.paletteEdited) ? mine.palette : stored.palette,
     diagnostics: stored.diagnostics,
     computedWith: stored.computedWith,
     mosaicRev: stored.mosaicRev,
@@ -388,7 +466,8 @@ export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectReco
  * Speichert eine fertige Berechnung atomar: liest INNERHALB der Transaktion den neuesten
  * gespeicherten Projektstand, übernimmt nur die Ergebnisfelder und schreibt Projekt, Raster
  * (mit neuer Revision) und Fortschritt gemeinsam. Wurde das Projekt inzwischen gelöscht,
- * wird nichts geschrieben und mit Error('deleted') abgelehnt.
+ * wird nichts geschrieben und mit Error('deleted') abgelehnt; passt die inzwischen geänderte
+ * eigene Palette nicht mehr zum Ergebnis, ebenso nichts und Error('palette-changed').
  */
 export function commitComputed(id: string, fields: ComputeFields, mosaic: StoredMosaicNoProgress, progress: Uint16Array, source?: string): Promise<ProjectRecord> {
   return txMulti<ProjectRecord>(['projects', 'mosaics', 'progress'], 'readwrite', (ctx) => {
@@ -426,7 +505,7 @@ export type SaveGuard = 'rev' | 'exists' | 'none';
 export type SaveOutcome = 'ok' | 'stale' | 'deleted';
 
 /** Speichert die angegebenen Teile eines Projekts in EINER Transaktion. */
-export function saveProjectState(id: string, parts: SaveParts, guard: SaveGuard, expectedRev?: string): Promise<SaveOutcome> {
+export function saveProjectState(id: string, parts: SaveParts, guard: SaveGuard, expectedRev?: string, opts: { paletteEdited?: boolean } = {}): Promise<SaveOutcome> {
   const stores: string[] = [];
   if (parts.rec || guard !== 'none') stores.push('projects');
   if (parts.mosaic) stores.push('mosaics');
@@ -456,7 +535,7 @@ export function saveProjectState(id: string, parts: SaveParts, guard: SaveGuard,
       if (guard === 'rev' && (stored.mosaicRev ?? null) !== (expectedRev ?? null)) {
         // Raster wurde anderswo neu berechnet: nur eigene Projektbearbeitungen übernehmen,
         // veraltetes Raster/Fortschritt NICHT schreiben
-        if (parts.rec) ctx.store('projects').put(keepStoredComputeFields(parts.rec, stored), id);
+        if (parts.rec) ctx.store('projects').put(keepStoredComputeFields(parts.rec, stored, opts), id);
         if (parts.image) ctx.store('images').put(parts.image, id);
         ctx.commit();
         ctx.done('stale');

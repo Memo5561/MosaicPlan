@@ -56,6 +56,10 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
 4. **Fuge** – 0 / 0,5 / 1 / 1,5 / 2 / 3 mm oder frei; Fugenfarbe und -tiefe.
 5. **Farben** – 8, 12, 16, 24, 32, 48, 64, 100, 150, 200 oder frei; Quelle: automatisch (K-Means),
    automatisch → eigene Materialien, nur eigene Materialien, eigene Palette. CIEDE2000 oder CIE76, optional Dithering.
+   Eine eigene Palette behält beim Berechnen Reihenfolge und Farbnummern (auch Lücken nach dem Entfernen). Während
+   einer Berechnung sind Farbquelle und Palette gesperrt – auch in anderen Ansichten und Tabs; wird die gespeicherte
+   eigene Palette trotzdem geändert, bleibt eine Ergänzung erhalten (Projekt gilt als geändert), eine Verkürzung
+   verwirft das Ergebnis mit Meldung (nie falsche Farben).
 6. **Steinformen** – Dreiecke (Diagonalschnitt), Kantenschnitte (Trapez/Dreieck/Rechteck/individuell),
    feinere Steine 2×2/3×3 in Detailbereichen, Gesichts-/Detailbereiche markieren, Hauttonschutz.
 7. **Berechnen** – im Web Worker, kachelweise (64 × 64 Zellen), mit Fortschritt und Abbruch.
@@ -79,13 +83,24 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
   Fugenbreite zu beiden Seiten der Schnittlinie). Daraus ergeben sich Form (Klassifizierung aus der Geometrie),
   Außenmaße, Fläche, Kantenlängen, Innenwinkel und die Schnittlinien im Rohstein (Koordinaten ab der oberen
   linken Rohsteinecke). Maße werden auf 0,1 mm gerundet angezeigt.
+* **Mindestbreite eines Schnittteils** (Schritt Steinformen): Jedes geschnittene Teil muss an seiner schmalsten Stelle
+  (minimale Kaliberweite) mindestens so breit sein **und** ein Inkreismaß (4 · Fläche ÷ Umfang; bei Dreiecken der
+  Inkreisdurchmesser) von mindestens diesem Wert haben – bei Dreiecken ist das die strengere Bedingung. Hinweise nennen
+  immer die gemessenen Werte (z. B. „Inkreismaß 1,93 mm < 2 mm (schmalste Stelle 2,33 mm)“).
 * **Formempfehlung vs. Schnittvorlage**: Formen, die sinnvoll wären, aber deaktiviert sind, werden nur als
-  „Empfehlung – nicht berechnet“ markiert. Nur aktivierte Formen erzeugen berechnete Schnittvorlagen.
+  „Empfehlung – nicht berechnet“ markiert – und nur, wenn ihre Teile die Mindestbreite erfüllen. Nur aktivierte Formen
+  erzeugen berechnete Schnittvorlagen.
+* **Schnittlinien**: durchgehende Schnitte (rot, ritzen und brechen) und Einschnitte bis zur Innenecke nicht-konvexer
+  Teile (orange gepunktet, nicht durchritzen) sind in App und PDF gleich gezeichnet und gleich nummeriert.
 * **Zählung**: Es wird über Rasterzellen → Teilstücke iteriert; jeder Stein wird genau einmal gezählt.
   Die Tests prüfen `Steinfläche + Fugenfläche = Gesamtfläche`, eindeutige IDs und Summen je Farbe/Form/Größe/Abschnitt.
 * **Materialbedarf**: Rohsteine je Farbe aus der Ausbeute je Schnittart (ganzer Stein 1, Diagonaldreieck 2 je Rohstein,
   Rechtecke so viele wie hineinpassen, sonstige Formen 1), aufgerundet; Reserve 5/10/15/20 % oder frei;
   Verschnitt = Rohsteinfläche − Steinfläche. Rohsteinmaß = Maß des zugeordneten Materials, sonst Rastermaß.
+  Packungen, Bestand, Fehlbestand und Kosten werden **je Material** gezählt (Einkaufsliste in App und PDF): ein Material,
+  das mehreren Farben zugeordnet ist, wird einmal gekauft; die Summe der Kosten ist die angezeigte Materialkosten-Summe.
+  Teile ohne Fläche (ältere Projekte: Fuge breiter als der Stein) sind keine Steine und werden nicht gezählt; solche
+  Zellen werden beim Öffnen in ganze Steine umgewandelt (mit Hinweis).
   Fugenmasse = Fugenfläche × Fugentiefe × 1,6 kg/l (**Schätzwert**).
 
 ## PDF-Inhalt
@@ -93,7 +108,8 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
 Deckblatt · Originalfoto · Mosaikvorschau · Gesamtübersicht mit Abschnitten · je Abschnitt: Deckblatt mit Position,
 Anschlüssen, Farblegende und Stückzahlen · nummerierte, maßstäbliche Verlegeblätter (Raster, Farbcodes, Formen,
 Zeilen-/Spaltenbeschriftung, mm-Lineal in Projektkoordinaten, Passkreuze auf Fugenmitte, Anschlusslinien mit
-Blatt-/Abschnittsverweis, 50/100-mm-Kontrollstrecke) · Farblegende · Materialliste · Anzahl je Form und Größe ·
+Blatt-/Abschnittsverweis, 50/100-mm-Kontrollstrecke) · Farblegende · Materialliste mit Bedarf je Farbe und
+Einkaufsliste je Material · Anzahl je Form und Größe ·
 Schnittvorlagen (vergrößert + 1:1, Kantenmaße, Winkel, Schnittlinien) · Koordinatenlisten · Seitenzahlen.
 Große Abschnitte werden automatisch auf mehrere Blätter verteilt; Blattgrenzen liegen auf Rasterlinien.
 Beim Druck **„Tatsächliche Größe / 100 %“** wählen und die Kontrollstrecke nachmessen.

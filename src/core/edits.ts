@@ -5,7 +5,7 @@ import { hexToLab, describeColor, NearestColorMatcher, type ColorNameLang } from
 import { area, cleanPoly, isSimple, polygonsOverlap, type Pt } from './geometry';
 import type { Layout } from './layout';
 import type { Range } from './stats';
-import { cellPieceCount, cellPieces, cellRect, diagA, diagB, isDegeneratePiece, lineSplit, pieceCuttable, subdivisionCuttable } from './pieces';
+import { cellPieceCount, cellPieces, cellRect, diagA, diagB, isDegeneratePiece, lineSplit, pieceCuttable, subdivisionCuttable, subRects, worstWidth, type WidthCheck } from './pieces';
 import { CellKind, type CellKindValue, type FreePiece, type MosaicData, type PaletteColor } from './types';
 
 export function setPieceColor(data: MosaicData, idx: number, piece: number, color: number): void {
@@ -75,6 +75,27 @@ export function checkCellKind(layout: Layout, row: number, col: number, ch: Kind
       return 'use-setFreePieces';
   }
   return null;
+}
+
+/**
+ * Gemessene Breiten des schmalsten Teils, das eine Formänderung erzeugen würde (für ehrliche
+ * Begründungen wie „Inkreismaß 1,93 mm < 2 mm“). null für ganze Steine und Freiform.
+ */
+export function cellKindWidth(layout: Layout, row: number, col: number, ch: KindChange, minPieceMm: number): WidthCheck | null {
+  const r = cellRect(layout, row, col);
+  switch (ch.kind) {
+    case CellKind.DIAG_A:
+    case CellKind.DIAG_B:
+      return worstWidth((ch.kind === CellKind.DIAG_A ? diagA : diagB)(r, layout.joint), minPieceMm);
+    case CellKind.LINE: {
+      const [nx, ny, d] = lineParams(ch);
+      return worstWidth(lineSplit(r, nx, ny, d, layout.joint), minPieceMm);
+    }
+    case CellKind.SUB:
+      return worstWidth(subRects(r, ch.k ?? 2, layout.joint), minPieceMm);
+    default:
+      return null;
+  }
 }
 
 /** Entspricht die Zelle bereits genau dieser Zellart mit denselben Parametern? */

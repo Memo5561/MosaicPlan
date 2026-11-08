@@ -267,12 +267,13 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
               if (gs[0].n === 0 || gs[1].n === 0) return;
               const score = sse(gs[0]) + sse(gs[1]) + lambda * NS * cost;
               if (score >= bestScore) return;
+              // Nur schneidbare Formen kommen in Frage – auch als Empfehlung („sinnvoll, aber deaktiviert“)
+              const [pa, pb] = polys();
+              if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) return;
               if (!enabled) {
                 recBits |= Rec.EDGE_CUT;
                 return;
               }
-              const [pa, pb] = polys();
-              if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) return;
               bestScore = score;
               bestKind = kind;
               bestColors = [meanOf(gs[0]), meanOf(gs[1])];
@@ -356,12 +357,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
                   };
                   const score = sse(gA) + sse(gB) + lambda * NS * 1.4;
                   if (score >= bestScore) continue;
+                  const [pa, pb] = lineSplit(r, nx, ny, dq, g);
+                  if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) continue;
                   if (!shapes.line) {
                     recBits |= Rec.EDGE_CUT;
                     continue;
                   }
-                  const [pa, pb] = lineSplit(r, nx, ny, dq, g);
-                  if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) continue;
                   bestScore = score;
                   bestKind = CellKind.LINE;
                   bestColors = [meanOf(gA), meanOf(gB)];
@@ -383,16 +384,15 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
               let s = 0;
               for (const gg of gs) s += sse(gg);
               const score = s + lambda * NS * (k === 2 ? 2 : 3.2);
-              if (score < bestScore) {
+              // Feinere Steine nur, wenn die Teilsteine die Mindestbreite erfüllen – sonst weder
+              // berechnet noch empfohlen (eine Empfehlung bedeutet „möglich, aber hier deaktiviert“).
+              if (score < bestScore && subRects(r, k, g).every((p) => pieceCuttable(p, shapes.minPieceMm))) {
                 if (!subAllowed) recBits |= Rec.FINER;
                 else {
-                  const pcs = subRects(r, k, g);
-                  if (pcs.every((p) => pieceCuttable(p, shapes.minPieceMm))) {
-                    bestScore = score;
-                    bestKind = CellKind.SUB;
-                    bestColors = gs.map(meanOf);
-                    bestLine = null;
-                  } else recBits |= Rec.FINER;
+                  bestScore = score;
+                  bestKind = CellKind.SUB;
+                  bestColors = gs.map(meanOf);
+                  bestLine = null;
                 }
               }
             }

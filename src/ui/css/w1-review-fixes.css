@@ -1,0 +1,89 @@
+/* Nachbesserungen Welle 1: Sperre während der Berechnung, Fehlergrenze, Einkaufsliste, Hinweise */
+fieldset.w1fx-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+fieldset.w1fx-fieldset:disabled {
+  opacity: 0.6;
+}
+.w1fx-locked {
+  margin-bottom: 10px;
+}
+
+.w1fx-crash {
+  max-width: 640px;
+  margin: 32px auto;
+  padding: 20px;
+  border: 1px solid var(--line, #d8d2c8);
+  border-radius: 10px;
+  background: var(--card, #fff);
+}
+.w1fx-crash pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.w1fx-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #e0b4b0;
+  background: #fdf0ef;
+  color: #7a1f17;
+  font-size: 14px;
+}
+.w1fx-banner.info {
+  border-color: #c9d8e6;
+  background: #f1f6fb;
+  color: #1f3d5a;
+}
+.w1fx-banner > span {
+  flex: 1 1 260px;
+}
+
+/* Bedarf je Farbe: Farbfeld in der Nummernspalte, damit alle Spalten in die schmale Seitenleiste passen */
+table.data.small.w1fx-tight th,
+table.data.small.w1fx-tight td {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.w1fx-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.w1fx-shop table.data th {
+  letter-spacing: 0;
+}
+.w1fx-shop .w1fx-matname {
+  display: block;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w1fx-shop td small {
+  display: block;
+  max-width: 96px;
+  white-space: normal;
+}
+details.w1fx-how {
+  margin: 4px 0 8px;
+}
+details.w1fx-how > summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+details.w1fx-how > p {
+  margin: 4px 0 0;
+}

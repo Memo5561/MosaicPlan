@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hexToLab } from '../../core/color';
+import { repairDegenerateCells } from '../../core/edits';
 import { checkMosaicIntegrity } from '../../core/integrity';
 import { computeLayout, sectionsFor, type Layout, type LayoutParams, type SectionGrid } from '../../core/layout';
 import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
 import { renderFull } from '../../core/render';
 import { packMosaic, unpackMosaic, type MosaicDataWithRev } from '../../core/serialize';
-import { progressOf, type Stats } from '../../core/stats';
+import { popcount, progressOf, type Stats } from '../../core/stats';
 import type { ImageAdjust, Material, MosaicData, PaletteColor, ProjectSettings, Region } from '../../core/types';
 import {
   commitComputed,
   DELETED,
   isDeletedError,
+  isPaletteChangedError,
   keepStoredComputeFields,
   loadProjectState,
   mergeComputeFields,
   onStoreEvent,
+  PALETTE_CHANGED,
+  resolveComputedPalette,
   saveProjectState,
   uid,
   type ComputeFields,
@@ -24,6 +28,7 @@ import {
   type SaveParts,
   type StoredMosaicNoProgress,
 } from '../../storage/db';
+import { beginCompute, isComputing, onComputeLock } from '../../storage/computeLock';
 import { buildProjectExport, duplicateProject } from '../../storage/projects';
 import { cancelChannel, runWorker } from '../../workers/client';
 import { canvasToJpeg, canvasToRaw, fitCrop, loadBitmap, renderCropped, renderRotated, rotatedSize, workingSize } from './imagePrep';
@@ -72,6 +77,24 @@ export interface SaveError {
 }
 /** Gespeichertes Raster gehört nicht zur gespeicherten Palette → wird nicht angezeigt, neu berechnen nötig */
 export type IntegrityError = 'mismatch';
+
+/** Was über ein gespeichertes, aber nicht angezeigtes Raster bekannt ist (siehe restoreComputed). */
+export interface RejectedMosaic {
+  /** Grund aus restoreComputed (z. B. 'index': Farbindex außerhalb der Palette, 'rev': andere Berechnung) */
+  reason: string;
+  /** Rasterpositionen des gespeicherten Rasters */
+  cells: number;
+  /** als verlegt markierte Steine im gespeicherten Fortschritt – sie gehen beim Neuberechnen verloren */
+  placed: number;
+}
+
+/** Verlegte Steine im gespeicherten Fortschritt (nur wenn er zum gespeicherten Raster passt). */
+export function placedInStored(m: StoredMosaicNoProgress | undefined, prog: Uint16Array | undefined): number {
+  if (!m || !prog || prog.length !== m.cols * m.rows) return 0;
+  let n = 0;
+  for (let i = 0; i < prog.length; i++) if (prog[i]) n += popcount(prog[i]);
+  return n;
+}
 
 type SaveKey = 'rec' | 'mosaic' | 'progress' | 'image';
 const KEYS: SaveKey[] = ['rec', 'mosaic', 'progress', 'image'];
@@ -149,12 +172,22 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [saveError, setSaveError] = useState<SaveError | null>(null);
   const [integrityError, setIntegrityError] = useState<IntegrityError | null>(null);
+  const [rejected, setRejected] = useState<RejectedMosaic | null>(null);
+  /** Beim Laden reparierte Zellen mit leeren Teilen (Fuge breiter als der Stein, ältere Projekte) */
+  const [repairedCells, setRepairedCells] = useState(0);
+  /** Läuft irgendwo (diese Ansicht, eine frühere Ansicht im Hintergrund, anderer Tab) eine Berechnung? */
+  const [paletteLocked, setPaletteLocked] = useState(() => isComputing(id));
 
   // Die Refs sind die maßgebliche Quelle (sofort aktuell, auch in Ereignis-Handlern beim Verlassen
   // der Seite); der React-State spiegelt sie für das Rendern.
   const recRef = useRef<ProjectRecord | null>(null);
   const computedRef = useRef<ComputedState | null>(null);
   const imageRef = useRef<ImageRecord | null>(null);
+  /**
+   * Palette, wie sie zuletzt nachweislich gespeichert war (Laden, Übernehmen, Berechnen, Speichern).
+   * Weicht die Palette im Arbeitsspeicher davon ab, hat der Benutzer sie hier bearbeitet.
+   */
+  const paletteBaseRef = useRef<PaletteColor[] | null>(null);
   const instanceRef = useRef('');
   if (!instanceRef.current) instanceRef.current = uid();
   const mounted = useRef(true);
@@ -276,7 +309,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       for (const k of covered) s.writing[k] = Math.max(s.writing[k], gens[k]);
       const guard: SaveGuard = unload ? 'none' : s.force ? 'exists' : 'rev';
       const wasForced = s.force;
-      const p: Promise<void> = saveProjectState(id, parts, guard, r?.mosaicRev)
+      const paletteEdited = !!r && r.palette !== paletteBaseRef.current;
+      const p: Promise<void> = saveProjectState(id, parts, guard, r?.mosaicRev, { paletteEdited })
         .then(
           (outcome) => {
             if (outcome === 'deleted') {
@@ -287,6 +321,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
               throw new Error(DELETED);
             }
             for (const k of covered) s.saved[k] = Math.max(s.saved[k], gens[k]);
+            if (outcome === 'ok' && parts.rec) paletteBaseRef.current = parts.rec.palette;
             if (parts.image && s.pendingImage === parts.image) s.pendingImage = null;
             if (wasForced && guard === 'exists') s.force = false;
             s.retryAttempt = 0;
@@ -398,6 +433,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         return;
       }
       setRecBoth(r);
+      paletteBaseRef.current = r.palette;
       if (st.image) {
         imageRef.current = st.image;
         setImageState(st.image);
@@ -411,18 +447,36 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       }
       if (!alive) return;
       const res = restoreComputed(r, st.mosaic, st.progress);
+      if (res.computed) {
+        // Ältere Projekte: Zellen mit leeren Teilen (z. B. Dreiecksteilung trotz zu breiter Fuge) werden zu
+        // ganzen Steinen – sonst zählten Statistik und Fortschritt Teile, die es nicht gibt. Der Benutzer
+        // wird informiert (Hinweis im Projektkopf), der reparierte Stand wird gespeichert.
+        const fixed = repairDegenerateCells(res.computed.layout, res.computed.data);
+        if (fixed > 0) {
+          console.warn(`${fixed} Zellen mit leeren Teilen repariert`);
+          setRepairedCells(fixed);
+          markDirty('mosaic');
+        }
+      }
       setComputedBoth(res.computed);
       if (res.mismatch) {
         console.warn('Gespeichertes Mosaik passt nicht zum Projekt:', res.mismatch);
         setIntegrityError('mismatch');
         setComputeError('integrity');
+        if (st.mosaic) setRejected({ reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) });
       }
       setLoaded(true);
     })();
     return () => {
       alive = false;
     };
-  }, [id, setRecBoth, setComputedBoth]);
+  }, [id, setRecBoth, setComputedBoth, markDirty]);
+
+  // Sperre der Palette, solange irgendwo eine Berechnung dieses Projekts läuft
+  useEffect(() => {
+    setPaletteLocked(isComputing(id));
+    return onComputeLock(() => setPaletteLocked(isComputing(id)));
+  }, [id]);
 
   // Foto freigeben, sobald es ersetzt wurde oder die Ansicht geschlossen wird (große Fotos belegen viel Speicher)
   useEffect(() => {
@@ -460,11 +514,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     // Einstellungen, mit denen anderswo berechnet wurde); sonst eigene Bearbeitungen behalten und nur
     // Raster + Palette (+ zugehörige Felder) aus dem Speicher nehmen.
     const recClean = s.gen.rec === s.saved.rec && s.writing.rec === s.saved.rec;
-    setRecBoth(recClean ? st.rec : keepStoredComputeFields(cur, st.rec));
+    // Eine hier bearbeitete eigene Palette bleibt, wenn sie zum neuen Raster passt (nur ergänzt/geändert)
+    setRecBoth(recClean ? st.rec : keepStoredComputeFields(cur, st.rec, { paletteEdited: cur.palette !== paletteBaseRef.current }));
+    paletteBaseRef.current = st.rec.palette;
     discardGrid();
     const res = restoreComputed(st.rec, st.mosaic, st.progress);
     setComputedBoth(res.computed);
     setIntegrityError(res.mismatch ? 'mismatch' : null);
+    setRejected(res.mismatch && st.mosaic ? { reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) } : null);
     setComputeError((prev) => (res.mismatch ? 'integrity' : prev === 'integrity' ? null : prev));
     setVersion((v) => v + 1);
     setProgressVersion((v) => v + 1);
@@ -481,6 +538,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
           setError({ code: 'deleted', message: DELETED });
           return;
         }
+        if (e.type !== 'computed') return;
         if ((e.mosaicRev ?? null) !== (recRef.current?.mosaicRev ?? null)) {
           sv.current.staleKnown = true;
           void adoptRef.current();
@@ -623,6 +681,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     if (!r || !bitmap || !layoutInfo.layout) return false;
     setComputeError(null);
     setComputing({ phase: 'prepare', fraction: 0 });
+    // Palette sperren (auch für andere Ansichten/Tabs), bis das Ergebnis gespeichert oder verworfen ist
+    const endLock = beginCompute(id);
     try {
       const layout = layoutInfo.layout;
       const lp = layoutParamsOf(r.settings);
@@ -638,7 +698,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         fixed = pool.map((m) => ({ lab: hexToLab(m.hex), hex: m.hex.toUpperCase(), name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(), materialId: m.id }));
         if (!fixed.length) throw new Error('no-materials');
       } else if (s.paletteMode === 'custom') {
-        fixed = r.palette.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId }));
+        // mit Farbnummer: eigene Paletten behalten ihre Nummern (auch Lücken nach dem Entfernen einer Farbe)
+        fixed = r.palette.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, code: p.code }));
         if (!fixed.length) throw new Error('no-palette');
       }
       const res = await runWorker<'compute'>(
@@ -682,18 +743,25 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         computedImageRev: r.imageRev,
         thumb,
         updatedAt: Date.now(),
+        // Eigene Palette ist eine Eingabe: Änderungen während der Berechnung nicht überschreiben
+        ...(s.paletteMode === 'custom' ? { customInput: r.palette } : {}),
       };
+      // Wurde die eigene Palette hier während der Berechnung verkürzt oder umsortiert, passt das Ergebnis nicht mehr
+      if (mounted.current && recRef.current && !resolveComputedPalette(recRef.current.palette, fields)) throw new Error(PALETTE_CHANGED);
       const pk = packWithoutProgress(data, fields.mosaicRev);
       let saveFailure: unknown = null;
+      let committed: ProjectRecord | null = null;
       try {
         // Projekt (neuester gespeicherter Stand + Ergebnisfelder), Raster und Fortschritt in EINER Transaktion
-        await commitComputed(id, fields, pk.mosaic, pk.progress, instanceRef.current);
+        committed = await commitComputed(id, fields, pk.mosaic, pk.progress, instanceRef.current);
       } catch (e) {
         if (isDeletedError(e)) {
           // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
           if (mounted.current) setComputeError('deleted');
           return false;
         }
+        // Eigene Palette wurde anderswo verkürzt/umsortiert: nichts gespeichert, Palette und altes Raster bleiben
+        if (isPaletteChangedError(e)) throw e;
         saveFailure = e;
       }
       if (!mounted.current) {
@@ -703,9 +771,29 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       setProcessed(proc);
       data.rev = fields.mosaicRev;
       const latest = recRef.current ?? r;
-      setRecBoth(mergeComputeFields(latest, fields));
+      // Palette, die jetzt zum gespeicherten Raster gehört (bei eigener Palette ggf. mit Ergänzungen,
+      // die anderswo während der Berechnung gespeichert wurden – siehe commitComputed)
+      const storedPalette = committed?.palette ?? fields.palette;
+      const asStored = () => mergeComputeFields({ ...latest, palette: storedPalette }, { ...fields, customInput: undefined, palette: storedPalette, computedWith: committed?.computedWith ?? fields.computedWith });
+      let merged: ProjectRecord;
+      if (latest.palette === paletteBaseRef.current) {
+        // hier nicht bearbeitet: der gespeicherte Stand gilt
+        merged = asStored();
+      } else {
+        try {
+          // hier bearbeitet (noch nicht gespeichert): nur ergänzt/geändert → bleibt, sonst gilt das Gespeicherte
+          merged = mergeComputeFields(latest, fields);
+        } catch {
+          // Palette wurde in den Millisekunden des Speicherns verkürzt (sonst gesperrt): Raster und
+          // gespeicherte Palette gehören zusammen – diese Palette gilt.
+          merged = asStored();
+        }
+      }
+      setRecBoth(merged);
+      paletteBaseRef.current = committed?.palette ?? fields.palette;
       setComputedBoth({ layout, layoutParams: lp, data });
       setIntegrityError(null);
+      setRejected(null);
       discardGrid(); // ausstehende Speicherungen gehören zum ersetzten Raster
       setVersion((v) => v + 1);
       setProgressVersion((v) => v + 1);
@@ -725,6 +813,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       if (msg !== 'abgebrochen' && mounted.current) setComputeError(msg);
       return false;
     } finally {
+      endLock();
       setComputing(null);
     }
   }, [bitmap, layoutInfo.layout, materials, id, lang, discardGrid, markDirty, setError, setRecBoth, setComputedBoth]);
@@ -784,6 +873,13 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     saveError,
     /** 'mismatch': gespeichertes Raster gehört nicht zur Palette – nicht angezeigt, neu berechnen */
     integrityError,
+    /** Angaben zum nicht angezeigten gespeicherten Raster (z. B. verlegte Steine, die beim Neuberechnen verloren gehen) */
+    rejected,
+    /** beim Laden reparierte Zellen mit leeren Teilen (0 = keine) */
+    repairedCells,
+    dismissRepaired: () => setRepairedCells(0),
+    /** Palette gesperrt, weil (irgendwo) eine Berechnung dieses Projekts läuft */
+    paletteLocked,
     /** Anzahl manueller Rasteränderungen seit der letzten Berechnung */
     manualEdits: rec?.meta.manualEdits ?? 0,
     update,

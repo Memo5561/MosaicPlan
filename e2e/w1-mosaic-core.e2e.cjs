@@ -146,6 +146,8 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   await page.selectOption('[data-testid="palette-remove-target"]', yellowValue);
   const swap = await page.textContent('[data-testid="palette-remove-swap"]');
   check('Gewählte Ersatzfarbe wird angezeigt', swap.includes('06') && swap.includes('08'), swap.replace(/\s+/g, ' '));
+  const rmNote = await page.textContent('[data-testid="palette-remove-note"]');
+  check('Eigene Palette: Hinweis „Nummern bleiben – auch beim Neuberechnen“', /auch beim Neuberechnen/.test(rmNote), rmNote.trim());
   await page.screenshot({ path: path.join(OUT, 'w1mc-02-remove-dialog.png') });
   await page.click('[data-testid="palette-remove-confirm"]');
   const after3 = await waitRows((rs) => rs.length === 7 && (rs.find((r) => r.code === '08') || {}).stones === red.stones);
@@ -160,8 +162,19 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   await page.click('.modal-foot >> text=Abbrechen');
   check('Abbrechen lässt die Palette unverändert', (await rows()).length === 7);
 
+  // ---------- Neu berechnen nach dem Entfernen: eigene Palette behält Nummern (Lücke bei 06 bleibt)
+  await compute();
+  // warten, bis die Statistik zum neuen Raster gehört (08 hatte nach dem Entfernen alle Steine der 06)
+  const yellowAfterRemove = (after3.find((r) => r.code === '08') || {}).stones;
+  const after3b = await waitRows((rs) => rs.length === 7 && sum(rs) === total && (rs.find((r) => r.code === '08') || {}).stones !== yellowAfterRemove);
+  check(
+    'Neu berechnen nach dem Entfernen: Nummern und Farben bleiben (01–05, 07, 08)',
+    after3b.map((r) => `${r.code}=${r.hex}`).join() === after3.map((r) => `${r.code}=${r.hex}`).join(),
+    after3b.map((r) => `${r.code}=${r.hex}`).join(' '),
+  );
+
   // ---------- Palette aus Materialien: zusammenführen
-  const gone = after3.filter((r) => ['#1E1A18', '#2E4A62', '#FFFF00'].includes(r.hex));
+  const gone = after3b.filter((r) => ['#1E1A18', '#2E4A62', '#FFFF00'].includes(r.hex));
   const expectedMoved = gone.reduce((s, r) => s + r.stones, 0);
   await page.click('[data-testid="palette-from-materials"]');
   await page.waitForSelector('[data-testid="palette-merge-dialog"]');
@@ -179,6 +192,26 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   check('Verknüpfte Farben behalten ihre Farbe', keptSame);
   const notice2 = await page.textContent('[data-testid="palette-notice"]');
   check('Hinweis nach dem Zusammenführen nennt die umgestellten Steine', notice2.includes(expectedMoved.toLocaleString('de-DE')), notice2.trim());
+
+  // ---------- Neu berechnen nach dem Zusammenführen: Nummern bleiben (01, 03, 04, 05, 09, 10)
+  await compute();
+  const after5 = await waitRows((rs) => rs.length === 6 && sum(rs) === total);
+  check(
+    'Neu berechnen nach dem Zusammenführen: Nummern und Farben bleiben',
+    after5.map((r) => `${r.code}=${r.hex}`).join() === after4.map((r) => `${r.code}=${r.hex}`).join(),
+    after5.map((r) => `${r.code}=${r.hex}`).join(' '),
+  );
+
+  // ---------- Andere Farbquelle: Entfernen gilt nur bis zum Neuberechnen – der Dialog sagt das
+  await page.click('[data-testid="palette-mode"] >> text=Automatisch (K-Means)');
+  await page.click('[data-testid="palette-remove"] >> nth=0');
+  await page.waitForSelector('[data-testid="palette-remove-dialog"]');
+  const autoNote = await page.textContent('[data-testid="palette-remove-note"]');
+  check('Automatisch: Dialog empfiehlt kein Neuberechnen, sondern warnt, dass die Farbe zurückkehren kann', /zurückkehren/.test(autoNote) && !/optimale Farbzuordnung/.test(autoNote), autoNote.trim());
+  await page.click('.modal-foot >> text=Abbrechen');
+  const caveat = await page.textContent('[data-testid="palette-recompute-caveat"]').catch(() => '');
+  check('Automatisch: Hinweis unter der Palette, dass Neu berechnen die Palette neu erstellt', /zurückkehren/.test(caveat || ''), (caveat || '').trim());
+  await page.click('[data-testid="palette-mode"] >> text=Eigene Palette');
 
   // ---------- Handy-Breite: Dialog passt
   await page.setViewportSize({ width: 390, height: 844 });

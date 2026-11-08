@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Material } from './core/types';
 import { I18nContext, makeT, numberFormatter, type Lang } from './i18n';
 import { DEFAULT_APP, listMaterials, loadAppSettings, saveAppSettings, type AppSettings } from './storage/db';
+import { ErrorBoundary } from './ui/ErrorBoundary';
 import { Home } from './ui/Home';
 import { Materials } from './ui/Materials';
 import { Projects } from './ui/Projects';
@@ -87,19 +88,22 @@ export function App() {
         </select>
       </header>
       <main>
-        {!ready ? (
-          <div className="page">{t('common.loading')}</div>
-        ) : route === 'project' && parts[1] ? (
-          <Workspace key={parts[1]} id={parts[1]} initialStep={parts[2]} materials={materials} onBack={() => go('#/projects')} />
-        ) : route === 'projects' ? (
-          <Projects go={go} />
-        ) : route === 'materials' ? (
-          <Materials materials={materials} reload={reloadMaterials} />
-        ) : route === 'settings' ? (
-          <Settings app={app} setApp={setApp} />
-        ) : (
-          <Home app={app} go={go} />
-        )}
+        {/* Darstellungsfehler nur in dieser Ansicht abfangen; Wechsel der Ansicht setzt zurück */}
+        <ErrorBoundary key={route === 'project' ? `project/${parts[1] ?? ''}` : route} t={t}>
+          {!ready ? (
+            <div className="page">{t('common.loading')}</div>
+          ) : route === 'project' && parts[1] ? (
+            <Workspace key={parts[1]} id={parts[1]} initialStep={parts[2]} materials={materials} onBack={() => go('#/projects')} />
+          ) : route === 'projects' ? (
+            <Projects go={go} />
+          ) : route === 'materials' ? (
+            <Materials materials={materials} reload={reloadMaterials} />
+          ) : route === 'settings' ? (
+            <Settings app={app} setApp={setApp} />
+          ) : (
+            <Home app={app} go={go} />
+          )}
+        </ErrorBoundary>
       </main>
     </I18nContext.Provider>
   );

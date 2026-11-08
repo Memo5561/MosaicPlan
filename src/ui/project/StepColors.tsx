@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { addPaletteColor, removePaletteColor, updatePaletteColor } from '../../core/edits';
 import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
-import type { Material, MosaicData, PaletteColor } from '../../core/types';
-import { useI18n } from '../../i18n';
+import type { Material, MosaicData, PaletteColor, PaletteMode } from '../../core/types';
+import { tCount, useI18n } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import type { ProjectApi } from './useProject';
 import '../css/w1-mosaic-core.css';
@@ -25,21 +25,30 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
   const { t } = useI18n();
   const s = api.rec!.settings;
   const usesMaterials = s.paletteMode === 'materials' || s.paletteMode === 'auto-snap';
+  const locked = api.paletteLocked;
   return (
     <div>
-      <Field label={t('colors.mode')} hint={t(`colors.mode.${s.paletteMode}.hint`)}>
-        <Segmented
-          value={s.paletteMode}
-          testId="palette-mode"
-          options={[
-            { value: 'auto', label: t('colors.mode.auto') },
-            { value: 'auto-snap', label: t('colors.mode.auto-snap') },
-            { value: 'materials', label: t('colors.mode.materials') },
-            { value: 'custom', label: t('colors.mode.custom') },
-          ]}
-          onChange={(v) => api.setSettings({ paletteMode: v })}
-        />
-      </Field>
+      {locked && (
+        <div className="w1mc-notice w1fx-locked" role="status" data-testid="palette-locked">
+          <span>{t('colors.locked')}</span>
+        </div>
+      )}
+      {/* Während einer Berechnung gesperrt: das Ergebnis bestimmt, worauf die Farbindizes zeigen */}
+      <fieldset className="w1fx-fieldset" disabled={locked}>
+        <Field label={t('colors.mode')} hint={t(`colors.mode.${s.paletteMode}.hint`)}>
+          <Segmented
+            value={s.paletteMode}
+            testId="palette-mode"
+            options={[
+              { value: 'auto', label: t('colors.mode.auto') },
+              { value: 'auto-snap', label: t('colors.mode.auto-snap') },
+              { value: 'materials', label: t('colors.mode.materials') },
+              { value: 'custom', label: t('colors.mode.custom') },
+            ]}
+            onChange={(v) => api.setSettings({ paletteMode: v })}
+          />
+        </Field>
+      </fieldset>
       {(s.paletteMode === 'auto' || s.paletteMode === 'auto-snap') && (
         <Field label={t('colors.count')}>
           <div className="btn-row wrap" data-testid="color-counts">
@@ -93,7 +102,9 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
           <small className="muted">{t('colors.ditherHint')}</small>
         </div>
       </div>
-      <PaletteEditor api={api} materials={materials} />
+      <fieldset className="w1fx-fieldset" disabled={locked} data-testid="palette-fieldset">
+        <PaletteEditor api={api} materials={materials} />
+      </fieldset>
     </div>
   );
 }
@@ -139,6 +150,23 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
 
   const snapNow = (): Snapshot => ({ palette, data: api.computed?.data ?? null, version: api.version });
   const unchangedSince = (s: Snapshot) => s.palette === palette && s.data === (api.computed?.data ?? null) && s.version === api.version;
+  const removingOk = !!removing && unchangedSince(removing.snap);
+  const mergingOk = !!merging && unchangedSince(merging.snap);
+
+  // Ändern sich Palette oder Raster, während ein Dialog offen ist (Ergebnis einer Hintergrundberechnung,
+  // anderer Tab), passt sein Plan nicht mehr: schließen und Bescheid geben – nie mit veralteten Indizes
+  // weiterzeichnen. Ebenso, sobald eine Berechnung beginnt (Palette gesperrt).
+  useEffect(() => {
+    if (removing && (!removingOk || api.paletteLocked)) {
+      setRemoving(null);
+      setNotice(t(api.paletteLocked ? 'colors.locked' : 'colors.rm.changed'));
+    }
+    if (merging && (!mergingOk || api.paletteLocked)) {
+      setMerging(null);
+      setNotice(t(api.paletteLocked ? 'colors.locked' : 'colors.rm.changed'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [palette, api.computed?.data, api.version, api.paletteLocked]);
 
   // ---------- Farbe entfernen: erst Dialog (betroffene Steine, Ersatzfarbe wählbar), dann ausführen
   const askRemove = (i: number) => {
@@ -158,15 +186,20 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
     const { plan, target } = removing;
     const p = palette[plan.index];
     const tp = palette[target];
+    if (!p || !tp) {
+      setRemoving(null);
+      setNotice(t('colors.rm.changed'));
+      return;
+    }
     if (api.computed) {
       const next = removePaletteColor(palette, api.computed.data, plan.index, target, formula);
       api.setPalette(next);
       api.touchMosaic();
     } else api.setPalette(palette.filter((_, k) => k !== plan.index));
     setNotice(
-      api.computed && plan.pieces > 0
-        ? t('colors.rm.done', { code: codeStr(p.code), n: n(plan.pieces), target: `${codeStr(tp.code)} ${tp.name}` })
-        : t('colors.rm.doneNoStones', { code: codeStr(p.code) }),
+      (api.computed && plan.pieces > 0
+        ? tCount(t, 'colors.rm.done', plan.pieces, { code: codeStr(p.code), n: n(plan.pieces), target: `${codeStr(tp.code)} ${tp.name}` })
+        : t('colors.rm.doneNoStones', { code: codeStr(p.code) })) + (api.computed && !custom ? ` ${t(rec.settings.paletteMode === 'materials' ? 'colors.rm.noteMaterials' : 'colors.rm.noteAuto', { code: codeStr(p.code) })}` : ''),
     );
     setRemoving(null);
   };
@@ -186,7 +219,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
     }
     if (palette.length === 0) {
       api.setPalette(p);
-      setNotice(t('colors.merge.replaced', { n: p.length }));
+      setNotice(tCount(t, 'colors.merge.replaced', p.length, { n: p.length }));
       return;
     }
     setMerging({ kind: 'replace', next: p, snap: snapNow() });
@@ -201,7 +234,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
     }
     if (merging.kind === 'replace') {
       api.setPalette(merging.next);
-      setNotice(t('colors.merge.replaced', { n: merging.next.length }));
+      setNotice(tCount(t, 'colors.merge.replaced', merging.next.length, { n: merging.next.length }));
     } else if (api.computed && !merging.plan.unchanged && !merging.plan.noValidMaterials) {
       const plan = merging.plan;
       const next = applyMaterialMerge(plan, api.computed.data, formula);
@@ -336,21 +369,28 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
             {!custom && api.computed && <small className="muted">{t('colors.addHint')}</small>}
           </div>
           {api.computed && <p className="muted small">{t('colors.removeHint')}</p>}
+          {api.computed && !custom && (
+            <p className="muted small" data-testid="palette-recompute-caveat">
+              {t(rec.settings.paletteMode === 'materials' ? 'colors.removeHintMaterials' : 'colors.removeHintAuto')}
+            </p>
+          )}
         </>
       )}
 
-      {removing && (
+      {/* Nur anzeigen, solange der Plan zum aktuellen Stand passt (sonst schließt der Effekt oben den Dialog) */}
+      {removing && removingOk && (
         <RemoveDialog
           palette={palette}
           plan={removing.plan}
           target={removing.target}
           computed={!!api.computed}
+          mode={rec.settings.paletteMode}
           onTarget={(target) => setRemoving({ ...removing, target })}
           onCancel={() => setRemoving(null)}
           onConfirm={doRemove}
         />
       )}
-      {merging && <MergeDialogView dialog={merging} oldCount={palette.length} onCancel={() => setMerging(null)} onApply={applyMerge} />}
+      {merging && mergingOk && <MergeDialogView dialog={merging} oldCount={palette.length} onCancel={() => setMerging(null)} onApply={applyMerge} />}
     </div>
   );
 }
@@ -360,6 +400,7 @@ function RemoveDialog(props: {
   plan: RemovalPlan;
   target: number;
   computed: boolean;
+  mode: PaletteMode;
   onTarget: (i: number) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -368,8 +409,12 @@ function RemoveDialog(props: {
   const { palette, plan, target } = props;
   const p = palette[plan.index];
   const tp = palette[target];
+  // Schutz: passt der Plan nicht mehr zur Palette, nichts zeichnen (der Aufrufer schließt den Dialog)
+  if (!p || !tp || plan.options.some((o) => !palette[o.index])) return null;
   const opt = plan.options.find((o) => o.index === target);
   const showChoice = props.computed && plan.pieces > 0;
+  // Nur bei eigener Palette bleibt eine Entfernung beim Neuberechnen erhalten
+  const noteKey = props.mode === 'custom' ? 'colors.rm.note' : props.mode === 'materials' ? 'colors.rm.noteMaterials' : 'colors.rm.noteAuto';
   return (
     <Modal
       title={t('colors.rm.title', { code: codeStr(p.code), name: p.name })}
@@ -390,7 +435,7 @@ function RemoveDialog(props: {
         {props.computed && plan.pieces === 0 && <p>{t('colors.rm.noStones')}</p>}
         {showChoice && (
           <>
-            <p data-testid="palette-remove-stones">{t('colors.rm.stones', { n: n(plan.pieces) })}</p>
+            <p data-testid="palette-remove-stones">{tCount(t, 'colors.rm.stones', plan.pieces, { n: n(plan.pieces) })}</p>
             <div className="w1mc-swap" data-testid="palette-remove-swap">
               <ColorChip code={p.code} hex={p.hex} name={p.name} />
               <span className="w1mc-arrow" aria-hidden="true">
@@ -412,7 +457,11 @@ function RemoveDialog(props: {
             </label>
           </>
         )}
-        {props.computed && <p className="muted small">{t('colors.rm.note')}</p>}
+        {props.computed && (
+          <p className="muted small" data-testid="palette-remove-note">
+            {t(noteKey, { code: codeStr(p.code) })}
+          </p>
+        )}
       </div>
     </Modal>
   );
@@ -451,11 +500,11 @@ function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: Merg
           <>
             <p className="muted small">{t('colors.merge.intro')}</p>
             <div className={`w1mc-summary ${plan.movedStones > 0 ? '' : 'ok'}`} data-testid="palette-merge-summary">
-              {plan.movedStones > 0 ? t('colors.merge.moved', { n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }) : t('colors.merge.movedNone')}
+              {plan.movedStones > 0 ? tCount(t, 'colors.merge.moved', plan.movedStones, { n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }) : t('colors.merge.movedNone')}
             </div>
             {plan.removed.length > 0 && (
               <>
-                <p>{t('colors.merge.removed', { n: plan.removed.length })}</p>
+                <p>{tCount(t, 'colors.merge.removed', plan.removed.length, { n: plan.removed.length })}</p>
                 <ul className="w1mc-list" data-testid="palette-merge-removed">
                   {plan.removed.map((r) => (
                     <li key={r.code}>
@@ -465,7 +514,7 @@ function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: Merg
                       </span>
                       <ColorChip code={r.targetCode} hex={r.targetHex} name={r.targetName} />
                       <span className="w1mc-meta">
-                        {n(r.pieces)} {t('colors.stones')} · ΔE {n(r.deltaE, 1)}
+                        {t('colors.stones')}: {n(r.pieces)} · ΔE {n(r.deltaE, 1)}
                       </span>
                     </li>
                   ))}
@@ -474,7 +523,7 @@ function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: Merg
             )}
             {plan.added.length > 0 && (
               <>
-                <p>{t('colors.merge.added', { n: plan.added.length })}</p>
+                <p>{tCount(t, 'colors.merge.added', plan.added.length, { n: plan.added.length })}</p>
                 <div className="w1mc-added">
                   {plan.added.map((a) => (
                     <ColorChip key={a.code} code={a.code} hex={a.hex} name={a.name} />
@@ -482,10 +531,10 @@ function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: Merg
                 </div>
               </>
             )}
-            {plan.linked > 0 && <p>{t('colors.merge.linked', { n: plan.linked })}</p>}
+            {plan.linked > 0 && <p>{tCount(t, 'colors.merge.linked', plan.linked, { n: plan.linked })}</p>}
             {plan.recolored.length > 0 && (
               <p>
-                {t('colors.merge.recolored', {
+                {tCount(t, 'colors.merge.recolored', plan.recolored.length, {
                   n: plan.recolored.length,
                   stones: n(plan.recolored.reduce((s, r) => s + r.pieces, 0)),
                   de: n(Math.max(...plan.recolored.map((r) => r.deltaE)), 1),

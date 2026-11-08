@@ -6,6 +6,7 @@
  *  - Σ Rohsteine / Σ +Reserve der Farbtabelle = angezeigte Summen
  *  - Verschnitt (m² und %) passt zur angezeigten, gerundeten Rohsteinzahl
  *  - ein Material, das zwei Farben zugeordnet ist, wird einmal gekauft: Kosten = Packungen je Material × Preis
+ *  - Einkaufsliste je Material: eine Zeile für beide Farben, Fehlbestand bei erfasstem Bestand 0 rot
  *  - Kosten mit Hinweis „unvollständig“, solange Farben ohne Material sind
  *  - Hinweistext nennt den Rohsteinbedarf „Richtwert“ (DE) / „guide value“ (EN) / „yaklaşık değer“ (TR)
  */
@@ -113,14 +114,25 @@ const MAT = {
         const td = tr.querySelector('td');
         if (th && td) kv[th.textContent.trim()] = td.textContent.trim();
       }
-      const tables = [...root.querySelectorAll('table.data')];
-      const colorTable = tables.find((t) => t.querySelectorAll('thead th').length >= 7);
+      const colorTable = root.querySelector('[data-testid="mc-per-color"]');
       const rows = colorTable
         ? [...colorTable.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()))
         : [];
+      const shop = [...root.querySelectorAll('[data-testid="mc-shop-row"]')].map((tr) => ({
+        material: tr.getAttribute('data-material'),
+        cells: [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()),
+        stock: (tr.querySelector('[data-testid="mc-shop-stock"]') || { textContent: '' }).textContent.trim(),
+        short: tr.querySelector('[data-testid="mc-shop-tobuy"]').classList.contains('error'),
+      }));
+      const shopWrap = root.querySelector('[data-testid="mc-shopping"] .table-wrap');
+      const shopFits = !!shopWrap && shopWrap.scrollWidth <= shopWrap.clientWidth + 1;
+      const shopSum = (root.querySelector('[data-testid="mc-shop-sum"]') || { textContent: '' }).textContent.trim();
       const hints = [...root.querySelectorAll('p')].map((p) => p.textContent.trim());
       const badge = !!root.querySelector('table.kv .badge-incomplete');
-      return { kv, rows, hints, badge };
+      // Passt die Farbtabelle in die Seitenleiste (keine versteckten Spalten)?
+      const wrap = colorTable ? colorTable.closest('.table-wrap') : null;
+      const fits = !!wrap && wrap.scrollWidth <= wrap.clientWidth + 1;
+      return { kv, rows, shop, shopSum, hints, badge, fits, shopFits };
     });
   const calc = await readCalc();
   await page.screenshot({ path: path.join(OUT, 'w1mq-01-material.png'), fullPage: true });
@@ -135,12 +147,13 @@ const MAT = {
   const wastePct = num((wasteTxt.match(/\(([^)]*)%\)/) || [])[1]);
   check('Materialberechnung zeigt Summen', Number.isFinite(rawTotal) && Number.isFinite(withRes) && rawTotal > 0, `Rohsteine ${rawTotal}, inkl. Reserve ${withRes}`);
 
-  // Spalten: Nr | Farbe | Steine | geschn. | Rohsteine | +Reserve | Pack.
-  const sumRaw = calc.rows.reduce((a, r) => a + num(r[4]), 0);
-  const sumRes = calc.rows.reduce((a, r) => a + num(r[5]), 0);
+  // Spalten: Nr (mit Farbfeld) | Steine | geschn. | Rohsteine | +Reserve – Packungen stehen je Material
+  const sumRaw = calc.rows.reduce((a, r) => a + num(r[3]), 0);
+  const sumRes = calc.rows.reduce((a, r) => a + num(r[4]), 0);
   check('Σ Rohsteine je Farbe = Rohsteine gesamt', sumRaw === rawTotal, `${sumRaw} = ${rawTotal}`);
   check('Σ +Reserve je Farbe = Rohsteine inkl. Reserve', sumRes === withRes, `${sumRes} = ${withRes}`);
-  const bad = calc.rows.filter((r) => num(r[4]) > num(r[2]) || num(r[5]) < num(r[4]));
+  check('Farbtabelle passt ohne waagerechtes Scrollen in die Seitenleiste', calc.fits);
+  const bad = calc.rows.filter((r) => num(r[3]) > num(r[1]) || num(r[4]) < num(r[3]));
   check('je Farbe: Rohsteine ≤ Steine, +Reserve ≥ Rohsteine', bad.length === 0 && calc.rows.length > 0, `${calc.rows.length} Farben`);
 
   // Verschnitt aus der angezeigten Rohsteinzahl (alle Rohsteine 5 × 5 mm: Rastermaß bzw. Prüfmaterial)
@@ -155,12 +168,21 @@ const MAT = {
   const row02 = calc.rows.find((r) => r[0] === '02');
   const costTxt = calc.kv['Kosten'] || '';
   const cost = num(costTxt.replace(/unvollständig/, ''));
-  check('Farben 01/02 je für sich 1 Packung (Ansicht je Farbe)', !!row01 && !!row02 && num(row01[6]) === 1 && num(row02[6]) === 1, `${row01 && row01[6]} / ${row02 && row02[6]}`);
   check('Kosten je Material: gemeinsames Material einmal gekauft (7,5 statt 15)', Math.abs(cost - 7.5) < 1e-9, costTxt);
   check('Kosten als unvollständig markiert (Farben ohne Material)', calc.badge && /unvollständig/.test(costTxt), costTxt);
 
-  const hintDe = calc.hints.find((h) => /Rohsteinbedarf/.test(h)) || '';
-  check('Hinweis DE: Rohsteinbedarf als Richtwert, je Schnittform, Kosten je Material', /Richtwert/.test(hintDe) && /gespiegelt/.test(hintDe) && /je Material/.test(hintDe), hintDe.slice(0, 90));
+  // Einkaufsliste: Material (Farben, Bestand) | Bedarf | kaufen | Pack. | Kosten
+  const shopRow = calc.shop.find((r) => r.material === MAT.id);
+  const need0102 = row01 && row02 ? num(row01[4]) + num(row02[4]) : NaN;
+  check('Einkaufsliste: eine Zeile für das gemeinsame Material mit den Farben 01 und 02', !!shopRow && /01, 02/.test(shopRow.cells[0]), shopRow ? shopRow.cells[0] : 'fehlt');
+  check('Einkaufsliste: Bedarf = Summe der beiden Farben, 1 Packung, Kosten 7,50', !!shopRow && num(shopRow.cells[1]) === need0102 && num(shopRow.cells[3]) === 1 && Math.abs(num(shopRow.cells[4]) - 7.5) < 1e-9, shopRow ? shopRow.cells.join(' | ') : '');
+  check('Einkaufsliste: Bestand 0 zählt – Fehlbestand = Bedarf, rot markiert', !!shopRow && num(shopRow.stock) === 0 && num(shopRow.cells[2]) === need0102 && shopRow.short, shopRow ? `${shopRow.stock} / ${shopRow.cells[2]}` : '');
+  check('Einkaufsliste: Summe der Kosten = Materialkosten', Math.abs(num(calc.shopSum) - cost) < 1e-9, `${calc.shopSum} = ${cost}`);
+  check('Einkaufsliste passt ohne waagerechtes Scrollen in die Seitenleiste', calc.shopFits);
+
+  const hintDe = calc.hints.find((h) => /Rohsteine: Richtwert/.test(h)) || '';
+  const howDe = calc.hints.find((h) => /gespiegelt/.test(h)) || '';
+  check('Hinweis DE: Rohsteine als Richtwert, kurz; Einzelheiten (je Schnittform, Kosten je Material) aufklappbar', /Richtwert/.test(hintDe) && hintDe.length < 140 && /gespiegelt/.test(howDe) && /je Material/.test(howDe), hintDe);
 
   // ---------- Englisch und Türkisch: Hinweis übersetzt
   const planUrl = page.url();

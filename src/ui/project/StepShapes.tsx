@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { diagA, diagB, pieceCuttable, subdivisionCuttable } from '../../core/pieces';
+import { anyLineSplitCuttable, diagA, diagB, maxAllowedMinWidth, pieceCuttable, subdivisionCuttable, worstWidth } from '../../core/pieces';
 import type { Region } from '../../core/types';
 import { useI18n } from '../../i18n';
 import { Badge, Field, NumberInput, Segmented, Slider, Toggle } from '../components';
+import { widthFailText } from './StoneDialog';
 import { detectFaces, renderCropped } from './imagePrep';
 import type { ProjectApi } from './useProject';
 import { uid } from '../../storage/db';
@@ -19,7 +20,12 @@ export function StepShapes({ api }: { api: ProjectApi }) {
   // Dieselbe Prüfung wie in der Berechnung (pieceCuttable auf den exakten Teilen eines ganzen Rastersteins)
   const tile = { x: 0, y: 0, w: s.tileW, h: s.tileH };
   const subOk = subdivisionCuttable(tile, k, s.joint, sh.minPieceMm);
-  const diagOk = [...diagA(tile, s.joint), ...diagB(tile, s.joint)].every((p) => pieceCuttable(p, sh.minPieceMm));
+  const diagPieces = [...diagA(tile, s.joint), ...diagB(tile, s.joint)];
+  // gemessene Werte des schmalsten Dreiecks (Inkreismaß ist bei Dreiecken die strengere Bedingung)
+  const diagWidth = worstWidth(diagPieces, sh.minPieceMm);
+  const diagOk = diagPieces.every((p) => pieceCuttable(p, sh.minPieceMm));
+  const diagMax = diagOk ? 0 : maxAllowedMinWidth(diagPieces);
+  const lineOk = useMemo(() => anyLineSplitCuttable(tile, s.joint, sh.minPieceMm), [s.tileW, s.tileH, s.joint, sh.minPieceMm]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="two-col">
       <div>
@@ -27,10 +33,18 @@ export function StepShapes({ api }: { api: ProjectApi }) {
         <Toggle checked={sh.diagonal} onChange={(v) => set({ diagonal: v })} label={t('shapes.diagonal')} hint={t('shapes.diagonalHint')} />
         {sh.diagonal && !diagOk && (
           <div className="shape-note" data-testid="diag-too-small">
-            <Badge kind="warn">{t('shapes.diagTooSmall', { w: n(s.tileW, 1), h: n(s.tileH, 1), g: n(s.joint, 1), min: n(sh.minPieceMm, 1) })}</Badge>
+            <Badge kind="warn">
+              {t('shapes.diagTooSmall', { w: n(s.tileW, 1), h: n(s.tileH, 1), g: n(s.joint, 1), min: n(sh.minPieceMm, 2), why: widthFailText(diagWidth, sh.minPieceMm, t, n) })}
+              {diagMax > 0 && ` ${t('shapes.diagMaxMin', { max: n(diagMax, 1) })}`}
+            </Badge>
           </div>
         )}
         <Toggle checked={sh.line} onChange={(v) => set({ line: v })} label={t('shapes.line')} hint={t('shapes.lineHint')} />
+        {sh.line && !lineOk && (
+          <div className="shape-note" data-testid="line-too-small">
+            <Badge kind="warn">{t('shapes.lineTooSmall', { w: n(s.tileW, 1), h: n(s.tileH, 1), g: n(s.joint, 1), min: n(sh.minPieceMm, 2) })}</Badge>
+          </div>
+        )}
         <Toggle checked={sh.subdivide} onChange={(v) => set({ subdivide: v })} label={t('shapes.subdivide')} hint={t('shapes.subdivideHint')} />
         {sh.subdivide && (
           <Field label={t('shapes.subK')} hint={t('shapes.subSize', { w: n(subSize, 2), h: n(subSizeH, 2) })}>

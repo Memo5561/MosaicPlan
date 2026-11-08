@@ -17,6 +17,8 @@ describe('Übersetzungen', () => {
       if (f.includes('i18n')) continue;
       const src = readFileSync(f, 'utf8');
       for (const m of src.matchAll(/\bt\(\s*'([a-zA-Z0-9_.\-]+)'/g)) used.add(m[1]);
+      // Texte mit Anzahl: tCount(t, 'schlüssel', n, …)
+      for (const m of src.matchAll(/\btCount\(\s*\w+\s*,\s*'([a-zA-Z0-9_.\-]+)'/g)) used.add(m[1]);
     }
     const dynamic = [
       ...['photo', 'size', 'tiles', 'joint', 'colors', 'shapes', 'compute', 'preview', 'plan', 'pdf'].flatMap((s) => [`step.${s}`, `step.${s}.intro`]),

@@ -29,7 +29,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     h.appendChild(cv);
   }, [api.processed]);
 
-  if (!c) return <p className="muted">{t('preview.notComputed')}</p>;
+  if (!c) return <p className={api.integrityError ? 'error' : 'muted'}>{t(api.integrityError ? 'compute.err.integrity' : 'preview.notComputed')}</p>;
   const rec = api.rec!;
   const palette = rec.palette;
   return (

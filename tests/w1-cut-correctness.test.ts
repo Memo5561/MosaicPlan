@@ -252,7 +252,7 @@ describe('Geometrie: Hülle, schmalste Stelle, kleinster Winkel', () => {
 
 // ---------------------------------------------------------------- Mindestbreite
 
-describe('pieceCuttable: Mindestbreite = schmalste Stelle', () => {
+describe('pieceCuttable: Mindestbreite = schmalste Stelle und Inkreismaß', () => {
   it('Streifen: 1 × 5 mm bei 1,5 mm abgelehnt, 1,5 × 5 mm angenommen; 1 × 8 und 1 × 10 abgelehnt', () => {
     expect(pieceCuttable(rectPoly(0, 0, 1, 5), 1.5)).toBe(false);
     expect(pieceCuttable(rectPoly(0, 0, 1.5, 5), 1.5)).toBe(true);
@@ -634,7 +634,7 @@ describe('Berechnung: jedes Schnittteil ist mindestens so breit wie eingestellt'
 });
 
 describe('Texte', () => {
-  it('alle Fehlercodes und neuen Texte in DE, EN und TR; Feld heißt „Schmalste Stelle eines Schnittteils“', () => {
+  it('alle Fehlercodes und neuen Texte in DE, EN und TR; Feld heißt „Mindestbreite eines Schnittteils“', () => {
     const keys = [
       ...(['line-outside', 'diag-empty', 'too-small', 'use-setFreePieces'] as const).map((c) => `edit.err.${c}`),
       'cut.invalid',
@@ -649,13 +649,23 @@ describe('Texte', () => {
       'shapes.diagTooSmall',
       'edit.notPossible',
       'edit.diag',
+      'width.failCaliper',
+      'width.failIncircle',
+      'width.degenerate',
+      'shapes.diagMaxMin',
+      'shapes.lineTooSmall',
+      'cut.nonConvexNotchOnly',
+      'cut.nonConvexPlain',
     ];
     for (const lang of ['de', 'en', 'tr'] as const) {
       const d = dictionaries[lang] as Record<string, string>;
       for (const k of keys) expect(d[k], `${lang}:${k}`).toBeTruthy();
     }
     const de = dictionaries.de as Record<string, string>;
-    expect(de['shapes.minPiece']).toBe('Schmalste Stelle eines Schnittteils (mm)');
+    // Die Einstellung prüft schmalste Stelle UND Inkreismaß – der Name behauptet nicht nur eines davon
+    expect(de['shapes.minPiece']).toBe('Mindestbreite eines Schnittteils (mm)');
+    expect(de['shapes.minPieceHint']).toMatch(/schmalsten Stelle/);
+    expect(de['shapes.minPieceHint']).toMatch(/Inkreismaß/);
     expect(de['cut.notch']).toMatch(/Einschnitt \{i\}: von .* bis Innenecke .* nicht durchritzen/);
   });
 
@@ -672,6 +682,9 @@ describe('Texte', () => {
     expect(L).toContain('Einschnitt 1: von (4 | 0) bis Innenecke (4 | 4) mm – nicht durchritzen, mit der Zange ausknabbern bzw. schleifen.');
     expect(L).toContain('Einschnitt 2: von (10 | 4) bis Innenecke (4 | 4) mm – nicht durchritzen, mit der Zange ausknabbern bzw. schleifen.');
     expect(L.some((s) => /^Schnitt \d/.test(s))).toBe(false);
+    // nur Einschnitte: kein Hinweis „zuerst die durchgehenden Schnitte“ (die es hier nicht gibt)
+    expect(L.some((s) => /Nicht konvex: Die Einschnitte/.test(s))).toBe(true);
+    expect(L.some((s) => /durchgehenden Schnitte/.test(s))).toBe(false);
     // Pfeil: ein Einschnitt endet an der Steinkante (kein Eckpunkt)
     const A = cutInstructionItems(analyzeCut(ARROW, 10, 10), t, n).map((x) => x.text);
     expect(A.some((s) => /bis zur Steinkante \(3 \| 2\)/.test(s))).toBe(true);
@@ -679,6 +692,7 @@ describe('Texte', () => {
     const S = cutInstructionItems(analyzeCut(SMALL_L, 10, 10), t, n).map((x) => x.text);
     expect(S.filter((s) => /^Schnitt \d: von/.test(s))).toEqual(['Schnitt 1: von (6 | 0) nach (6 | 10) mm', 'Schnitt 2: von (0 | 6) nach (10 | 6) mm']);
     expect(S.some((s) => s.startsWith('Einschnitt 2: von (6 | 2) bis Innenecke (3 | 2)'))).toBe(true);
+    expect(S.some((s) => /Zuerst die durchgehenden Schnitte, dann die Einschnitte/.test(s))).toBe(true);
     const tri = cutInstructionItems(analyzeCut(diagA({ x: 0, y: 0, w: 5, h: 5 }, 1)[0], 5, 5), t, n);
     expect(tri.filter((x) => x.kind === 'through')).toHaveLength(1);
     expect(tri.some((x) => x.kind === 'notch')).toBe(false);

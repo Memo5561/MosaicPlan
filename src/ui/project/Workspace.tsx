@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Material } from '../../core/types';
-import { useI18n } from '../../i18n';
+import { tCount, useI18n } from '../../i18n';
 import { Badge } from '../components';
 import { StepColors } from './StepColors';
 import { StepCompute } from './StepCompute';
@@ -11,6 +11,7 @@ import { StepPlan } from './StepPlan';
 import { StepPreview } from './StepPreview';
 import { StepShapes } from './StepShapes';
 import { useProject } from './useProject';
+import '../css/w1-review-fixes.css';
 
 const STEPS = ['photo', 'size', 'tiles', 'joint', 'colors', 'shapes', 'compute', 'preview', 'plan', 'pdf'] as const;
 type Step = (typeof STEPS)[number];
@@ -57,6 +58,25 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           </button>
         )}
       </div>
+      {/* Gespeichertes Mosaik passt nicht zum Projekt: auf jedem Schritt sichtbar, nicht nur in Schritt 7 */}
+      {api.integrityError && !api.computed && (
+        <div className="w1fx-banner" role="alert" data-testid="integrity-banner">
+          <span>{t('compute.err.integrity')}</span>
+          {step !== 'compute' && (
+            <button className="btn small" onClick={() => setStep('compute')}>
+              {t('integrity.goCompute')}
+            </button>
+          )}
+        </div>
+      )}
+      {api.repairedCells > 0 && (
+        <div className="w1fx-banner info" role="status" data-testid="repair-banner">
+          <span>{tCount(t, 'repair.notice', api.repairedCells, { n: api.repairedCells })}</span>
+          <button className="icon-btn" onClick={api.dismissRepaired} aria-label={t('common.close')}>
+            ✕
+          </button>
+        </div>
+      )}
       <nav className="stepper" aria-label={t('project.steps')}>
         {STEPS.map((s, i) => (
           <button

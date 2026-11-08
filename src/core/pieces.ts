@@ -163,24 +163,97 @@ export function isDegeneratePiece(poly: Pt[]): boolean {
   return !(area(p) >= 1e-6);
 }
 
+/** Ergebnis der Mindestbreiten-Prüfung eines Teils mit den tatsächlich gemessenen Werten (mm). */
+export interface WidthCheck {
+  /** schmalste Stelle = minimale Kaliberweite (bei nicht-konvexen Teilen: der konvexen Hülle) */
+  caliper: number;
+  /** Inkreismaß = 4 · Fläche / Umfang; bei Dreiecken genau der Inkreisdurchmesser */
+  incircle: number;
+  ok: boolean;
+  /** welche Bedingung nicht erfüllt ist ('caliper' hat Vorrang, wenn beide verletzt sind) */
+  failed: 'degenerate' | 'caliper' | 'incircle' | null;
+}
+
 /**
- * Ist das Teil mit der eingestellten Mindestbreite („schmalste Stelle eines Schnittteils“) schneidbar?
- * Beide Bedingungen müssen gelten:
- *  1. 2·Fläche/Umfang ≥ min/2 (bisheriges Kriterium; bei Dreiecken: Inkreisdurchmesser ≥ min),
- *  2. schmalste Stelle (minimale Kaliberweite) ≥ min.
- * Bedingung 2 verhindert schmale Streifen wie 1 × 5 mm bei min 1,5 mm, die Bedingung 1 allein zulässt.
+ * Mindestbreite eines Schnittteils („Mindestbreite“ in Schritt Steinformen). Beide Bedingungen müssen gelten:
+ *  1. schmalste Stelle (minimale Kaliberweite) ≥ min – verhindert schmale Streifen wie 1 × 5 mm,
+ *  2. Inkreismaß 4·Fläche/Umfang ≥ min (gleichwertig zum früheren Kriterium 2·Fläche/Umfang ≥ min/2) –
+ *     bei Dreiecken ist das der Inkreisdurchmesser und stets die strengere Bedingung (spitze Ecken).
  * Gegenüber früher wird nur verschärft, nie gelockert. Alle automatischen Teile (Diagonale,
  * Kantenschnitt, Teilsteine) sind konvex – dort ist die Breite exakt; bei nicht-konvexen
  * Freiformteilen ist es die Breite der konvexen Hülle (nur näherungsweise).
  */
-export function pieceCuttable(poly: Pt[], minPieceMm: number): boolean {
-  if (poly.length < 3) return false;
+export function pieceWidthCheck(poly: Pt[], minPieceMm: number): WidthCheck {
+  if (poly.length < 3) return { caliper: 0, incircle: 0, ok: false, failed: 'degenerate' };
   const A = area(poly);
   const P = edgeLengths(poly).reduce((s, v) => s + v, 0);
-  if (P <= 0) return false;
-  if (!((2 * A) / P >= minPieceMm / 2 - 1e-9)) return false;
-  if (isDegeneratePiece(poly)) return false;
-  return minCaliperWidth(poly) >= minPieceMm - 1e-6;
+  if (!(P > 0) || isDegeneratePiece(poly)) return { caliper: 0, incircle: 0, ok: false, failed: 'degenerate' };
+  const incircle = (4 * A) / P;
+  const caliper = minCaliperWidth(poly);
+  // exakt dieselben Toleranzen wie bisher (Golden-Hashes bleiben gleich)
+  const incOk = (2 * A) / P >= minPieceMm / 2 - 1e-9;
+  const calOk = caliper >= minPieceMm - 1e-6;
+  return { caliper, incircle, ok: incOk && calOk, failed: !calOk ? 'caliper' : !incOk ? 'incircle' : null };
+}
+
+/** Ist das Teil mit der eingestellten Mindestbreite schneidbar? (siehe pieceWidthCheck) */
+export function pieceCuttable(poly: Pt[], minPieceMm: number): boolean {
+  return pieceWidthCheck(poly, minPieceMm).ok;
+}
+
+/** Das am wenigsten breite Teil einer Liste (zuerst ein ungültiges, sonst das mit dem kleinsten Grenzwert). */
+export function worstWidth(polys: Pt[][], minPieceMm: number): WidthCheck {
+  let worst: WidthCheck | null = null;
+  for (const p of polys) {
+    const w = pieceWidthCheck(p, minPieceMm);
+    if (!worst || (w.failed === 'degenerate' && worst.failed !== 'degenerate') || (worst.failed !== 'degenerate' && Math.min(w.caliper, w.incircle) < Math.min(worst.caliper, worst.incircle))) worst = w;
+  }
+  return worst ?? { caliper: 0, incircle: 0, ok: false, failed: 'degenerate' };
+}
+
+/**
+ * Größte Mindestbreite (in 0,1-mm-Schritten abgerundet), bei der alle Teile noch zulässig sind –
+ * für Hinweise wie „Dreiecke wären bis zu einer Mindestbreite von 1,9 mm möglich“. 0, wenn nie.
+ */
+export function maxAllowedMinWidth(polys: Pt[][]): number {
+  let lim = Infinity;
+  for (const p of polys) {
+    const w = pieceWidthCheck(p, 0);
+    if (w.failed === 'degenerate') return 0;
+    lim = Math.min(lim, w.caliper, w.incircle);
+  }
+  if (!Number.isFinite(lim)) return 0;
+  let v = Math.floor(lim * 10 + 1e-9) / 10;
+  // gegen Rundung absichern: der angezeigte Wert muss die Prüfung tatsächlich bestehen
+  while (v > 0 && !polys.every((p) => pieceCuttable(p, v))) v = Math.round((v - 0.1) * 10) / 10;
+  return Math.max(0, v);
+}
+
+/** Winkel der automatischen Kantenschnitte (Normalenrichtung, 15°-Schritte) – wie in computeMosaic. */
+export const LINE_ANGLES = Array.from({ length: 12 }, (_, i) => (i * 15 * Math.PI) / 180);
+
+/** Versätze der automatischen Kantenschnitte für eine Richtung (0,5-mm-Raster) – wie in computeMosaic. */
+export function lineOffsets(r: CellRect, nx: number, ny: number): number[] {
+  const ext = Math.abs(nx) * (r.w / 2) + Math.abs(ny) * (r.h / 2);
+  const out: number[] = [];
+  for (let d = -ext + 0.5; d <= ext - 0.5 + 1e-9; d += 0.5) out.push(Math.round(d * 2) / 2);
+  return out;
+}
+
+/**
+ * Gibt es für diese Zelle überhaupt einen automatischen Kantenschnitt (Winkel/Versatz wie in der
+ * Berechnung), dessen beide Teile die Mindestbreite erfüllen? Rein geometrisch, ohne Bildinhalt.
+ */
+export function anyLineSplitCuttable(r: CellRect, g: number, minPieceMm: number): boolean {
+  for (const a of LINE_ANGLES) {
+    const nx = Math.cos(a);
+    const ny = Math.sin(a);
+    for (const d of lineOffsets(r, nx, ny)) {
+      const [pa, pb] = lineSplit(r, nx, ny, d, g);
+      if (pieceCuttable(pa, minPieceMm) && pieceCuttable(pb, minPieceMm)) return true;
+    }
+  }
+  return false;
 }
 
 /** Ist die k×k-Unterteilung dieser Zelle zulässig? Dieselbe Regel wie in der Berechnung und bei manuellen Änderungen. */
@@ -230,6 +303,29 @@ export interface CutInfo {
    * Nullwerte; es gibt keine Schnittmaße und keine Vorlage.
    */
   invalid?: boolean;
+}
+
+/** Eine Schnittlinie mit Art und eigener Nummer (Schnitt 1, 2 … bzw. Einschnitt 1, 2 …). */
+export interface CutLineItem {
+  /** 'notch': Einschnitt bis zu einer Innenecke (Ecke des Teils), 'notchEdge': bis zur Steinkante */
+  kind: 'through' | 'notch' | 'notchEdge';
+  no: number;
+  a: Pt;
+  b: Pt;
+}
+
+/**
+ * Schnittlinien in Ausführungsreihenfolge (durchgehende Schnitte zuerst), getrennt nummeriert –
+ * dieselbe Liste für das Steindetail, die Schnittvorlage und das PDF.
+ */
+export function cutLineItems(info: CutInfo): CutLineItem[] {
+  const isVertex = (p: Pt) => info.polyInRaw.some((q) => Math.abs(q.x - p.x) < 1e-6 && Math.abs(q.y - p.y) < 1e-6);
+  let through = 0;
+  let notch = 0;
+  return info.cutLines.map(([a, b], i): CutLineItem => {
+    if ((info.cutKinds[i] ?? 'through') === 'notch') return { kind: isVertex(b) ? 'notch' : 'notchEdge', no: ++notch, a, b };
+    return { kind: 'through', no: ++through, a, b };
+  });
 }
 
 function placeCandidates(poly: Pt[], W: number, H: number): Pt[][] {

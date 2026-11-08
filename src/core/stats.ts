@@ -105,6 +105,12 @@ export interface Stats {
    * enthalten, aber in keiner Farbe und in keinem Rohstein-/Materialbedarf.
    */
   invalidColorPieces: number;
+  /**
+   * Teile ohne Fläche (analyzeCut: invalid, z. B. Dreiecksteilung trotz zu breiter Fuge aus älteren
+   * Projekten). Sie sind KEINE Steine: in keiner Summe (Steine, Formen, Größen, Rohsteine, „passt
+   * nicht“) enthalten, sondern nur hier gezählt.
+   */
+  invalidPieces: number;
   /** Palettenindizes, deren Material-ID auf kein vorhandenes Material zeigt */
   missingMaterials: number[];
   rawTotal: number;
@@ -398,6 +404,7 @@ export function computeStats(
   let cutPieces = 0;
   let notFitting = 0;
   let invalidColorPieces = 0;
+  let invalidPieces = 0;
 
   for (let row = rg.r0; row < rg.r1; row++) {
     for (let col = rg.c0; col < rg.c1; col++) {
@@ -409,6 +416,11 @@ export function computeStats(
         const cs = perColor[p.color] as ColorStat | undefined;
         const r = raw(p.color);
         const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, r);
+        if (ci.invalid) {
+          // kein Stein (keine Fläche): nicht zählen, nur melden
+          invalidPieces++;
+          continue;
+        }
         pieces++;
         stoneArea += ci.area;
         const isPlaced = (prog >> i) & 1;
@@ -492,6 +504,7 @@ export function computeStats(
     uncutPieces: pieces - cutPieces,
     notFitting,
     invalidColorPieces,
+    invalidPieces,
     missingMaterials,
     rawTotal,
     rawWithReserveTotal: rawRes,

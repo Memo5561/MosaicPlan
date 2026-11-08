@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { deltaE2000 } from '../../core/color';
-import { bbox, centroid, minCaliperWidth, type Pt } from '../../core/geometry';
+import { bbox, centroid, type Pt } from '../../core/geometry';
 import { cellId, sectionOfCell, type Layout, type SectionGrid } from '../../core/layout';
-import { analyzeCut, cellPieces, cellRect, pieceCuttable, type CutInfo } from '../../core/pieces';
+import { analyzeCut, cellPieces, cellRect, cutLineItems, pieceWidthCheck, type CutInfo, type WidthCheck } from '../../core/pieces';
 import {
   allowedCellKinds,
+  cellKindWidth,
   checkCellKind,
   neighbors,
   sameCellKind,
@@ -44,17 +45,28 @@ export function cutInstructionItems(info: CutInfo, t: TFunc, n: (v: number, d?: 
   } else {
     info1(t('cut.polygon', { k: info.polyInRaw.length }));
   }
-  const isVertex = (p: Pt) => info.polyInRaw.some((q) => Math.abs(q.x - p.x) < 1e-6 && Math.abs(q.y - p.y) < 1e-6);
-  let through = 0;
-  let notch = 0;
-  info.cutLines.forEach(([a, b], i) => {
-    const pts = { x1: n(a.x, 1), y1: n(a.y, 1), x2: n(b.x, 1), y2: n(b.y, 1) };
-    if ((info.cutKinds[i] ?? 'through') === 'notch') out.push({ text: t(isVertex(b) ? 'cut.notch' : 'cut.notchEdge', { i: ++notch, ...pts }), kind: 'notch' });
-    else out.push({ text: t('cut.line', { i: ++through, ...pts }), kind: 'through' });
-  });
+  // dieselbe Reihenfolge und Nummerierung wie im PDF (cutLineItems)
+  const items = cutLineItems(info);
+  for (const it of items) {
+    const pts = { x1: n(it.a.x, 1), y1: n(it.a.y, 1), x2: n(it.b.x, 1), y2: n(it.b.y, 1) };
+    if (it.kind === 'through') out.push({ text: t('cut.line', { i: it.no, ...pts }), kind: 'through' });
+    else out.push({ text: t(it.kind === 'notch' ? 'cut.notch' : 'cut.notchEdge', { i: it.no, ...pts }), kind: 'notch' });
+  }
   info1(t('cut.angles', { a: info.angles.map((a) => `${n(a, 1)}°`).join(', ') }));
-  if (!info.convex) info1(t('cut.nonConvex'));
+  if (!info.convex) {
+    // Reihenfolge-Hinweis nur, wenn es beides gibt – sonst verwiese er auf Schritte, die es nicht gibt
+    const through = items.some((it) => it.kind === 'through');
+    const notch = items.some((it) => it.kind !== 'through');
+    info1(t(through && notch ? 'cut.nonConvex' : notch ? 'cut.nonConvexNotchOnly' : 'cut.nonConvexPlain'));
+  }
   return out;
+}
+
+/** Gemessene Werte zur Mindestbreite als Text, z. B. „Inkreismaß 1,93 mm < 2 mm (schmalste Stelle 2,33 mm)“. */
+export function widthFailText(w: WidthCheck, min: number, t: TFunc, n: (v: number, d?: number) => string): string {
+  if (w.failed === 'degenerate') return t('width.degenerate');
+  const vals = { cal: n(w.caliper, 2), inc: n(w.incircle, 2), min: n(min, 2) };
+  return t(w.failed === 'incircle' ? 'width.failIncircle' : 'width.failCaliper', vals);
 }
 
 export function cutInstruction(info: CutInfo, t: TFunc, n: (v: number, d?: number) => string): string[] {
@@ -115,20 +127,29 @@ export function StoneDialog(p: Props) {
   const shapeKind = data.kind[idx];
   const isCutKind = shapeKind === CellKind.DIAG_A || shapeKind === CellKind.DIAG_B || shapeKind === CellKind.LINE || shapeKind === CellKind.SUB || shapeKind === CellKind.FREE;
   // Gespeicherte Teile, die nach der aktuellen Mindestbreite nicht schneidbar sind (z. B. ältere Berechnung)
-  const belowMin = !info.invalid && isCutKind && !pieceCuttable(piece.poly, p.minPieceMm);
+  const width = pieceWidthCheck(piece.poly, p.minPieceMm);
+  const belowMin = !info.invalid && isCutKind && !width.ok;
   const allowed = allowedCellKinds(layout, data, p.row, p.col, p.minPieceMm);
   const lineChange: KindChange = { kind: CellKind.LINE, angleDeg: lineAngle, offsetMm: lineOffset };
   const lineErr = checkCellKind(layout, p.row, p.col, lineChange, p.minPieceMm);
-  const reason = (err: string | null) => (err ? t(`edit.err.${err}`) : undefined);
+  // Grund mit den gemessenen Werten des schmalsten Teils (statt nur „zu schmal“)
+  const why = (err: string | null, ch: KindChange): string | undefined => {
+    if (!err) return undefined;
+    if (err !== 'too-small') return t(`edit.err.${err}`);
+    const w = cellKindWidth(layout, p.row, p.col, ch, p.minPieceMm);
+    return `${t('edit.err.too-small')} ${w ? widthFailText(w, p.minPieceMm, t, n) : ''}`.trim();
+  };
+  const reason = why;
   const reasons: { label: string; text: string }[] = [];
-  if (allowed.diagA && allowed.diagA === allowed.diagB) reasons.push({ label: t('edit.diag'), text: t(`edit.err.${allowed.diagA}`) });
+  // beide Diagonalen eines Rechtecks sind Spiegelbilder (gleiche Maße) – ein gemeinsamer Grund genügt
+  if (allowed.diagA && allowed.diagA === allowed.diagB) reasons.push({ label: t('edit.diag'), text: why(allowed.diagA, { kind: CellKind.DIAG_A })! });
   else {
-    if (allowed.diagA) reasons.push({ label: t('edit.diagA'), text: t(`edit.err.${allowed.diagA}`) });
-    if (allowed.diagB) reasons.push({ label: t('edit.diagB'), text: t(`edit.err.${allowed.diagB}`) });
+    if (allowed.diagA) reasons.push({ label: t('edit.diagA'), text: why(allowed.diagA, { kind: CellKind.DIAG_A })! });
+    if (allowed.diagB) reasons.push({ label: t('edit.diagB'), text: why(allowed.diagB, { kind: CellKind.DIAG_B })! });
   }
-  if (allowed.sub2) reasons.push({ label: '2×2', text: t(`edit.err.${allowed.sub2}`) });
-  if (allowed.sub3) reasons.push({ label: '3×3', text: t(`edit.err.${allowed.sub3}`) });
-  if (lineErr) reasons.push({ label: `${t('edit.lineCut')} ${n(lineAngle, 1)}° / ${n(lineOffset, 1)} mm`, text: t(`edit.err.${lineErr}`) });
+  if (allowed.sub2) reasons.push({ label: '2×2', text: why(allowed.sub2, { kind: CellKind.SUB, k: 2 })! });
+  if (allowed.sub3) reasons.push({ label: '3×3', text: why(allowed.sub3, { kind: CellKind.SUB, k: 3 })! });
+  if (lineErr) reasons.push({ label: `${t('edit.lineCut')} ${n(lineAngle, 1)}° / ${n(lineOffset, 1)} mm`, text: why(lineErr, lineChange)! });
 
   const setKind = (ch: KindChange) => {
     // Unveränderte Form: nichts tun (Verlegestatus und gewähltes Teil bleiben erhalten)
@@ -137,7 +158,7 @@ export function StoneDialog(p: Props) {
       return;
     }
     const err = setCellKind(layout, data, p.row, p.col, ch, p.minPieceMm);
-    if (err) setMsg(t(`edit.err.${err}`));
+    if (err) setMsg(why(err, ch) ?? t(`edit.err.${err}`));
     else {
       setMsg(null);
       p.onNavigate(p.row, p.col, 0);
@@ -192,7 +213,7 @@ export function StoneDialog(p: Props) {
                   {n(info.w, 2)} × {n(info.h, 2)} mm · {t('stone.area')} {n(info.area, 2)} mm²
                   {!info.invalid && info.needsCut && info.convex && (
                     <small className="muted block" data-testid="stone-min-width">
-                      {t('stone.minWidth', { w: n(minCaliperWidth(piece.poly), 2) })}
+                      {t('stone.minWidth', { w: n(width.caliper, 2), inc: n(width.incircle, 2) })}
                     </small>
                   )}
                 </td>
@@ -257,7 +278,7 @@ export function StoneDialog(p: Props) {
           </ul>
           {belowMin && (
             <div className="stone-width-note" data-testid="stone-below-min">
-              <Badge kind="warn">{t('stone.belowMin', { min: n(p.minPieceMm, 1) })}</Badge>
+              <Badge kind="warn">{t('stone.belowMin', { min: n(p.minPieceMm, 2), why: widthFailText(width, p.minPieceMm, t, n) })}</Badge>
             </div>
           )}
           {rec !== 0 && (
@@ -327,7 +348,7 @@ export function StoneDialog(p: Props) {
             <button
               className={`btn small ${shapeKind === CellKind.DIAG_A ? 'primary' : ''}`}
               disabled={!!allowed.diagA}
-              title={reason(allowed.diagA)}
+              title={reason(allowed.diagA, { kind: CellKind.DIAG_A })}
               onClick={() => setKind({ kind: CellKind.DIAG_A })}
               data-testid="kind-diagA"
             >
@@ -336,7 +357,7 @@ export function StoneDialog(p: Props) {
             <button
               className={`btn small ${shapeKind === CellKind.DIAG_B ? 'primary' : ''}`}
               disabled={!!allowed.diagB}
-              title={reason(allowed.diagB)}
+              title={reason(allowed.diagB, { kind: CellKind.DIAG_B })}
               onClick={() => setKind({ kind: CellKind.DIAG_B })}
               data-testid="kind-diagB"
             >
@@ -345,7 +366,7 @@ export function StoneDialog(p: Props) {
             <button
               className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 4 ? 'primary' : ''}`}
               disabled={!!allowed.sub2}
-              title={reason(allowed.sub2)}
+              title={reason(allowed.sub2, { kind: CellKind.SUB, k: 2 })}
               onClick={() => setKind({ kind: CellKind.SUB, k: 2 })}
               data-testid="kind-sub2"
             >
@@ -354,7 +375,7 @@ export function StoneDialog(p: Props) {
             <button
               className={`btn small ${shapeKind === CellKind.SUB && pieces.length === 9 ? 'primary' : ''}`}
               disabled={!!allowed.sub3}
-              title={reason(allowed.sub3)}
+              title={reason(allowed.sub3, { kind: CellKind.SUB, k: 3 })}
               onClick={() => setKind({ kind: CellKind.SUB, k: 3 })}
               data-testid="kind-sub3"
             >
@@ -371,7 +392,7 @@ export function StoneDialog(p: Props) {
             <button
               className={`btn small ${shapeKind === CellKind.LINE ? 'primary' : ''}`}
               disabled={!!lineErr}
-              title={reason(lineErr)}
+              title={reason(lineErr, lineChange)}
               onClick={() => setKind(lineChange)}
               data-testid="kind-line"
             >

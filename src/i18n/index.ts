@@ -34,6 +34,19 @@ export function makeT(lang: Lang): TFunc {
   };
 }
 
+/**
+ * Text mit Anzahl: Für genau 1 wird – falls vorhanden – die Einzahl `${key}.one` verwendet
+ * („1 Stein hat …“ statt „1 Steine haben …“), sonst der Grundschlüssel (Mehrzahl). Sprachen ohne
+ * eigene Einzahlform (Türkisch) enthalten unter `.one` denselben Text.
+ */
+export function tCount(t: TFunc, key: string, count: number, params?: Record<string, string | number>): string {
+  if (count === 1) {
+    const one = t(`${key}.one`, params);
+    if (one !== `${key}.one`) return one;
+  }
+  return t(key, params);
+}
+
 export interface I18nCtx {
   lang: Lang;
   t: TFunc;

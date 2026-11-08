@@ -17,7 +17,7 @@ import {
   type MaterialsCsvOk,
 } from '../core/materialsCsv';
 import type { Material } from '../core/types';
-import { useI18n, type TFunc } from '../i18n';
+import { tCount, useI18n, type TFunc } from '../i18n';
 import { deleteMaterial, listProjects, saveMaterial, uid } from '../storage/db';
 import { downloadBlob, Field, Modal, NumberInput, Swatch } from './components';
 import './css/w1-materials-csv.css';
@@ -117,6 +117,32 @@ function delimName(t: TFunc, d: string): string {
 function parseErrorText(t: TFunc, e: MaterialsCsvError): string {
   const cols = e.error === 'no-hex-column' ? e.columns.map((c) => c.header).join(', ') : e.headers.join(', ');
   return t(`matcsv.err.${e.error}`, { cols: cols || '–' });
+}
+
+/** Felder, in denen 0 „unbekannt“ bedeutet (fehlende Angabe beim Import oder nie eingetragen). */
+const ZERO_IS_UNKNOWN = new Set<keyof Material>(['lengthMm', 'widthMm', 'thicknessMm', 'price', 'piecesPerPack']);
+
+/**
+ * Rohsteinmaß einer Materialzeile: nur bekannte Maße. Ohne Länge/Breite gilt in der Berechnung das
+ * Rastermaß als Rohsteinmaß (siehe makeRawSizeFn) – das wird so angezeigt statt „0 × 0 × 0 mm“.
+ */
+function MaterialDims({ m }: { m: Material }) {
+  const { t, n } = useI18n();
+  const ok = (v: number) => Number.isFinite(v) && v > 0;
+  if (!ok(m.lengthMm) || !ok(m.widthMm)) {
+    return (
+      <span className="muted" title={t('mats.dimsUnknownHint')}>
+        {ok(m.thicknessMm) ? `– · ${t('mats.thickness')} ${n(m.thicknessMm, 2)} mm` : '–'}
+        <small className="block">{t('mats.dimsUnknown')}</small>
+      </span>
+    );
+  }
+  return (
+    <>
+      {n(m.lengthMm, 2)} × {n(m.widthMm, 2)}
+      {ok(m.thicknessMm) ? ` × ${n(m.thicknessMm, 2)}` : ''} mm
+    </>
+  );
 }
 
 export function Materials({ materials, reload }: { materials: Material[]; reload: () => void }) {
@@ -255,7 +281,7 @@ export function Materials({ materials, reload }: { materials: Material[]; reload
       )}
       <div className="mc-search">
         <input className="text" placeholder={t('common.search')} value={filter} onChange={(e) => setFilter(e.target.value)} />
-        {filter.trim() && materials.length > 0 && <span className="muted small">{t('matcsv.count', { shown: list.length, n: materials.length })}</span>}
+        {filter.trim() && materials.length > 0 && <span className="muted small">{tCount(t, 'matcsv.count', materials.length, { shown: list.length, n: materials.length })}</span>}
       </div>
       {materials.length === 0 ? (
         <p className="muted">{t('mats.empty')}</p>
@@ -296,8 +322,8 @@ export function Materials({ materials, reload }: { materials: Material[]; reload
                       <br />
                       {n(lab[0], 1)}/{n(lab[1], 1)}/{n(lab[2], 1)}
                     </td>
-                    <td className="small">
-                      {n(m.lengthMm, 2)} × {n(m.widthMm, 2)} × {n(m.thicknessMm, 2)} mm
+                    <td className="small" data-testid="material-dims">
+                      <MaterialDims m={m} />
                     </td>
                     <td className="num">{m.price ? n(m.price, 2) : '–'}</td>
                     <td className="small">
@@ -405,6 +431,8 @@ function ImportPreview({ data, busy, onApply, onCancel }: { data: ImportPreviewD
   const fmt = (f: keyof Material, v: unknown): string => {
     if (v === undefined || v === null || v === '') return '–';
     if (f === 'type') return t(`mat.${String(v)}`);
+    // 0 bedeutet bei Maßen, Preis und Stück je Packung „unbekannt“ (so werden fehlende Angaben gespeichert)
+    if (typeof v === 'number' && v === 0 && ZERO_IS_UNKNOWN.has(f)) return '–';
     if (typeof v === 'number') return n(v, 4);
     return String(v);
   };
@@ -433,7 +461,7 @@ function ImportPreview({ data, busy, onApply, onCancel }: { data: ImportPreviewD
     >
       <div data-testid="import-preview">
         <p className="muted small">
-          {t('matcsv.fileInfo', { name: data.fileName, delim: delimName(t, parsed.delimiter), enc: data.encoding, rows: parsed.dataRows })}
+          {tCount(t, 'matcsv.fileInfo', parsed.dataRows, { name: data.fileName, delim: delimName(t, parsed.delimiter), enc: data.encoding, rows: parsed.dataRows })}
           {parsed.sepLine && ` ${t('matcsv.sepLine')}`}
         </p>
         <p className="mc-summary" data-testid="import-summary">
@@ -534,9 +562,9 @@ function ImportPreview({ data, busy, onApply, onCancel }: { data: ImportPreviewD
           {writes === 0 ? (
             <p>{t('matcsv.nothing')}</p>
           ) : (
-            <p>{u.updates.length ? t('matcsv.help.update', { n: u.items.length, m: u.updates.length }) : t('matcsv.help.import', { n: u.items.length })}</p>
+            <p>{u.updates.length ? t('matcsv.help.update', { n: u.items.length, m: u.updates.length }) : tCount(t, 'matcsv.help.import', u.items.length, { n: u.items.length })}</p>
           )}
-          {showAsNew && <p>{t('matcsv.help.asNew', { n: asNew.items.length })}</p>}
+          {showAsNew && <p>{tCount(t, 'matcsv.help.asNew', asNew.items.length, { n: asNew.items.length })}</p>}
         </div>
       </div>
     </Modal>
@@ -607,6 +635,7 @@ function MaterialForm({ value, onClose, onSave }: { value: Material; onClose: ()
             )}
           </div>
         </Field>
+        <p className="muted small">{t('mats.zeroUnknownHint')}</p>
         <Field label={t('mats.length')}>
           <NumberInput value={m.lengthMm} onChange={(v) => set({ lengthMm: v })} min={0} suffix="mm" />
         </Field>

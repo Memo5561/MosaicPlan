@@ -6,7 +6,7 @@ import { jsPDF } from 'jspdf';
 import { hexToRgb, textColorFor } from './color';
 import { bbox, centroid, fmtMm, type Pt } from './geometry';
 import { cellId, rowLabel, type Layout, type Section, type SectionGrid } from './layout';
-import { cellPieces, type CutInfo } from './pieces';
+import { cellPieces, cutLineItems, type CutInfo } from './pieces';
 import { CutCache, computeStats, makeRawSizeFn, pieceCutInfo } from './stats';
 import { CellKind, type Material, type MosaicData, type PaletteColor, type ProjectSettings } from './types';
 
@@ -360,6 +360,7 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
   ];
   if (stats.totalCost > 0) mk.push([t('pdf.cost'), `${f1(stats.totalCost, 2)} ${stats.costComplete ? '' : `(${t('pdf.incomplete')})`}`]);
   if (stats.notFitting > 0) mk.push([t('pdf.notFitting'), num(stats.notFitting)]);
+  if (stats.invalidPieces > 0) mk.push([t('plan.invalidPieces'), num(stats.invalidPieces)]);
   for (const [k, v] of mk) {
     font(9, true);
     text(k, M, y);
@@ -367,7 +368,14 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     text(v, M + 70, y);
     y += 5;
   }
-  y += 4;
+  y += 2;
+  // Bedarf je Farbe: nur Rohsteine (diese Werte addieren sich zur Gesamtzahl). Packungen und Kosten
+  // gibt es nur je Material – ein Material für mehrere Farben wird einmal gekauft (stats.perMaterial).
+  font(7);
+  setText('#555555');
+  text(t('pdf.perColorHint'), M, y, { maxWidth: PW - 2 * M });
+  setText('#000000');
+  y += 5;
   const matRows = palette
     .map((p, i) => ({ p, cs: stats.perColor[i], m: p.materialId ? matById.get(p.materialId) : undefined }))
     .filter((r) => r.cs.pieces > 0)
@@ -378,17 +386,44 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
       m?.colorNumber || '–',
       `${f1(cs.rawW)} × ${f1(cs.rawH)}`,
       num(cs.rawWithReserve),
-      cs.packs !== undefined ? `${cs.packs} × ${m?.packageSize || m?.piecesPerPack}` : '–',
-      cs.cost !== undefined ? f1(cs.cost, 2) : '–',
     ]);
-  y = table(
-    '',
-    [t('pdf.code'), '', t('pdf.material'), t('pdf.colorNo'), t('pdf.rawSize'), t('pdf.needed'), t('pdf.packs'), t('pdf.price')],
-    [12, 10, 52, 18, 24, 20, 30, 18],
-    matRows,
-    y,
-    t('pdf.materials'),
-  );
+  y = table('', [t('pdf.code'), '', t('pdf.material'), t('pdf.colorNo'), t('pdf.rawSize'), t('pdf.needed')], [12, 10, 70, 24, 30, 24], matRows, y, t('pdf.materials'));
+
+  // Einkaufsliste je Material: Summe der Kosten = Materialkosten oben (stats.totalCost)
+  if (stats.perMaterial.length) {
+    if (y > PH - M - 40) {
+      newPage(t('pdf.materials'));
+      y = M + 8;
+    }
+    const code2 = (i: number) => String(palette[i]?.code ?? '?').padStart(2, '0');
+    const shopRows = stats.perMaterial.map((ms) => {
+      const m = ms.material;
+      return [
+        m ? `${m.manufacturer} ${m.product} ${m.colorNumber}`.replace(/\s+/g, ' ').trim() || t(`mat.${m.type}`) : t('pdf.noMaterial'),
+        ms.colors.map(code2).join(', '),
+        `${f1(ms.rawW)} × ${f1(ms.rawH)}`,
+        num(ms.need),
+        ms.stock !== undefined ? num(ms.stock) : '–',
+        ms.toBuy !== undefined ? num(ms.toBuy) : '–',
+        ms.packs !== undefined ? `${ms.packs} × ${m?.packageSize || m?.piecesPerPack}${ms.packsToBuy !== undefined ? ` (${ms.packsToBuy})` : ''}` : '–',
+        ms.cost !== undefined ? f1(ms.cost, 2) : '–',
+      ];
+    });
+    shopRows.push(['Σ', '', '', num(stats.perMaterial.reduce((a, ms) => a + ms.need, 0)), '', '', '', stats.totalCost > 0 ? f1(stats.totalCost, 2) : '–']);
+    y = table(
+      t('pdf.shopTitle'),
+      [t('pdf.material'), t('pdf.shopColors'), t('pdf.rawSize'), t('pdf.needed'), t('pdf.stock'), t('pdf.toBuy'), t('pdf.packs'), t('pdf.costCol')],
+      [44, 22, 26, 16, 16, 18, 30, 16],
+      shopRows,
+      y + 2,
+      t('pdf.materials'),
+    );
+    font(7);
+    setText('#555555');
+    text(t('pdf.shopHint'), M, y - 1, { maxWidth: PW - 2 * M });
+    setText('#000000');
+    y += 6;
+  }
   if (y > PH - M - 50) {
     newPage(t('pdf.materials'));
     y = M + 8;
@@ -749,8 +784,53 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     text(`${t('pdf.template')} T${gr.no}`, x + 1.5, yv + 4);
     font(6.5);
     text(`${shapeName(ci.shape)} · ${gr.count}×`, x + w - 1.5, yv + 4, { align: 'right' });
-    // Maßstab so wählen, dass der Rohstein ~32 mm groß ist
-    const zoom = Math.max(1, Math.floor(32 / Math.max(ci.rawW, ci.rawH)));
+
+    // ---- Texte: Warnungen stehen vor den Schnitten und werden nie weggelassen; Schnitte und
+    // Einschnitte getrennt nummeriert wie im Steindetail (cutLineItems).
+    const items = cutLineItems(ci);
+    const cutTexts = items.map((it) => {
+      const pts = { x1: f1(it.a.x), y1: f1(it.a.y), x2: f1(it.b.x), y2: f1(it.b.y) };
+      return it.kind === 'through'
+        ? `${t('pdf.cutLine')} ${it.no}: (${pts.x1}; ${pts.y1}) → (${pts.x2}; ${pts.y2})`
+        : t(it.kind === 'notch' ? 'pdf.notchLine' : 'pdf.notchEdgeLine', { i: it.no, ...pts });
+    });
+    const warnTexts: string[] = [];
+    if (!ci.convex) warnTexts.push(t('pdf.nonConvex'));
+    if (!ci.fits) warnTexts.push(t('pdf.notFitting'));
+    const headTexts = (zoom: number) => [
+      `${t('pdf.raw')}: ${f1(ci.rawW)} × ${f1(ci.rawH)} mm · ${t('pdf.scale')} ${zoom}:1`,
+      `${t('pdf.outer')}: ${f1(ci.w)} × ${f1(ci.h)} mm · ${t('pdf.area')}: ${f1(ci.area, 1)} mm²`,
+      `${t('pdf.angles')}: ${ci.angles.map((a) => `${f1(a, 1)}°`).join(', ')}`,
+    ];
+    const tailTexts = [
+      `${t('pdf.colorsUsed')}: ${[...gr.colors].map((c) => String(palette[c]?.code ?? '?').padStart(2, '0')).join(', ')}`,
+      `${gr.ids.join(', ')}${gr.count > gr.ids.length ? ' …' : ''}`,
+    ];
+    const wrap = (l: string) => doc.splitTextToSize(safe(l), w - 3) as string[];
+    // Maßstab und Schriftgröße so wählen, dass alles Platz hat: zuerst kleinere Zeichnung, dann kleinere
+    // Schrift, erst zuletzt ohne Farben/Positionen (die stehen auch in der Koordinatenliste).
+    const maxZoom = Math.max(1, Math.floor(32 / Math.max(ci.rawW, ci.rawH)));
+    const textTop = (zoom: number) => yv + 9 + ci.rawH * zoom + 3.5;
+    const bottom = yv + h - 1;
+    let layoutChoice: { zoom: number; size: number; lines: string[] } | null = null;
+    for (const withTail of [true, false]) {
+      for (const size of [5.5, 5, 4.5]) {
+        font(size);
+        const lh = size * 0.51;
+        for (let zoom = maxZoom; zoom >= 1 && !layoutChoice; zoom--) {
+          const lines = [...headTexts(zoom), ...warnTexts, ...cutTexts, ...(withTail ? tailTexts : [])].flatMap(wrap);
+          if (textTop(zoom) + (lines.length - 1) * lh <= bottom) layoutChoice = { zoom, size, lines };
+        }
+        if (layoutChoice) break;
+      }
+      if (layoutChoice) break;
+    }
+    if (!layoutChoice) {
+      font(4.5);
+      layoutChoice = { zoom: 1, size: 4.5, lines: [...headTexts(1), ...warnTexts, ...cutTexts].flatMap(wrap) };
+    }
+    const { zoom, size } = layoutChoice;
+
     const ox = x + (w - ci.rawW * zoom) / 2;
     const oy = yv + 9;
     doc.setLineDashPattern([0.8, 0.6], 0);
@@ -761,9 +841,23 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     setDraw('#000000');
     doc.setLineWidth(0.25);
     poly(ci.polyInRaw, ox, oy, zoom, 'FD');
+    // Durchgehende Schnitte: rot, durchgezogen
     setDraw('#D0021B');
     doc.setLineWidth(0.3);
-    for (const [a, b] of ci.cutLines) doc.line(ox + a.x * zoom, oy + a.y * zoom, ox + b.x * zoom, oy + b.y * zoom);
+    for (const it of items) if (it.kind === 'through') doc.line(ox + it.a.x * zoom, oy + it.a.y * zoom, ox + it.b.x * zoom, oy + it.b.y * zoom);
+    // Einschnitte bis zur Innenecke: orange gepunktet, Kreis an der Innenecke (wie in der App)
+    if (items.some((it) => it.kind !== 'through')) {
+      setDraw('#EF6C00');
+      doc.setLineWidth(0.45);
+      doc.setLineCap('round');
+      doc.setLineDashPattern([0.05, 0.85], 0);
+      for (const it of items) if (it.kind !== 'through') doc.line(ox + it.a.x * zoom, oy + it.a.y * zoom, ox + it.b.x * zoom, oy + it.b.y * zoom);
+      doc.setLineDashPattern([], 0);
+      doc.setLineCap('butt');
+      doc.setLineWidth(0.25);
+      setFill('#FFFFFF');
+      for (const it of items) if (it.kind === 'notch') doc.circle(ox + it.b.x * zoom, oy + it.b.y * zoom, 0.7, 'FD');
+    }
     // Kantenlängen
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(5);
@@ -780,22 +874,20 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
       const dl = Math.hypot(dx, dy) || 1;
       doc.text(f1(ci.edges[i]), ox + (mx + (dx / dl) * 0.9) * zoom, oy + (my + (dy / dl) * 0.9) * zoom, { align: 'center', baseline: 'middle' });
     }
-    let ty = oy + ci.rawH * zoom + 3.5;
-    font(5.5);
-    const lines = [
-      `${t('pdf.raw')}: ${f1(ci.rawW)} × ${f1(ci.rawH)} mm · ${t('pdf.scale')} ${zoom}:1`,
-      `${t('pdf.outer')}: ${f1(ci.w)} × ${f1(ci.h)} mm · ${t('pdf.area')}: ${f1(ci.area, 1)} mm²`,
-      `${t('pdf.angles')}: ${ci.angles.map((a) => `${f1(a, 1)}°`).join(', ')}`,
-      ...ci.cutLines.map((l, i) => `${t('pdf.cutLine')} ${i + 1}: (${f1(l[0].x)}; ${f1(l[0].y)}) → (${f1(l[1].x)}; ${f1(l[1].y)})`),
-      `${t('pdf.colorsUsed')}: ${[...gr.colors].map((c) => String(palette[c]?.code ?? '?').padStart(2, '0')).join(', ')}`,
-      `${gr.ids.join(', ')}${gr.count > gr.ids.length ? ' …' : ''}`,
-    ];
-    if (!ci.convex) lines.push(t('pdf.nonConvex'));
-    if (!ci.fits) lines.push(t('pdf.notFitting'));
-    for (const l of lines) {
-      if (ty > yv + h - 1) break;
-      text(l, x + 1.5, ty, { maxWidth: w - 3 });
-      ty += 2.8;
+    font(size);
+    const lh = size * 0.51;
+    let ty = textTop(zoom);
+    const warnFirst = new Set(warnTexts.flatMap(wrap));
+    for (const l of layoutChoice.lines) {
+      if (ty > bottom) {
+        // nur im Notfall (sehr viele Kanten): ehrlich auf das Steindetail verweisen
+        text(t('pdf.templateMore'), x + 1.5, bottom);
+        break;
+      }
+      if (warnFirst.has(l)) setText('#B3261E');
+      doc.text(l, x + 1.5, ty);
+      setText('#000000');
+      ty += lh;
     }
     // 1:1-Kontur, wenn Platz
     if (zoom > 1) {

@@ -20,7 +20,7 @@ export function StepPdf({ api, materials }: { api: ProjectApi; materials: Materi
   const [busy, setBusy] = useState<{ f: number; label: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<{ url: string; size: number; pages?: number } | null>(null);
-  if (!c || !G) return <p className="muted">{t('preview.notComputed')}</p>;
+  if (!c || !G) return <p className={api.integrityError ? 'error' : 'muted'}>{t(api.integrityError ? 'compute.err.integrity' : 'preview.notComputed')}</p>;
 
   const [pw, ph] = opts.format === 'custom' ? [opts.customW ?? 210, opts.customH ?? 297] : PAPER[opts.format];
   const sel = opts.sectionIds;

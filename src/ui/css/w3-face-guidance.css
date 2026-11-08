@@ -259,11 +259,12 @@
   flex-direction: column;
   gap: 2px;
 }
+/* Normaler Textfluss: die Ampel (inline-block) bleibt beim Umbrechen beim ersten Wort, nie allein in einer Zeile */
 .w3fg-span {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  display: block;
+}
+.w3fg-span .badge {
+  margin-left: 4px;
 }
 /* Löschen: 44 × 44 px Trefferfläche auch mit der Maus */
 .icon-btn.w3fg-del {

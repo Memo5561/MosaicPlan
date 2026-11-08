@@ -57,7 +57,7 @@ async function toScreen(page, x, y) {
 
 async function cellSize(page) {
   const vb = (await page.getAttribute('[data-testid="free-svg"]', 'viewBox')).split(' ').map(Number);
-  // viewBox = −pad −pad W+2pad H+2pad mit pad = 0,1·max(W, H)
+  // viewBox = −pad −pad W+2pad H+2pad (pad: Rand für die Kantenlängen, siehe FreeformEditor)
   const pad = -vb[0];
   return { W: vb[2] - 2 * pad, H: vb[3] - 2 * pad };
 }

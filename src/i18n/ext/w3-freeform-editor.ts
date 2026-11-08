@@ -122,7 +122,7 @@ export const tr: Record<string, string> = {
   'free.warn.touch': 'Parça {a} ile parça {b} birbirine değiyor – aralarında derz yok (proje derzi {joint} mm).',
 
   'w3fe.hint':
-    'Hücre {w} × {h} mm · derz {joint} mm. Tıklamak veya dokunmak seçili parçaya bir köşe noktası ekler (0,1 mm ızgara; hücre kenarına 0,2 mm’den yakınsa kenara oturur). Köşe noktaları sürüklenebilir, bir kenardaki „+“ oraya nokta ekler. Mevcut parçalar önceden yüklenir – „Yeniden çiz“ boş hücreyle başlar. İki parça arasında derzi boş bırakın.',
+    'Hücre {w} × {h} mm · derz {joint} mm. Tıklamak veya dokunmak seçili parçaya bir köşe noktası ekler (0,1 mm ızgara; hücre kenarına 0,2 mm’den yakınsa kenara oturur). Köşe noktaları sürüklenebilir, bir kenardaki “+” oraya nokta ekler. Mevcut parçalar önceden yüklenir – “Yeniden çiz” boş hücreyle başlar. İki parça arasında derzi boş bırakın.',
   'w3fe.undo': 'Geri al',
   'w3fe.undoTitle': 'Düzenleyicideki son değişikliği geri al',
   'w3fe.clear': 'Yeniden çiz',
@@ -144,7 +144,7 @@ export const tr: Record<string, string> = {
   'w3fe.edgeTitle': 'Sonraki noktaya olan kenarın uzunluğu, mm (son kenar ilk noktaya kapanır)',
   'w3fe.deletePoint': '{k}. noktayı sil',
   'w3fe.noPoints': 'Henüz nokta yok – çizim alanına tıklayın veya dokunun.',
-  'w3fe.fullHint': 'Mevcut parçalar hücreyi neredeyse tamamen dolduruyor. Yeni bir parça için önce bir parçayı küçültün veya silin – ya da „Yeniden çiz“i kullanın.',
+  'w3fe.fullHint': 'Mevcut parçalar hücreyi neredeyse tamamen dolduruyor. Yeni bir parça için önce bir parçayı küçültün veya silin – ya da “Yeniden çiz”i kullanın.',
   'w3fe.maxPieces': 'Hücre başına en fazla {max} parça.',
   'w3fe.hasError': 'Bu parçada hata var',
   'w3fe.hasWarning': 'Bu parçayla ilgili not',

@@ -45,6 +45,8 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   const [step, setStepState] = useState<Step>(routeStep.current ?? 'photo');
   const stepRef = useRef(step);
   stepRef.current = step;
+  /** Weiterleitung nach dem Laden erledigt (oder überflüssig, weil schon ein Schritt gewählt wurde) */
+  const redirected = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -57,6 +59,9 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   const goStep = useCallback(
     (s: Step) => {
       if (!mounted.current) return;
+      // Ein gewählter Schritt gilt – die Weiterleitung nach dem Laden darf ihn nicht mehr zurücksetzen
+      redirected.current = true;
+      routeStep.current = undefined;
       stepRef.current = s;
       setStepState(s);
       const h = stepHash(id, s);
@@ -90,7 +95,6 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   }, [initialStep, id]);
 
   // Nach dem Laden: Ohne Schritt in der Adresse dort weitermachen, wo es sinnvoll ist (ersetzt den Eintrag)
-  const redirected = useRef(false);
   useEffect(() => {
     if (!api.loaded || redirected.current) return;
     redirected.current = true;
@@ -285,7 +289,10 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   const idx = STEPS.indexOf(step);
   const states = stepStates({ hasPhoto: !!api.bitmap, computed: !!api.computed, stale: api.stale });
   const canCompute = !!api.bitmap && !!api.layout;
-  const computeAsNext = step === 'compute' && canCompute && (!api.computed || api.stale);
+  const computeAsNext = step === 'compute' && canCompute && (!api.computed || api.stale || api.materialsChanged);
+  // Fertige Vorschau, die Schritt 8 beim Öffnen übernimmt (siehe canAutoCommit): Schritte 8–10 sind dann nicht
+  // „noch nicht berechnet“, sondern nur noch nicht gespeichert
+  const previewUncommitted = api.previewCommittable && !api.computed && !rec.computedWith && !api.integrityError;
   const pct = api.computing ? Math.round(computeOverall(api.computing) * 100) : 0;
   const committing = api.computing?.phase === 'commit';
   /** Berechnung eines anderen Projekts blockiert „Berechnen“ (das Übernehmen einer fertigen Vorschau nicht) */
@@ -339,6 +346,11 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
               {t('project.stale')}
             </button>
           )}
+          {api.materialsChanged && (
+            <button className="badge badge-warn as-btn" onClick={() => goStep('compute')} title={t('w3lp.materialsChanged')} data-testid="materials-changed-badge">
+              {t('w3lp.materialsChangedBadge')}
+            </button>
+          )}
           {api.computing && step !== 'compute' && !committing && (
             <button className="badge badge-info as-btn" onClick={() => goStep('compute')} data-testid="computing-badge">
               {t('w2ws.computing', { pct })}
@@ -376,6 +388,31 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           </button>
         </div>
       )}
+      {api.invalidFree.length > 0 && (
+        // Gespeicherte Freiformsteine mit ungültigen Teilen (ältere/importierte Projekte): nicht still umwandeln, sondern
+        // melden – Flächen und Fugenmasse sind damit nicht exakt, der PDF-Plan ist gesperrt
+        <div className="w1fx-banner" role="alert" data-testid="free-invalid-banner" data-count={api.invalidFree.length}>
+          <span>{tCount(t, 'w3fx.free.notice', api.invalidFree.length, { n: n(api.invalidFree.length) })}</span>
+          <span className="btn-row wrap">
+            <span className="muted small">{t('w3fx.free.open')}</span>
+            {api.invalidFree.slice(0, 8).map((c) => (
+              <button
+                key={c.id}
+                className="btn small"
+                data-testid="free-invalid-open"
+                title={t('w3fx.free.openStone', { id: c.id })}
+                onClick={() => {
+                  api.requestStone(c.row, c.col);
+                  goStep('preview');
+                }}
+              >
+                {c.id}
+              </button>
+            ))}
+            {api.invalidFree.length > 8 && <span className="muted small">{t('w3fx.free.more', { n: n(api.invalidFree.length - 8) })}</span>}
+          </span>
+        </div>
+      )}
       {guard.backup && (
         <div className="w1fx-banner info" role="status" data-testid="backup-notice">
           <span>{t('w2ws.backupDone', { name: guard.backup.name })}</span>
@@ -391,7 +428,8 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
         {STEPS.map((s, i) => {
           const st = states[s];
           const active = s === step;
-          const title = st.unavailable ? t('w2ws.step.unavailable') : st.warn ? t('w2ws.step.stale') : undefined;
+          const unavailableText = previewUncommitted ? t('w3lp.step.uncommitted') : t('w2ws.step.unavailable');
+          const title = st.unavailable ? unavailableText : st.warn ? t('w2ws.step.stale') : undefined;
           return (
             <button
               key={s}
@@ -402,6 +440,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
               title={title}
               data-testid={`step-${s}`}
               data-status={st.done ? 'done' : st.warn ? 'stale' : st.unavailable ? 'unavailable' : 'open'}
+              data-uncommitted={st.unavailable && previewUncommitted ? '1' : undefined}
             >
               <span className="step-no">{i + 1}</span>
               {st.done && (
@@ -417,7 +456,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
                 </span>
               )}
               <span className="step-label">{t(`step.${s}`)}</span>
-              {(st.done || st.warn || st.unavailable) && <span className="w2ws-sr">{` (${st.done ? t('w2ws.step.done') : st.warn ? t('w2ws.step.stale') : t('w2ws.step.unavailable')})`}</span>}
+              {(st.done || st.warn || st.unavailable) && <span className="w2ws-sr">{` (${st.done ? t('w2ws.step.done') : st.warn ? t('w2ws.step.stale') : unavailableText})`}</span>}
             </button>
           );
         })}
@@ -427,7 +466,10 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           <h2 id="w2ws-step-title">
             {idx + 1}. {t(`step.${step}`)}
           </h2>
-          <p className="muted step-intro">{t(`step.${step}.intro`)}</p>
+          {/* Schritt 7 mit passender Vorschau: Übernehmen speichert sofort – nicht „kann einige Minuten dauern“ */}
+          <p className="muted step-intro" data-testid="step-intro">
+            {step === 'compute' && api.previewCommittable && !api.computing ? t('w3lp.computeIntroHead') : t(`step.${step}.intro`)}
+          </p>
         </div>
         {step === 'photo' && <StepPhoto api={api} />}
         {PREVIEW_STEPS.includes(step) && (

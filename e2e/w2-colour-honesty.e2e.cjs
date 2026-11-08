@@ -233,15 +233,20 @@ const MATERIALS = [
   await page.click('[data-testid="deltae-mode"] >> text=CIEDE2000');
   await page.waitForTimeout(300);
 
-  // ---------- Meine Steine – begrenzte Farbanzahl: zusammengelegte Bildfarben werden genannt
+  // ---------- Meine Steine – begrenzte Farbanzahl: weniger Farben nur mit dem echten Grund (seit w3-colour-quality
+  // wählt die Berechnung direkt aus dem Bestand – dabei wird nichts zusammengelegt, also auch nicht so beschrieben)
   await page.click('[data-testid="palette-mode"] >> text=Meine Steine – begrenzte Farbanzahl');
   await page.click('[data-testid="color-counts"] >> text=16');
   await compute();
   rs = await waitRows();
   const snapCounts = (await page.textContent('[data-testid="palette-counts"]').catch(() => '')) || '';
-  const m = /angefordert (\d+) – verwendet (\d+) \((\d+) Bildfarben zusammengelegt/.exec(snapCounts);
-  check('Begrenzte Farbanzahl: „angefordert 16 – verwendet M (K Bildfarben zusammengelegt)“', m && +m[1] === 16 && +m[2] === rs.length && +m[2] < 16 && +m[3] > 0, snapCounts.trim());
-  check('Begrenzte Farbanzahl: zusammengelegte Materialfarben gekennzeichnet („aus n Bildfarben“)', rs.some((r) => r.merged && /aus \d+ Bildfarben/.test(r.merged)), rs.map((r) => r.merged).filter(Boolean).join(' | '));
+  const m = /angefordert (\d+) – verwendet (\d+)/.exec(snapCounts);
+  check(
+    'Begrenzte Farbanzahl: „angefordert 16 – verwendet M“ mit dem echten Grund, ohne „zusammengelegt“',
+    m && +m[1] === 16 && +m[2] === rs.length && +m[2] < 16 && !/zusammengelegt/.test(snapCounts) && /(Materialauswahl hat nur|verbessern das Bild)/.test(snapCounts),
+    snapCounts.trim(),
+  );
+  check('Begrenzte Farbanzahl: keine Kennzeichnung „aus n Bildfarben“ (die Auswahl legt nichts zusammen)', rs.every((r) => !r.merged), rs.map((r) => r.merged).filter(Boolean).join(' | ') || '—');
   check('Begrenzte Farbanzahl: Abweichung vom Foto statt „ΔE 0 zum Material“', rs.filter((r) => r.stones > 0).every((r) => r.match && /Ø ΔE/.test(r.match)), rs.slice(0, 3).map((r) => r.match).join(' | '));
   check('Begrenzte Farbanzahl: Materialnamen unverändert', rs.every((r) => !r.auto), rs.map((r) => r.name).join(', '));
   await page.screenshot({ path: path.join(OUT, 'w2ch-06-snap.png'), fullPage: true });

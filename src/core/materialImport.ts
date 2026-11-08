@@ -67,6 +67,32 @@ export function referencedMaterialIds(palette: readonly { materialId?: string }[
   return out;
 }
 
+/**
+ * Materialien, auf die nur die Diagnose einer Berechnung verweist („Fehlende Farben“: nächstes Material des ganzen
+ * angebotenen Bestands, oft nicht in der Palette) – ohne die, die schon über Palette/Auswahl exportiert werden.
+ */
+export function diagnosticMaterialIds(diagnostics: { missingColors?: readonly { nearestMaterialId?: string }[] } | undefined, exclude: readonly string[] = []): string[] {
+  const out: string[] = [];
+  for (const m of diagnostics?.missingColors ?? []) {
+    const id = m?.nearestMaterialId;
+    if (typeof id === 'string' && id && !exclude.includes(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Ordnet Materialien, auf die die Projektdatei nur verweist (`materialRefs`, siehe diagnosticMaterialIds), vorhandenen
+ * Materialien dieses Geräts zu – mit demselben exakten Abgleich wie planProjectMaterialImport (gleiche ID oder gleicher
+ * Schlüssel, nie geraten), legt aber NIE etwas an: Ein nur erwähntes Material soll den Bestand nicht vergrößern.
+ * Liefert exportierte ID → ID dieses Geräts (nur zugeordnete).
+ */
+export function linkReferencedMaterials(refs: readonly unknown[], local: readonly Material[]): Record<string, string> {
+  const plan = planProjectMaterialImport(refs, local);
+  const out: Record<string, string> = {};
+  for (const l of plan.links) out[l.exportedId] = l.localId;
+  return out;
+}
+
 /** Die Materialien zu `ids`, die auf diesem Gerät vorhanden sind (Reihenfolge wie `ids`). */
 export function selectMaterials(ids: readonly string[], all: readonly Material[]): Material[] {
   const byId = new Map(all.map((m) => [m.id, m]));

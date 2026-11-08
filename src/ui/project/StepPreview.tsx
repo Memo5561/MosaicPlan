@@ -44,6 +44,18 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     h.appendChild(reference);
   }, [reference, c]);
 
+  // Stein öffnen, den eine andere Stelle angefordert hat (z. B. Hinweis zu ungültigen Freiformsteinen)
+  const handledRequest = useRef(0);
+  useEffect(() => {
+    const req = api.stoneRequest;
+    if (!req || !c || req.n === handledRequest.current) return;
+    handledRequest.current = req.n;
+    if (req.row >= c.layout.rows || req.col >= c.layout.cols) return;
+    setPick({ row: req.row, col: req.col, piece: 0 });
+    viewer.current?.center(c.layout.colX[req.col] + c.layout.colW[req.col] / 2, c.layout.rowY[req.row] + c.layout.rowH[req.row] / 2, 12);
+    setFlash({ idx: req.row * c.layout.cols + req.col, piece: 0 });
+  }, [api.stoneRequest, c]);
+
   // ohne Referenz kein Vergleich (z. B. nach dem Neuladen)
   useEffect(() => {
     if (!reference) {
@@ -66,6 +78,11 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     <div className="viewer-layout">
       <div>
         {api.stale && <Badge kind="warn">{t('preview.stale')}</Badge>}
+        {api.materialsChanged && (
+          <span title={t('w3lp.materialsChanged')} data-testid="preview-materials-changed">
+            <Badge kind="warn">{t('w3lp.materialsChangedBadge')}</Badge>
+          </span>
+        )}
         <Viewer
           ref={viewer}
           layout={c.layout}

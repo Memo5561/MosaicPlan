@@ -49,6 +49,14 @@ describe('Übersetzungen', () => {
     expect(Object.keys(dictionaries.tr).sort()).toEqual(de);
   });
 
+  it('englische und türkische Texte ohne deutsche Anführungszeichen „…“ (Türkisch: “…”)', () => {
+    const bad: string[] = [];
+    for (const lang of ['en', 'tr'] as const) {
+      for (const [k, v] of Object.entries(dictionaries[lang] as Record<string, string>)) if (v.includes('„')) bad.push(`${lang}:${k}`);
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('gleiche Platzhalter in allen Sprachen', () => {
     const de = dictionaries.de as Record<string, string>;
     for (const lang of ['en', 'tr'] as const) {

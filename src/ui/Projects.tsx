@@ -110,7 +110,8 @@ function ImportSummary({ s, go, onDismiss }: { s: ProjectImportSummary; go: (h: 
   const c = s.materials;
   const refs = s.refs.colors + s.refs.selected;
   const poolDiffers = !!s.pool && s.pool.source !== s.pool.here;
-  const attention = s.missing.colors > 0 || s.missing.selected > 0 || s.notes.length > 0 || poolDiffers || s.newer;
+  const freeInvalid = s.freeInvalid ?? [];
+  const attention = s.missing.colors > 0 || s.missing.selected > 0 || s.notes.length > 0 || poolDiffers || s.newer || freeInvalid.length > 0;
   return (
     <div className={`w3pp-summary ${attention ? 'w3pp-attn' : 'w3pp-ok'}`} role="status" aria-live="polite" data-testid="project-import-summary" data-attention={attention ? '1' : '0'}>
       <span className="w3pp-icon" aria-hidden="true">
@@ -159,6 +160,11 @@ function ImportSummary({ s, go, onDismiss }: { s: ProjectImportSummary; go: (h: 
           </p>
         )}
         {s.newer && <p className="w3pp-sub">{t('projimp.newer', { v: s.version })}</p>}
+        {freeInvalid.length > 0 && (
+          <p className="w3pp-warn" data-testid="project-import-free-invalid" data-count={freeInvalid.length}>
+            {tCount(t, 'projimp.freeInvalid', freeInvalid.length, { n: n(freeInvalid.length), ids: freeInvalid.slice(0, 12).join(', ') + (freeInvalid.length > 12 ? ' …' : '') })}
+          </p>
+        )}
         {s.notes.length > 0 && (
           <details className="w3pp-details" data-testid="project-import-notes" open={s.notes.length <= 3}>
             <summary>{t('projimp.details', { n: n(s.notes.length) })}</summary>

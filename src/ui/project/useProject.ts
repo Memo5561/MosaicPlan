@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hexToLab } from '../../core/color';
-import { repairDegenerateCells } from '../../core/edits';
+import { invalidFreeCells, repairDegenerateCells } from '../../core/edits';
 import { checkMosaicIntegrity } from '../../core/integrity';
-import { computeLayout, sectionsFor, type Layout, type LayoutParams, type SectionGrid } from '../../core/layout';
+import { cellId, computeLayout, sectionsFor, type Layout, type LayoutParams, type SectionGrid } from '../../core/layout';
 import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
 import { renderFull } from '../../core/render';
 import { packMosaic, unpackMosaic, type MosaicDataWithRev } from '../../core/serialize';
@@ -92,6 +92,48 @@ export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'mate
     return fixed;
   }
   return undefined;
+}
+
+/** Kurzer Hash (53 Bit, cyrb53) eines Textes – für Fingerabdrücke, die im Projekt gespeichert werden. */
+function hash53(str: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/**
+ * Fingerabdruck der Materialien, aus denen eine Berechnung ihre Farben nimmt (reine Funktion; Eingabe ist die feste
+ * Palette von buildFixedPalette). Nur in den Modi „Materialien“ und „Meine Steine – begrenzte Farbanzahl“, sonst
+ * undefined. Enthalten: Farbton und Name jedes angebotenen Materials, bei der begrenzten Farbanzahl zusätzlich, ob es
+ * auf Lager ist (nur das wertet die Auswahl aus – 200 → 150 Stück ändert nichts, 0 → 200 schon). Ohne Material-IDs
+ * und sortiert: Nach einem Import mit gleichen Materialdaten bleibt er gleich. 'none': keine Materialien vorhanden.
+ * computeKey kennt die Materialinhalte nicht; dieser Fingerabdruck wird mit der Berechnung gespeichert
+ * (computedMaterialSig) und zeigt, wenn die Materialien seitdem geändert wurden.
+ */
+export function materialInputSig(paletteMode: ProjectSettings['paletteMode'], fixed: readonly FixedColor[] | undefined | 'none'): string | undefined {
+  if (paletteMode !== 'materials' && paletteMode !== 'auto-snap') return undefined;
+  if (fixed === 'none' || !fixed || !fixed.length) return 'none';
+  const snap = paletteMode === 'auto-snap';
+  const entries = fixed.map((f) => JSON.stringify(snap ? [f.hex.toUpperCase(), f.name, (f.stock ?? 0) > 0] : [f.hex.toUpperCase(), f.name])).sort();
+  return `${entries.length}:${hash53(entries.join('|'))}`;
+}
+
+/** Fingerabdruck der Materialien für den Projektstand `r` und die Materialien dieses Geräts (siehe materialInputSig). */
+export function materialSigFor(r: Pick<ProjectRecord, 'settings' | 'palette'>, materials: readonly Material[]): string | undefined {
+  const pm = r.settings.paletteMode;
+  if (pm !== 'materials' && pm !== 'auto-snap') return undefined;
+  try {
+    return materialInputSig(pm, buildFixedPalette(r.settings, r.palette, materials));
+  } catch {
+    return materialInputSig(pm, 'none');
+  }
 }
 
 /** Pixelmaße des Originalfotos (nach EXIF-Ausrichtung) und ob die Arbeitskopie verkleinert ist. */
@@ -303,6 +345,8 @@ export interface ComputeInputs {
    * Foto-Identität). Gleicher Fingerabdruck + gleiche Arbeitskopie ⇒ gleiches Ergebnis.
    */
   sig: string;
+  /** Fingerabdruck der angebotenen Materialien (siehe materialInputSig; undefined außerhalb der Materialmodi) */
+  materialSig: string | undefined;
   lang: Lang;
   layout: Layout;
   lp: LayoutParams;
@@ -353,13 +397,15 @@ export function describeComputeInputs(r: ProjectRecord, env: ComputeEnv): Comput
   };
   const key = computeKey(r);
   const sig = JSON.stringify({ q: request, c: crop, ws, f: full, im: r.imageRev ?? null, sw: env.srcW, sh: env.srcH });
-  return { ok: true, rec: r, key, sig, lang: env.lang, layout, lp, cells, crop, ws, full, request, bitmap: env.bitmap };
+  return { ok: true, rec: r, key, sig, materialSig: materialInputSig(s.paletteMode, fixed), lang: env.lang, layout, lp, cells, crop, ws, full, request, bitmap: env.bitmap };
 }
 
 /** Ergebnis einer Berechnung (Vorschau oder „Berechnen“), noch nicht gespeichert. */
 export interface ComputeOutput {
   sig: string;
   key: string;
+  /** Fingerabdruck der angebotenen Materialien (wird mit dem Ergebnis gespeichert) */
+  materialSig?: string;
   lang: Lang;
   ws: { w: number; h: number };
   full: boolean;
@@ -389,14 +435,25 @@ export function rawCacheKey(inp: Pick<ComputeInputs, 'rec' | 'crop' | 'ws' | 'fu
   return JSON.stringify({ r: a.rotation, f: a.fineRotate, h: a.flipH, c: inp.crop, ws: inp.ws, full: inp.full });
 }
 
-async function rawFor(inp: ComputeInputs, cache: RawCache, original: Blob | null): Promise<RawImage> {
+/**
+ * Arbeitsbild für eine Berechnung. Die Vorschau (`consume` = false) behält es im Zwischenspeicher und gibt dem Worker
+ * eine Kopie – die nächste Vorschau derselben Geometrie braucht es wieder. „Berechnen“ (`consume` = true) nimmt es
+ * aus dem Zwischenspeicher und übergibt es ohne Kopie: Danach (Schritte 8–10) braucht es niemand mehr, und ein
+ * 6-MP-Arbeitsbild belegt 24 MB.
+ */
+export async function rawFor(inp: Pick<ComputeInputs, 'bitmap' | 'rec' | 'crop' | 'ws' | 'full'>, cache: RawCache, original: Blob | null, consume = false, render: (bmp: ImageBitmap, inp: Pick<ComputeInputs, 'rec' | 'crop' | 'ws'>) => RawImage = (bmp, i) => canvasToRaw(renderCropped(bmp, i.rec.adjust, i.crop, i.ws.w, i.ws.h))): Promise<RawImage> {
   const bmp = inp.bitmap;
   if (!bmp) throw new Error('no-photo');
   const ck = rawCacheKey(inp);
   let raw: RawImage;
   const hit = cache.current;
-  if (hit && hit.bitmap === bmp && hit.key === ck) raw = hit.raw;
-  else {
+  if (hit && hit.bitmap === bmp && hit.key === ck) {
+    raw = hit.raw;
+    if (consume) {
+      cache.current = null;
+      return raw;
+    }
+  } else {
     // Hat die verkleinerte Arbeitskopie im Zuschnitt zu wenig Pixel, wird das Original vorübergehend voll gelesen
     let fullBmp: ImageBitmap | null = null;
     if (inp.full && original) {
@@ -408,11 +465,12 @@ async function rawFor(inp: ComputeInputs, cache: RawCache, original: Blob | null
       }
     }
     try {
-      raw = canvasToRaw(renderCropped(fullBmp ?? bmp, inp.rec.adjust, inp.crop, inp.ws.w, inp.ws.h));
+      raw = render(fullBmp ?? bmp, inp);
     } finally {
       fullBmp?.close(); // volle Auflösung nur für diesen einen Zuschnitt im Speicher halten
     }
-    // Vorschau und Berechnung derselben Geometrie rechnen mit genau diesen Bildpunkten
+    if (consume) return raw;
+    // Vorschauen derselben Geometrie rechnen mit genau diesen Bildpunkten
     cache.current = { bitmap: bmp, key: ck, raw };
   }
   // Kopie für die Übergabe an den Worker (das Original bleibt im Zwischenspeicher)
@@ -422,12 +480,14 @@ async function rawFor(inp: ComputeInputs, cache: RawCache, original: Blob | null
 /** Rechnet die beschriebenen Eingaben im Worker des Kanals (Vorschau: 'preview', Berechnung: 'compute'). */
 export async function runComputeWith(inp: ComputeInputs, channel: Channel, onProgress: (phase: string, fraction: number) => void, cache: RawCache, original: Blob | null): Promise<ComputeOutput> {
   const t0 = performance.now();
-  const raw = await rawFor(inp, cache, original);
+  // Die Berechnung braucht das Arbeitsbild danach nicht mehr (siehe rawFor)
+  const raw = await rawFor(inp, cache, original, channel === 'compute');
   const res = await runWorker<'compute'>(channel, { ...inp.request, image: raw }, [raw.data.buffer as ArrayBuffer], onProgress);
   const data: MosaicDataWithRev = unpackMosaic(res.mosaic);
   return {
     sig: inp.sig,
     key: inp.key,
+    materialSig: inp.materialSig,
     lang: inp.lang,
     ws: inp.ws,
     full: inp.full,
@@ -449,7 +509,7 @@ export async function runComputeWith(inp: ComputeInputs, channel: Channel, onPro
  * (Momentaufnahme; bei eigener Palette mit der neu nummerierten Ergebnispalette) – nie des neuesten Stands:
  * Änderungen während der Berechnung erscheinen so korrekt als „Einstellungen geändert“.
  */
-export function commitFieldsOf(out: Pick<ComputeOutput, 'snapshot' | 'palette' | 'diagnostics'>, o: { thumb?: string; now: number; rev: string }): ComputeFields {
+export function commitFieldsOf(out: Pick<ComputeOutput, 'snapshot' | 'palette' | 'diagnostics' | 'materialSig'>, o: { thumb?: string; now: number; rev: string }): ComputeFields {
   const r = out.snapshot;
   const custom = r.settings.paletteMode === 'custom';
   const keyRec: ProjectRecord = custom ? { ...r, palette: out.palette } : r;
@@ -463,6 +523,8 @@ export function commitFieldsOf(out: Pick<ComputeOutput, 'snapshot' | 'palette' |
     updatedAt: o.now,
     // Eigene Palette ist eine Eingabe: Änderungen während der Berechnung nicht überschreiben
     ...(custom ? { customInput: r.palette } : {}),
+    // Materialien, aus denen die Farben genommen wurden (Materialien später geändert → nicht mehr „aktuell“)
+    ...(out.materialSig !== undefined ? { computedMaterialSig: out.materialSig } : {}),
   };
 }
 
@@ -481,14 +543,41 @@ export type JobOutcome = 'committed' | 'held' | 'dropped' | 'deleted' | 'failed'
  * Die gerade geöffnete Ansicht eines Projekts (useProject), bei jobs.ts angemeldet. Ein Auftrag fragt sie,
  * ob am angezeigten Mosaik Arbeit auf dem Spiel steht, und übergibt ihr das gespeicherte Ergebnis.
  */
-interface ProjectHandler {
+export interface ProjectHandler {
   instance: string;
+  /**
+   * Erfüllt, sobald die Ansicht ihren Stand geladen hat (oder geschlossen wurde). Erst danach wird sie gefragt und
+   * übernimmt ein Ergebnis – sonst könnte der noch laufende Ladevorgang ein gerade übernommenes Ergebnis mit dem
+   * zuvor gelesenen alten Raster überschreiben (neue Palette + altes Raster = falsche Farben).
+   */
+  ready(): Promise<void>;
   latestPalette(): PaletteColor[] | null;
   groutHex(): string | null;
   workAtRisk(): boolean;
   hold(job: PendingCommit): void;
   applyCommitted(job: PendingCommit, committed: ProjectRecord | null, saveFailure: unknown): void;
   onError(code: string): void;
+}
+
+/**
+ * Die angemeldete Ansicht des Projekts, sobald sie geladen ist (siehe ProjectHandler.ready); undefined: keine offen.
+ * Höchstens `maxWaitMs` lang (hängt das Laden, endet der Auftrag trotzdem): Eine noch ladende Ansicht stellt ein
+ * übergebenes Ergebnis dann zurück und liest Projekt und Raster nach dem Laden gemeinsam neu (applyCommitted).
+ */
+export async function settledHandler(id: string, maxWaitMs = 20_000): Promise<ProjectHandler | undefined> {
+  const until = Date.now() + maxWaitMs;
+  for (let i = 0; i < 50; i++) {
+    const h = projectHandler<ProjectHandler>(id);
+    if (!h) return undefined;
+    const left = until - Date.now();
+    if (left <= 0) return h;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([h.ready(), new Promise<void>((r) => (timer = setTimeout(r, left)))]);
+    if (timer !== undefined) clearTimeout(timer);
+    // Während des Wartens kann eine neuere Ansicht angemeldet worden sein: auf deren Laden ebenfalls warten
+    if (projectHandler<ProjectHandler>(id) === h) return h;
+  }
+  return projectHandler<ProjectHandler>(id);
 }
 
 /**
@@ -512,7 +601,8 @@ async function persistCommit(id: string, job: PendingCommit, fallbackSource: str
     if (isPaletteChangedError(e)) throw e;
     saveFailure = e;
   }
-  const h = projectHandler<ProjectHandler>(id);
+  // Eine gerade (wieder) geöffnete Ansicht übernimmt das Ergebnis erst nach ihrem Laden
+  const h = await settledHandler(id);
   if (h) {
     h.applyCommitted(job, committed, saveFailure);
     return 'committed';
@@ -531,8 +621,10 @@ async function persistCommit(id: string, job: PendingCommit, fallbackSource: str
  * Ergebnis wird mit Hinweis verworfen.
  */
 async function finishJob(id: string, out: ComputeOutput, startEdits: number, origin: PendingCommit['origin'], source: string): Promise<JobOutcome> {
-  const job = await prepareCommit(out, projectHandler<ProjectHandler>(id)?.groutHex() ?? out.snapshot.settings.groutHex, origin);
-  const h = projectHandler<ProjectHandler>(id);
+  // Eine gerade (wieder) geöffnete Ansicht erst fertig laden lassen: Palette, Fugenfarbe und Arbeit am Mosaik sind
+  // erst dann bekannt
+  const job = await prepareCommit(out, (await settledHandler(id))?.groutHex() ?? out.snapshot.settings.groutHex, origin);
+  const h = await settledHandler(id);
   // Wurde die eigene Palette hier während der Berechnung verkürzt oder umsortiert, passt das Ergebnis nicht mehr
   const pal = h?.latestPalette();
   if (pal && !resolveComputedPalette(pal, job.fields)) throw new Error(PALETTE_CHANGED);
@@ -637,7 +729,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const [sectionStats, setSectionStats] = useState<Map<string, Stats>>(new Map());
   const [statsBusy, setStatsBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [processed, setProcessed] = useState<HTMLCanvasElement | null>(null);
+  /**
+   * Foto nach Bildoptimierung, mit dem das Raster `rev` berechnet wurde (Vergleich Foto/Mosaik). Angezeigt wird es nur,
+   * solange genau dieses Raster gilt – nach dem Übernehmen eines anderswo berechneten Mosaiks nicht mehr.
+   */
+  const [processedState, setProcessed] = useState<{ canvas: HTMLCanvasElement; rev: string | undefined } | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [saveError, setSaveError] = useState<SaveError | null>(null);
   const [integrityError, setIntegrityError] = useState<IntegrityError | null>(null);
@@ -679,6 +775,23 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const instanceRef = useRef('');
   if (!instanceRef.current) instanceRef.current = uid();
   const mounted = useRef(true);
+  /** Stand geladen (siehe Laden) – erst danach übernimmt die Ansicht Ergebnisse und anderswo gespeicherte Mosaike */
+  const loadedRef = useRef(false);
+  /** Erfüllt, sobald geladen oder geschlossen (ProjectHandler.ready) */
+  const readyRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
+  if (!readyRef.current) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    readyRef.current = { promise, resolve };
+  }
+  /**
+   * Generation des Stands im Arbeitsspeicher: Jedes Übernehmen eines zusammengehörigen Stands (Ergebnis einer
+   * Berechnung, anderswo gespeichertes Mosaik) erhöht sie. Ein Lesevorgang, der vorher begonnen hat, setzt seinen
+   * Stand dann nicht mehr (er würde Projekt und Raster verschiedener Stände mischen), sondern liest neu.
+   */
+  const snapGenRef = useRef(0);
+  /** Ergebnis, das vor dem Ende des Ladens ankam – wird danach übernommen */
+  const deferredCommit = useRef<{ job: PendingCommit; committed: ProjectRecord | null; saveFailure: unknown } | null>(null);
 
   const setRecBoth = useCallback((next: ProjectRecord | null) => {
     recRef.current = next;
@@ -912,29 +1025,40 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       if (inf && !inf.promoted) cancelChannel('preview');
       previewInflight.current = null;
       rawCache.current = null;
+      // Ein Auftrag, der auf das Laden dieser Ansicht wartet, darf nicht hängen bleiben
+      readyRef.current?.resolve();
     };
   }, []);
 
   // ---------- Laden
   useEffect(() => {
     let alive = true;
+    const finish = () => {
+      loadedRef.current = true;
+      setLoaded(true);
+      readyRef.current?.resolve();
+      // Ein Ergebnis, das während des Ladens ankam, jetzt (auf dem geladenen Stand) übernehmen
+      const d = deferredCommit.current;
+      deferredCommit.current = null;
+      if (d && recRef.current) handlerImpl.current.applyCommitted(d.job, d.committed, d.saveFailure);
+    };
     (async () => {
+      // Generation beim Lesen: Wird währenddessen anderswo ein neues Mosaik gespeichert (siehe adopt), wird
+      // Projekt + Raster + Fortschritt gemeinsam neu gelesen – nie Projekt des einen und Raster des anderen Stands.
+      let gen = snapGenRef.current;
       let st;
       try {
         st = await loadProjectState(id);
       } catch (e) {
         console.warn('Projekt konnte nicht geladen werden', e);
-        if (alive) setLoaded(true);
+        if (alive) finish();
         return;
       }
       if (!alive) return;
-      const r = st.rec;
-      if (!r) {
-        setLoaded(true);
+      if (!st.rec) {
+        finish();
         return;
       }
-      setRecBoth(r);
-      paletteBaseRef.current = r.palette;
       if (st.image) {
         imageRef.current = st.image;
         setImageState(st.image);
@@ -951,6 +1075,28 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         }
       }
       if (!alive) return;
+      for (let i = 0; i < 5 && snapGenRef.current !== gen; i++) {
+        gen = snapGenRef.current;
+        try {
+          const again = await loadProjectState(id, { image: false });
+          if (!alive) return;
+          st = { ...again, image: st.image };
+        } catch (e) {
+          console.warn('Projekt konnte nicht neu gelesen werden', e);
+          break;
+        }
+      }
+      const r = st.rec;
+      if (!r) {
+        // inzwischen gelöscht
+        sv.current.deleted = true;
+        setError({ code: 'deleted', message: DELETED });
+        finish();
+        return;
+      }
+      // Projekt und Raster aus EINEM gelesenen Stand – zusammen gesetzt
+      setRecBoth(r);
+      paletteBaseRef.current = r.palette;
       const res = restoreComputed(r, st.mosaic, st.progress);
       if (res.computed) {
         // Ältere Projekte: Zellen mit leeren Teilen (z. B. Dreiecksteilung trotz zu breiter Fuge) werden zu
@@ -970,12 +1116,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         setComputeError('integrity');
         if (st.mosaic) setRejected({ reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) });
       }
-      setLoaded(true);
+      finish();
     })();
     return () => {
       alive = false;
     };
-  }, [id, setRecBoth, setComputedBoth, markDirty]);
+  }, [id, setRecBoth, setComputedBoth, markDirty, setError]);
 
   // Sperre der Palette, solange irgendwo eine Berechnung dieses Projekts läuft
   useEffect(() => {
@@ -1011,6 +1157,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   const adopt = useCallback(async () => {
     const s = sv.current;
+    // Noch beim Laden: Der Ladevorgang liest Projekt + Raster + Fortschritt dann gemeinsam neu
+    if (!loadedRef.current) {
+      snapGenRef.current++;
+      return;
+    }
+    const gen = snapGenRef.current;
     let st;
     try {
       st = await loadProjectState(id, { image: false });
@@ -1019,6 +1171,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       return;
     }
     if (!mounted.current) return;
+    // Während des Lesens wurde ein anderer Stand übernommen (z. B. eigenes Ergebnis): neu lesen statt ihn mit dem
+    // vorher gelesenen (evtl. älteren) Stand zu überschreiben
+    if (snapGenRef.current !== gen) {
+      void adoptRef.current();
+      return;
+    }
     const cur = recRef.current;
     if (!st.rec) {
       s.deleted = true;
@@ -1034,6 +1192,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     // Raster + Palette (+ zugehörige Felder) aus dem Speicher nehmen.
     const recClean = s.gen.rec === s.saved.rec && s.writing.rec === s.saved.rec;
     // Eine hier bearbeitete eigene Palette bleibt, wenn sie zum neuen Raster passt (nur ergänzt/geändert)
+    snapGenRef.current++;
     setRecBoth(recClean ? st.rec : keepStoredComputeFields(cur, st.rec, { paletteEdited: cur.palette !== paletteBaseRef.current }));
     paletteBaseRef.current = st.rec.palette;
     discardGrid();
@@ -1172,14 +1331,17 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, []);
 
   // ---------- abgeleitete Werte
+  // Raster nur bei geänderten Rastermaßen neu bestimmen (nicht bei jeder Projektänderung, z. B. beim Umbenennen –
+  // sonst zeichneten alle davon abhängigen Ansichten bei jedem Tastendruck neu)
+  const lpKey = rec ? JSON.stringify(layoutParamsOf(rec.settings)) : null;
   const layoutInfo = useMemo(() => {
-    if (!rec) return { layout: null as Layout | null, error: null as string | null };
+    if (lpKey === null) return { layout: null as Layout | null, error: null as string | null };
     try {
-      return { layout: computeLayout(layoutParamsOf(rec.settings)), error: null };
+      return { layout: computeLayout(JSON.parse(lpKey) as LayoutParams), error: null };
     } catch (e) {
       return { layout: null, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [rec]);
+  }, [lpKey]);
 
   const sections: SectionGrid | null = useMemo(() => {
     if (!computed || !rec) return null;
@@ -1197,6 +1359,20 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   /** true: Fingerabdruck der berechneten Palette unbekannt (ältere Projekte) – Palettenbearbeitungen nicht einzeln erfasst */
   const paletteEditsUnknown = !!rec && !!computed && rec.settings.paletteMode !== 'custom' && !rec.computedPaletteSig;
 
+  /**
+   * Gespeicherte Freiformzellen mit ungültigen (z. B. überlappenden) Teilen – aus älteren oder importierten Projekten.
+   * Sie werden nicht umgewandelt (das zerstörte die eigene Arbeit), sondern im Projektkopf gemeldet; Flächen und
+   * Fugenmasse sind dann nicht berechenbar, der PDF-Plan ist gesperrt (siehe jointAreaValid).
+   */
+  const invalidFree = useMemo(() => {
+    if (!computed) return [] as { id: string; row: number; col: number }[];
+    return invalidFreeCells(computed.layout, computed.data).map((c) => ({ id: cellId(computed.layout, c.row, c.col), row: c.row, col: c.col }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computed, version]);
+  /** Stein, der in der Vorschau (Schritt 8) geöffnet werden soll (z. B. aus dem Hinweis zu ungültigen Freiformsteinen) */
+  const [stoneRequest, setStoneRequest] = useState<{ row: number; col: number; n: number } | null>(null);
+  const requestStone = useCallback((row: number, col: number) => setStoneRequest((p) => ({ row, col, n: (p?.n ?? 0) + 1 })), []);
+
   /** Schneller Verlegefortschritt (ohne Geometrie) – gesamt und je Abschnitt. */
   const progress = useMemo(() => {
     if (!computed || !sections) return null;
@@ -1210,11 +1386,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   // Maße des Originals (nicht der evtl. verkleinerten Arbeitskopie): Zuschnitt und Arbeitsauflösung wie bei voller Dekodierung
   const srcW = sourceSize?.w ?? bitmap?.width ?? 0;
   const srcH = sourceSize?.h ?? bitmap?.height ?? 0;
+  // Nur von Fotobearbeitung, Foto und Seitenverhältnis abhängig (gleiche Identität bei anderen Änderungen)
+  const adjustNow = rec?.adjust;
+  const aspectNow = layoutInfo.layout ? layoutInfo.layout.finishedW / layoutInfo.layout.finishedH : 0;
   const effectiveCrop = useMemo(() => {
-    if (!rec || !bitmap || !layoutInfo.layout || !srcW || !srcH) return null;
-    const { w, h } = rotatedSize(srcW, srcH, rec.adjust);
-    return fitCrop(rec.adjust.crop, w, h, layoutInfo.layout.finishedW / layoutInfo.layout.finishedH);
-  }, [rec, bitmap, srcW, srcH, layoutInfo.layout]);
+    if (!adjustNow || !bitmap || !aspectNow || !srcW || !srcH) return null;
+    const { w, h } = rotatedSize(srcW, srcH, adjustNow);
+    return fitCrop(adjustNow.crop, w, h, aspectNow);
+  }, [adjustNow, bitmap, srcW, srcH, aspectNow]);
 
   // ---------- Statistik (im Worker)
   const statsReq = useRef(0);
@@ -1297,8 +1476,16 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const applyCommitted = useCallback(
     (job: PendingCommit, committed: ProjectRecord | null, saveFailure: unknown) => {
       if (!mounted.current) return;
+      if (!loadedRef.current) {
+        // Noch beim Laden (sollte dank ProjectHandler.ready nicht vorkommen): nach dem Laden übernehmen
+        deferredCommit.current = { job, committed, saveFailure };
+        snapGenRef.current++;
+        return;
+      }
       const { fields, data, proc, layout, lp } = job;
-      setProcessed(proc);
+      snapGenRef.current++;
+      // Vergleichsfoto gehört genau zu diesem Raster
+      setProcessed({ canvas: proc, rev: fields.mosaicRev });
       data.rev = fields.mosaicRev;
       const latest = recRef.current ?? job.started;
       // Palette, die jetzt zum gespeicherten Raster gehört (bei eigener Palette ggf. mit Ergänzungen,
@@ -1328,8 +1515,10 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       discardGrid(); // ausstehende Speicherungen gehören zum ersetzten Raster
       setVersion((v) => v + 1);
       setProgressVersion((v) => v + 1);
-      // Eine übernommene Vorschau teilt ihr Raster jetzt mit dem gespeicherten Mosaik: nicht weiter als Vorschau führen
-      if (job.origin === 'preview') setPreview((p) => (p.result && p.result.data === data ? { ...p, result: null } : p));
+      // Eine übernommene Vorschau teilt ihr Raster jetzt mit dem gespeicherten Mosaik: nicht weiter als Vorschau führen.
+      // Nach „Berechnen“ gehört eine ältere Vorschau zu anderen Einstellungen: nicht vor dem neueren gespeicherten
+      // Mosaik zeigen und ihren Speicher (Raster, Arbeitsbild) freigeben.
+      setPreview((p) => (p.result ? { ...p, result: null } : p));
       setCommittedAt(Date.now());
       if (saveFailure) {
         // Ergebnis ist berechnet, aber nicht gespeichert: im Speicher behalten, vollständig nachspeichern
@@ -1352,6 +1541,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   useEffect(() => {
     const handler: ProjectHandler = {
       instance: instanceRef.current,
+      ready: () => readyRef.current!.promise,
       latestPalette: () => recRef.current?.palette ?? null,
       groutHex: () => recRef.current?.settings.groutHex ?? null,
       workAtRisk: () => handlerImpl.current.displayedWorkAtRisk(),
@@ -1524,6 +1714,10 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     setPreviewWatchers((w) => w + 1);
     return () => setPreviewWatchers((w) => w - 1);
   }, []);
+  // Ohne angezeigte Vorschau (Schritte 1 und 8–10, ausgeblendet) braucht niemand das zwischengespeicherte Arbeitsbild
+  useEffect(() => {
+    if (previewWatchers <= 0) rawCache.current = null;
+  }, [previewWatchers]);
 
   /** „Vorschau aktualisieren“: sofort rechnen (auch bei großen Mosaiken oder nach einer langsamen Vorschau). */
   const refreshPreview = useCallback(() => {
@@ -1540,7 +1734,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       return false;
     }
   }, []);
-  const committedCurrent = !!computed && !stale;
+  /**
+   * Materialien seit der Berechnung geändert (Farbton, Name, Bestand bei begrenzter Farbanzahl, hinzugefügt/gelöscht):
+   * Neu berechnen ergäbe andere Farben, obwohl computeKey gleich ist. Ältere Projekte ohne gespeicherten Fingerabdruck:
+   * unbekannt – nicht gemeldet.
+   */
+  const materialSigNow = useMemo(() => (rec ? materialSigFor(rec, materials) : undefined), [rec?.settings.paletteMode, rec?.settings.materialIds, materials]); // eslint-disable-line react-hooks/exhaustive-deps
+  const materialsChanged = !!rec && !!computed && !stale && rec.computedMaterialSig !== undefined && materialSigNow !== undefined && rec.computedMaterialSig !== materialSigNow;
+  const committedCurrent = !!computed && !stale && !materialsChanged;
   const sigNow = inputsNow?.ok ? inputsNow.sig : null;
   const cellsNow = inputsNow?.ok ? inputsNow.cells : layoutInfo.layout ? layoutInfo.layout.cols * layoutInfo.layout.rows : 0;
   const policy = previewPolicy({ cells: cellsNow, slow: slowDevice, lastMs: preview.last?.ms ?? null });
@@ -1641,6 +1842,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     committedAt,
     computeError,
     stale,
+    /** Materialien seit der Berechnung geändert (Einstellungen gleich) – Neu berechnen ergäbe andere Farben */
+    materialsChanged,
     /** Live-Vorschau der aktuellen Einstellungen (nie gespeichert) */
     preview: previewInfo,
     /** „Übernehmen“ speichert die fertige Vorschau ohne zweite Berechnung */
@@ -1648,7 +1851,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     watchPreview,
     refreshPreview,
     effectiveCrop,
-    processed,
+    /** Foto nach Bildoptimierung des angezeigten Rasters (null: nicht vorhanden oder gehört zu einem anderen Raster) */
+    processed: processedState && rec && processedState.rev === rec.mosaicRev ? processedState.canvas : null,
     /** Speicherstatus für die Anzeige („Gespeichert ✓ / Speichert … / Nicht gespeichert“) */
     saveState,
     saveError,
@@ -1658,6 +1862,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     rejected,
     /** beim Laden reparierte Zellen mit leeren Teilen (0 = keine) */
     repairedCells,
+    /** gespeicherte Freiformzellen mit ungültigen Teilen (Bezeichnung, Zeile, Spalte) */
+    invalidFree,
+    /** Stein, der in Schritt 8 geöffnet werden soll (Zähler n: jede Anforderung zählt) */
+    stoneRequest,
+    requestStone,
     dismissRepaired: () => setRepairedCells(0),
     /** Palette gesperrt, weil (irgendwo) eine Berechnung dieses Projekts läuft */
     paletteLocked,

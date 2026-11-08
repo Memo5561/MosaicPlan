@@ -10,6 +10,7 @@ import { LayoutSummary } from './StepGeometry';
 import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
 import type { ComputeDiagnostics } from '../../core/mosaic';
+import { isCommitting } from '../../workers/jobs';
 import '../css/w2-workspace-shell.css';
 import '../css/w3-live-preview.css';
 
@@ -22,6 +23,48 @@ function ColorsUsedRow({ d }: { d: ComputeDiagnostics }) {
       <th>{t('w3lp.colorsUsed')}</th>
       <td data-testid="colors-used">{t('w3lp.colorsUsedVal', { used: n(d.usedColors), req: n(d.requestedColors) })}</td>
     </tr>
+  );
+}
+
+/**
+ * Zeilen einer Ergebnistabelle – für das gespeicherte Mosaik und für die Vorschau dieselben, damit beide vergleichbar
+ * sind. `formula`: ΔE-Formel, mit der genau dieses Ergebnis berechnet wurde (eingestuft wird nur bei CIEDE2000).
+ */
+function DiagRows({ d, formula, testPrefix }: { d: ComputeDiagnostics; formula: '2000' | '76' | null; testPrefix: string }) {
+  const { t, n } = useI18n();
+  const rating = formula === '2000' ? deltaERating(d.meanDeltaE) : null;
+  const ratingText = rating === 'low' ? t('w2ws.de.low') : rating === 'mid' ? t('w2ws.de.mid') : rating === 'high' ? t('w2ws.de.high') : '';
+  return (
+    <tbody>
+      <tr>
+        <th>{t('compute.meanDE')}</th>
+        <td data-testid={`${testPrefix}mean-de`}>
+          {n(d.meanDeltaE, 2)}
+          {ratingText && <span className={`w2ws-rating ${rating}`}> – {ratingText}</span>}
+        </td>
+      </tr>
+      <tr>
+        <th>{t('compute.p95DE')}</th>
+        <td data-testid={`${testPrefix}p95-de`}>≤ {n(d.p95DeltaE, 0)}</td>
+      </tr>
+      <ColorsUsedRow d={d} />
+      <tr>
+        <th>{t('compute.splitCells')}</th>
+        <td>{n(d.splitCells)}</td>
+      </tr>
+      <tr>
+        <th>{t('compute.subCells')}</th>
+        <td>{n(d.subCells)}</td>
+      </tr>
+      <tr>
+        <th>{t('compute.recCells')}</th>
+        <td data-testid={`${testPrefix}rec-cells`}>{n(d.recommendCells)}</td>
+      </tr>
+      <tr>
+        <th>{t('compute.time')}</th>
+        <td>{n(d.timeMs / 1000, 1)} s</td>
+      </tr>
+    </tbody>
   );
 }
 
@@ -57,8 +100,12 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
   const paletteRebuilt = s.paletteMode !== 'custom';
   // Bewertung der Farbabweichung nur für die Formel, mit der das angezeigte Ergebnis berechnet wurde
   const resultDE = computedDeltaE(api.rec!.computedWith) ?? (api.stale ? null : s.deltaE);
-  const rating = d && resultDE === '2000' ? deltaERating(d.meanDeltaE) : null;
-  const ratingText = rating === 'low' ? t('w2ws.de.low') : rating === 'mid' ? t('w2ws.de.mid') : rating === 'high' ? t('w2ws.de.high') : '';
+  // Formel der Vorschau: die ihrer Momentaufnahme (= aktuelle Einstellungen, denn sie passt zu ihnen)
+  const previewDE = api.preview.result?.snapshot.settings.deltaE ?? null;
+  // Das gespeicherte Mosaik gehört zu den aktuellen Einstellungen und Materialien?
+  const savedCurrent = api.preview.committedCurrent;
+  // Die Berechnung eines anderen Projekts speichert gerade ihr Ergebnis: nicht mehr abbrechbar
+  const otherSaving = isCommitting(other);
   const photoUnreadable = !api.bitmap && !!api.image;
   return (
     <div className="two-col">
@@ -72,7 +119,8 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
             actions={[{ label: t('w2ws.empty.goPhoto'), onClick: () => onGo('photo'), primary: true, testId: 'empty-go-photo' }]}
           />
         )}
-        {api.bitmap && <p className="muted small">{t('w3lp.computeIntro')}</p>}
+        {/* Passt die Vorschau, sagt das schon der Kopftext (w3lp.computeIntroHead) */}
+        {api.bitmap && !(commitPreview && !api.computing) && <p className="muted small">{t('w3lp.computeIntro')}</p>}
         <h3>{t('compute.summary')}</h3>
         <table className="kv">
           <tbody>
@@ -148,12 +196,13 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
           <>
             {other && !commitPreview && !api.computing ? (
               // App-weit läuft nur eine Berechnung: hier nicht still warten, sondern sagen, welche läuft
-              <div className="w3lp-other" role="status" data-testid="other-job">
-                <span>{t('w3lp.otherJob', { name: other.projectName, pct: Math.round(computeOverall(other.progress) * 100) })}</span>
+              <div className="w3lp-other" role="status" data-testid="other-job" data-phase={other.progress.phase}>
+                <span>{otherSaving ? t('w3lp.otherJobSaving', { name: other.projectName }) : t('w3lp.otherJob', { name: other.projectName, pct: Math.round(computeOverall(other.progress) * 100) })}</span>
                 <a className="btn small" href={`#/project/${other.projectId}/compute`} data-testid="other-job-open">
                   {t('w3lp.otherJob.open')}
                 </a>
-                <button className="btn small danger" onClick={api.cancelOtherJob} data-testid="other-job-cancel">
+                {/* Speichern ist nicht abbrechbar (wie „Abbrechen“ im eigenen Projekt) */}
+                <button className="btn small danger" onClick={api.cancelOtherJob} data-testid="other-job-cancel" disabled={otherSaving} title={otherSaving ? t('w3lp.savingNoCancel') : undefined}>
                   {t('common.cancel')}
                 </button>
               </div>
@@ -183,6 +232,11 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
           </>
         )}
         {api.computed && !api.computing && api.stale && reasons.length === 0 && <p className="warn small">{t('compute.staleWarn')}</p>}
+        {api.computed && !api.computing && api.materialsChanged && (
+          <p className="warn small" data-testid="materials-changed">
+            {t('w3lp.materialsChanged')}
+          </p>
+        )}
         {api.computed &&
           !api.computing &&
           (loss ? (
@@ -248,45 +302,25 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
         {d && api.computed && (
           <>
             {pvd ? (
-              // Neben einer neuen Vorschau klar sagen, welches Ergebnis gespeichert ist
+              // Neben einer neuen Vorschau klar sagen, welches Ergebnis gespeichert ist – und dass es nicht mehr zu den
+              // aktuellen Einstellungen gehört (gleiches Kennzeichen wie in der Live-Vorschau)
               <div className="w3lp-diag-head">
                 <h3>{t('compute.result')}</h3>
-                <span className="w3lp-badge w3lp-badge-ok">{t('w3lp.badge.committed')}</span>
+                {savedCurrent ? (
+                  <span className="w3lp-badge w3lp-badge-ok" data-testid="saved-result-badge" data-kind="committed">
+                    {t('w3lp.badge.committed')}
+                  </span>
+                ) : (
+                  <span className="w3lp-badge w3lp-badge-old" data-testid="saved-result-badge" data-kind="committed-old">
+                    {api.materialsChanged ? t('w3lp.badge.committedOldMaterials') : t('w3lp.badge.committedOld')}
+                  </span>
+                )}
               </div>
             ) : (
               <h3>{t('compute.result')}</h3>
             )}
             <table className="kv" data-testid="diagnostics">
-              <tbody>
-                <tr>
-                  <th>{t('compute.meanDE')}</th>
-                  <td data-testid="mean-de">
-                    {n(d.meanDeltaE, 2)}
-                    {ratingText && <span className={`w2ws-rating ${rating}`}> – {ratingText}</span>}
-                  </td>
-                </tr>
-                <tr>
-                  <th>{t('compute.p95DE')}</th>
-                  <td>≤ {n(d.p95DeltaE, 0)}</td>
-                </tr>
-                <ColorsUsedRow d={d} />
-                <tr>
-                  <th>{t('compute.splitCells')}</th>
-                  <td>{n(d.splitCells)}</td>
-                </tr>
-                <tr>
-                  <th>{t('compute.subCells')}</th>
-                  <td>{n(d.subCells)}</td>
-                </tr>
-                <tr>
-                  <th>{t('compute.recCells')}</th>
-                  <td>{n(d.recommendCells)}</td>
-                </tr>
-                <tr>
-                  <th>{t('compute.time')}</th>
-                  <td>{n(d.timeMs / 1000, 1)} s</td>
-                </tr>
-              </tbody>
+              <DiagRows d={d} formula={resultDE} testPrefix="" />
             </table>
             <p className="muted small">{t('compute.deHint')}</p>
           </>
@@ -296,28 +330,12 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
           <>
             <div className="w3lp-diag-head">
               <h3>{t('compute.result')}</h3>
-              <span className="w3lp-badge">{t('w3lp.previewResult')}</span>
+              <span className="w3lp-badge" data-testid="preview-result-badge" data-kind="preview">
+                {t('w3lp.previewResult')}
+              </span>
             </div>
             <table className="kv" data-testid="preview-diagnostics">
-              <tbody>
-                <tr>
-                  <th>{t('compute.meanDE')}</th>
-                  <td>{n(pvd.meanDeltaE, 2)}</td>
-                </tr>
-                <ColorsUsedRow d={pvd} />
-                <tr>
-                  <th>{t('compute.splitCells')}</th>
-                  <td>{n(pvd.splitCells)}</td>
-                </tr>
-                <tr>
-                  <th>{t('compute.subCells')}</th>
-                  <td>{n(pvd.subCells)}</td>
-                </tr>
-                <tr>
-                  <th>{t('compute.time')}</th>
-                  <td>{n(pvd.timeMs / 1000, 1)} s</td>
-                </tr>
-              </tbody>
+              <DiagRows d={pvd} formula={previewDE} testPrefix="preview-" />
             </table>
           </>
         )}

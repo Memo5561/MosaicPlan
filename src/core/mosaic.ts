@@ -131,7 +131,11 @@ export interface ComputeDiagnostics {
   paletteMode?: PaletteMode;
   /** Automatik-Modi: Anzahl der aus dem Foto ermittelten Farben (K-Means-Zentren; weniger als angefordert, wenn das Foto nicht mehr hergibt) */
   imageColors?: number;
-  /** „Automatisch → eigene Materialien“: Bildfarben, die auf ein bereits gewähltes Material fielen (zusammengelegt) */
+  /**
+   * „Automatisch → eigene Materialien“ nur beim Verfahren Bildfarbe → nächstes Material ('nearest' oder Schutz der
+   * Auswahl gegriffen): Bildfarben, die auf ein bereits gewähltes Material fielen (zusammengelegt). Bei der direkten
+   * Auswahl aus dem Bestand nicht gesetzt (dort wird nichts zusammengelegt).
+   */
   mergedColors?: number;
   /** Modi mit eigenen Materialien: Anzahl der angebotenen Materialfarben */
   poolColors?: number;
@@ -610,24 +614,31 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
           costSelected: round2(sel.costSelected),
         };
       }
-      // „aus n Bildfarben“: wie viele Bildfarben dieses gewählte Material als nächstes haben (Summe = Bildfarben)
-      const from = new Array<number>(chosen.length).fill(0);
-      for (const c of km.centers) {
-        let best = 0;
-        let bd = Infinity;
-        chosen.forEach((m, q) => {
-          const d = dE(c[0], c[1], c[2], fixed[m].lab[0], fixed[m].lab[1], fixed[m].lab[2]);
-          if (d < bd) {
-            bd = d;
-            best = q;
-          }
-        });
-        from[best]++;
+      // „aus n Bildfarben … zusammengelegt“ beschreibt nur dort, was wirklich geschah: Bildfarbe → nächstes Material
+      // ('nearest' bzw. Schutz der Auswahl gegriffen – dann ist die Palette genau diese Startmenge, und das nächste
+      // gewählte Material ist das nächste aller Materialien). Bei der direkten Auswahl aus dem Bestand wird nichts
+      // zusammengelegt: Weniger Farben haben dort andere Gründe (Bestand zu klein, keine Verbesserung) – kein
+      // mergedFrom/mergedColors.
+      const merges = params.snapMethod === 'nearest' || !!snapSelection?.fallback;
+      const from = merges ? new Array<number>(chosen.length).fill(0) : null;
+      if (from) {
+        for (const c of km.centers) {
+          let best = 0;
+          let bd = Infinity;
+          chosen.forEach((m, q) => {
+            const d = dE(c[0], c[1], c[2], fixed[m].lab[0], fixed[m].lab[1], fixed[m].lab[2]);
+            if (d < bd) {
+              bd = d;
+              best = q;
+            }
+          });
+          from[best]++;
+        }
+        mergedColors = km.centers.length - from.filter((x) => x > 0).length;
       }
-      mergedColors = km.centers.length - from.filter((x) => x > 0).length;
       chosen.forEach((m, q) => {
         paletteLab.push(fixed[m].lab);
-        paletteMeta.push({ hex: fixed[m].hex, name: fixed[m].name, materialId: fixed[m].materialId, mergedFrom: from[q] });
+        paletteMeta.push({ hex: fixed[m].hex, name: fixed[m].name, materialId: fixed[m].materialId, ...(from ? { mergedFrom: from[q] } : {}) });
       });
     }
   } else {

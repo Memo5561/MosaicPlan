@@ -60,11 +60,11 @@ export function colorCountNotice(d: ComputeDiagnostics | undefined, t: TFunc): {
     const noStones = (d.imageColors ?? req) - used;
     if (noStones > 0) parts.push(tCount(t, 'w2ch.count.noStones', noStones, { n: noStones }));
   } else if (d.paletteMode === 'auto-snap' && d.poolColors !== undefined && !d.snapSelection?.fallback) {
-    // Auswahl direkt aus dem Bestand (w3-colour-quality): weniger Farben nur aus genannten Gründen
-    const merged = d.mergedColors ?? 0;
+    // Auswahl direkt aus dem Bestand (w3-colour-quality): weniger Farben nur aus den genannten Gründen – hier wird
+    // nichts zusammengelegt (kein „… zusammengelegt“, siehe mergedColors)
     const selected = d.snapSelection?.selected ?? used;
     if (used < req) {
-      parts.push(merged > 0 ? t('w2ch.count.snap', { req, used, merged }) : t('w2ch.count.auto', { req, used }));
+      parts.push(t('w2ch.count.auto', { req, used }));
       if (d.poolColors < req) parts.push(tCount(t, 'w3cq.count.poolSmall', d.poolColors, { n: d.poolColors }));
       else if (selected < req) parts.push(tCount(t, 'w3cq.count.noGain', selected, { n: selected }));
       if (selected > used) parts.push(tCount(t, 'w2ch.count.noStones', selected - used, { n: selected - used }));
@@ -266,6 +266,10 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
   const matById = new Map(materials.map((m) => [m.id, m]));
   const dn = (p: PaletteColor) => paletteDisplayName(p, lang);
   const counts = api.computed ? colorCountNotice(rec.diagnostics, t) : null;
+  // „aus n Bildfarben … zusammengelegt“ nur, wo die Berechnung wirklich zusammengelegt hat (Bildfarbe → nächstes
+  // Material). Ergebnisse der direkten Auswahl aus dem Bestand (auch ältere gespeicherte) zeigen es nicht.
+  const sel = rec.diagnostics?.snapSelection;
+  const mergesReal = !sel || sel.method === 'nearest' || !!sel.fallback;
   // ΔE-Formel, mit der die Abweichung je Farbe gemessen wurde (die der Berechnung, nicht die eingestellte).
   // Die Einstufung „> 5 deutlich“ (rot) gilt nur für CIEDE2000 – wie die Einstufung in Schritt 7.
   const resultDE = computedDeltaE(rec.computedWith) ?? (api.stale ? null : rec.settings.deltaE);
@@ -542,7 +546,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                         )}
                         {/* In den Materialmodi ist die Palettenfarbe die Materialfarbe (ΔE 0) – nur eine echte Abweichung zeigen */}
                         {dm !== null && (!snapMode || dm >= 0.5) && <small className={`w2ch-mat-de ${dm > 5 ? 'warn' : 'muted'}`}>{snapMode ? t('w2ch.materialDE', { de: n(dm, 1) }) : `ΔE ${n(dm, 1)}`}</small>}
-                        {p.mergedFrom !== undefined && p.mergedFrom > 1 && (
+                        {mergesReal && p.mergedFrom !== undefined && p.mergedFrom > 1 && (
                           <small className="w2ch-mat-de muted" data-testid="palette-merged" title={t('w2ch.mergedFromTitle', { n: p.mergedFrom })}>
                             {t('w2ch.mergedFrom', { n: p.mergedFrom })}
                           </small>
@@ -843,7 +847,13 @@ export function MissingColorsPanel({
                       <Swatch hex={isValidHex(m.nearestHex) ? m.nearestHex : '#000'} size={16} />
                       <span>
                         {matName}
-                        {gone && <small className="muted"> ({t('w3cq.missing.materialGone')})</small>}
+                        {/* neutral: nach dem Löschen ebenso wahr wie nach einem Import, bei dem es das Material hier nie gab */}
+                        {gone && (
+                          <small className="muted" data-testid="missing-not-here">
+                            {' '}
+                            ({t('w3fx.missing.notHere')})
+                          </small>
+                        )}
                         <small className="w3cq-de">
                           {' '}
                           · {de} {f1(m.deltaE)}

@@ -171,7 +171,7 @@ export const en: Record<string, string> = {
 export const tr: Record<string, string> = {
   'step.size.intro': 'Genişlik ve yüksekliği serbestçe girin – sınır yalnızca en fazla 40 milyon ızgara konumu ve cihaz belleği. Hesaplama taşları VE derzleri dikkate alır.',
   'shapes.regionsHint':
-    'Görüntü üzerinde bölge çizin – fareyle doğrudan, parmakla ancak „Bölge çiz“ düğmesinden sonra (aksi halde sayfa kayar). Yüz bölgeleri: daha fazla renk ağırlığı, daha ince kesimler, arka plan yumuşatma yok. Ayrıntı bölgeleri: daha küçük taşlar.',
+    'Görüntü üzerinde bölge çizin – fareyle doğrudan, parmakla ancak “Bölge çiz” düğmesinden sonra (aksi halde sayfa kayar). Yüz bölgeleri: daha fazla renk ağırlığı, daha ince kesimler, arka plan yumuşatma yok. Ayrıntı bölgeleri: daha küçük taşlar.',
 
   'layout.err.invalidDims': 'Geçersiz ölçüler: genişlik, yükseklik ve taş ölçüsü 0 mm’den büyük, derz en az 0 mm olmalıdır.',
   'layout.err.smallerThanTile': '{dim} ({len} mm) tek bir taştan ({tile} mm) küçük.',
@@ -198,12 +198,12 @@ export const tr: Record<string, string> = {
   'w3fg.detail.howTitle': 'Nasıl sayılır?',
   'w3fg.detail.how': 'Merkezi işaretli yüz bölgesinin içinde kalan ızgara konumları sayılır (2×2/3×3 alt taşlar hariç). 16 ve 30 eşikleri test portrelerinden alınmış yaklaşık değerlerdir, garanti değildir.',
   'w3fg.detail.moreHere': 'Yüz boyunca daha fazla taş: daha küçük taşlar veya daha büyük bir mozaik – aşağıdaki karşılaştırmaya bakın.',
-  'w3fg.detail.moreSteps': 'Yüz boyunca daha fazla taş: daha küçük taşlar (3. adım „Taş boyutu“) veya daha büyük bir mozaik (2. adım „Resim boyutu“).',
-  'w3fg.detail.noFace': 'Portreler için: yüzü 6. adım „Taş biçimleri“nde işaretleyin – burada yüz genişliği boyunca kaç taş olduğu gösterilir.',
+  'w3fg.detail.moreSteps': 'Yüz boyunca daha fazla taş: daha küçük taşlar (3. adım “Taş boyutu”) veya daha büyük bir mozaik (2. adım “Resim boyutu”).',
+  'w3fg.detail.noFace': 'Portreler için: yüzü 6. adım “Taş biçimleri”nde işaretleyin – burada yüz genişliği boyunca kaç taş olduğu gösterilir.',
   'w3fg.detail.goShapes': 'Yüzü işaretle (6. adım)',
 
   'w3fg.to.title': 'Karşılaştırma: taş boyutu ve mozaik boyutu',
-  'w3fg.to.intro': 'Geçerli derz ({g} mm) ve seçili kenar moduyla tam olarak hesaplandı. Hiçbir şey otomatik değişmez – „Uygula“ yalnızca ayarı değiştirir.',
+  'w3fg.to.intro': 'Geçerli derz ({g} mm) ve seçili kenar moduyla tam olarak hesaplandı. Hiçbir şey otomatik değişmez – “Uygula” yalnızca ayarı değiştirir.',
   'w3fg.to.col.option': 'Ayar',
   'w3fg.to.col.cells': 'Konumlar',
   'w3fg.to.col.joint': 'Derz payı',
@@ -245,5 +245,5 @@ export const tr: Record<string, string> = {
     'Bu tarayıcı otomatik yüz algılama sunmuyor. Yüzü elle işaretleyin: alından çeneye kadar bir elips çizin. Uygulama orada üç kat renk ağırlığı ve daha ince kesimlerle hesaplar.',
   'w3fg.manual.start': 'Yüzü işaretle',
   'w3fg.regionsChanged': 'Bölgeler değişti – lütfen yeniden hesaplayın. Hesaplanan mozaik hâlâ önceki bölgeleri kullanıyor.',
-  'w3fg.goCompute': '7. adım „Hesapla“ya git',
+  'w3fg.goCompute': '7. adım “Hesapla”ya git',
 };

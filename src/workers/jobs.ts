@@ -133,10 +133,22 @@ export function anyJob(): boolean {
   return jobs.size > 0;
 }
 
-/** Bricht den Auftrag eines Projekts ab (Worker wird beendet). Liefert false, wenn keiner lief. */
+/** Phase, in der das Ergebnis gespeichert wird – ab hier ist ein Auftrag nicht mehr abbrechbar. */
+export const COMMIT_PHASE = 'commit';
+
+/** Läuft für dieses Projekt ein Auftrag, der gerade sein Ergebnis speichert (nicht mehr abbrechbar)? */
+export function isCommitting(info: Pick<JobInfo, 'progress'> | null | undefined): boolean {
+  return !!info && info.progress.phase === COMMIT_PHASE;
+}
+
+/**
+ * Bricht den Auftrag eines Projekts ab (Worker wird beendet). Liefert false, wenn keiner lief – oder wenn er gerade
+ * sein Ergebnis speichert: Diese Phase ist nicht abbrechbar (sonst hieße es „abgebrochen“, und das Ergebnis würde
+ * trotzdem gespeichert). Ein Löschen des Projekts während des Speicherns verhindert das Speichern selbst.
+ */
 export function cancelJob(projectId: string): boolean {
   const j = jobs.get(projectId);
-  if (!j) return false;
+  if (!j || isCommitting(j.info)) return false;
   j.cancelled = true;
   try {
     j.cancel();

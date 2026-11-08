@@ -366,6 +366,37 @@ export function freeEditorPieces(layout: Layout, data: MosaicData, row: number, 
 }
 
 /** Speichert Freiform-Teile in einer Zelle, wenn validateFreePieces (mit der Projektfuge) keinen Fehler findet. */
+/** Gespeicherte Freiformzelle mit Fehlern (siehe invalidFreeCells). */
+export interface InvalidFreeCell {
+  idx: number;
+  row: number;
+  col: number;
+  /** Fehler aus validateFreePieces (z. B. 'overlap' mit der exakten Schnittfläche) */
+  errors: FreeIssue[];
+}
+
+/**
+ * Gespeicherte Freiformzellen, deren Teile die Prüfung von validateFreePieces nicht bestehen – z. B. überlappende
+ * Teile aus älteren Projekten (die frühere Prüfung erkannte nicht jede Überlappung) oder aus importierten Dateien.
+ * Solche Zellen zählen Flächen doppelt: Steinfläche > Gesamtfläche, Fugenfläche und Fugenmasse negativ. Sie werden
+ * nicht still umgewandelt (das zerstörte die eigene Freiform-Arbeit), sondern gemeldet. Nur Fehler, keine Warnungen
+ * (Mindestbreite/Fuge) – die Fehler hängen nicht von der Mindestbreite ab. `range`: nur Zellen in diesem Bereich.
+ */
+export function invalidFreeCells(layout: Layout, data: MosaicData, range?: Range): InvalidFreeCell[] {
+  const out: InvalidFreeCell[] = [];
+  const idxs = [...data.free.keys()].sort((a, b) => a - b);
+  for (const idx of idxs) {
+    if (data.kind[idx] !== CellKind.FREE) continue;
+    const row = Math.floor(idx / layout.cols);
+    const col = idx % layout.cols;
+    if (range && (row < range.r0 || row >= range.r1 || col < range.c0 || col >= range.c1)) continue;
+    const r = cellRect(layout, row, col);
+    const v = validateFreePieces(r.w, r.h, data.free.get(idx) ?? [], 0, layout.joint);
+    if (!v.ok) out.push({ idx, row, col, errors: v.errors });
+  }
+  return out;
+}
+
 export function setFreePieces(layout: Layout, data: MosaicData, row: number, col: number, pieces: FreePiece[], minPieceMm: number): FreeValidation {
   const r = cellRect(layout, row, col);
   const v = validateFreePieces(r.w, r.h, pieces, minPieceMm, layout.joint);

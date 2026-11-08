@@ -11,12 +11,13 @@ import { jsPDF } from 'jspdf';
 import { hexToRgb, textColorFor } from './color';
 import { paletteDisplayName } from './colorNames';
 import { bbox, centroid, fmtMm, type Pt } from './geometry';
+import { invalidFreeCells } from './edits';
 import { maxColorIndex } from './integrity';
 import { cellId, rowLabel, type Layout, type Section, type SectionGrid } from './layout';
 import { fitSheetScale, fmtScale, pageSize, sheetPrintArea, SHEET_LEFT_RESERVE, SHEET_TOP_RESERVE, type PdfOptions } from './pdfOptions';
 import { drawTable, headerAdvance, layoutRow, layoutTable, LINE_FACTOR, PAD_R, PT_MM, wrapWords, type ColSpec, type Measure, type TableCanvas, type TableCell, type TableLayout } from './pdfTable';
 import { cellPieces, cutLineItems, type CutInfo } from './pieces';
-import { CutCache, computeStats, makeRawSizeFn, pieceCutInfo, type Range, type RawSizeFn } from './stats';
+import { CutCache, computeStats, jointAreaValid, makeRawSizeFn, pieceCutInfo, type Range, type RawSizeFn } from './stats';
 import { CellKind, type Material, type MosaicData, type PaletteColor, type ProjectSettings } from './types';
 
 export { DEFAULT_PDF_OPTIONS, PAPER, type PaperFormat, type PdfOptions } from './pdfOptions';
@@ -125,6 +126,18 @@ export async function generatePdf(input: PdfInput, opts: PdfOptions, onProgress?
     const params = { n: num(bad), count: palette.length, max: maxIdx };
     const one = bad === 1 ? t('pdf.err.integrity.one', params) : '';
     throw new Error(one && one !== 'pdf.err.integrity.one' ? one : t('pdf.err.integrity', params));
+  }
+  // ---------- Schutz: Flächen müssen der Geometrie entsprechen (überlappende Freiformteile älterer/importierter
+  // Projekte zählten doppelt – Steinfläche > Gesamtfläche, negative Fugenfläche und Fugenmasse)
+  if (!jointAreaValid(stats)) {
+    const bad = invalidFreeCells(layout, data);
+    if (bad.length) {
+      const ids = bad.slice(0, 20).map((b) => cellId(layout, b.row, b.col)).join(', ') + (bad.length > 20 ? ' …' : '');
+      const one = bad.length === 1 ? t('pdf.err.freeInvalid.one', { ids }) : '';
+      throw new Error(one && one !== 'pdf.err.freeInvalid.one' ? one : t('pdf.err.freeInvalid', { n: num(bad.length), ids }));
+    }
+    const area = (v: number) => fmtMm(v / 1e6, 4, loc);
+    throw new Error(t('pdf.err.areaInvalid', { stones: area(stats.stoneArea), total: area(stats.finishedArea) }));
   }
 
   const { PW, PH } = pageSize(opts);

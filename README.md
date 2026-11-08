@@ -109,6 +109,9 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
   Teile ohne Fläche (ältere Projekte: Fuge breiter als der Stein) sind keine Steine und werden nicht gezählt; solche
   Zellen werden beim Öffnen in ganze Steine umgewandelt (mit Hinweis).
   Fugenmasse = Fugenfläche × Fugentiefe × 1,6 kg/l (**Schätzwert**).
+  Freiformsteine aus älteren oder importierten Projekten, deren Teile sich überlappen (exakte Schnittfläche), werden
+  nicht still umgewandelt, sondern im Projektkopf mit ihrer Position gemeldet; Stein-/Fugenfläche und Fugenmasse gelten
+  dann als „nicht berechenbar“, und der PDF-Plan wird erst nach der Korrektur im Freiform-Editor erstellt.
 
 ## PDF-Inhalt
 

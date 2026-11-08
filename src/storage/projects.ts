@@ -1,5 +1,7 @@
 import {
   danglingMaterialRefs,
+  diagnosticMaterialIds,
+  linkReferencedMaterials,
   mappingChangesIds,
   planProjectMaterialImport,
   referencedMaterialIds,
@@ -12,6 +14,9 @@ import {
   type MaterialImportNote,
   type ProjectMaterialImportPlan,
 } from '../core/materialImport';
+import { invalidFreeCells } from '../core/edits';
+import { cellId, computeLayout, type LayoutParams } from '../core/layout';
+import { unpackMosaic } from '../core/serialize';
 import { DEFAULT_ADJUST, DEFAULT_SETTINGS, type Material, type ProjectSettings, type Region } from '../core/types';
 import {
   db,
@@ -118,6 +123,8 @@ export const PROJECT_FILE_FORMAT = 'mosaicplan-project';
  *  1: Projekt, Foto, Raster, Fortschritt.
  *  2: zusätzlich `materials` – die Materialien, auf die das Projekt verweist (Palettenfarben, Materialauswahl) –
  *     und bei der Auswahl „alle Materialien“ `materialPool` (Anzahl der Materialien auf dem Quellgerät).
+ *     Optional `materialRefs`: Materialien, auf die nur die Diagnose verweist („Fehlende Farben“ → nächstes Material);
+ *     sie werden beim Import nur vorhandenen zugeordnet, nie angelegt.
  * Ältere App-Versionen lesen Version-2-Dateien weiterhin (sie prüfen nur `format` und übergehen die Materialien).
  */
 export const PROJECT_FILE_VERSION = 2;
@@ -164,6 +171,8 @@ export async function buildProjectExport(
   const m: Record<string, unknown> | null = mosaic
     ? Object.fromEntries(Object.entries(mosaic).map(([k, v]) => [k, ArrayBuffer.isView(v) ? { $b64: b64(viewBytes(v)) } : v]))
     : null;
+  const exportedIds = referencedMaterialIds(rec.palette, rec.settings?.materialIds);
+  const refIds = diagnosticMaterialIds(rec.diagnostics, exportedIds);
   const payload = {
     format: PROJECT_FILE_FORMAT,
     version: PROJECT_FILE_VERSION,
@@ -171,7 +180,8 @@ export async function buildProjectExport(
     image: image ? { name: image.name, type: image.original.type, data: b64(await image.original.arrayBuffer()) } : null,
     mosaic: m,
     progress: progress ? b64(viewBytes(progress)) : null,
-    ...(all ? { materials: selectMaterials(referencedMaterialIds(rec.palette, rec.settings?.materialIds), all) } : {}),
+    ...(all ? { materials: selectMaterials(exportedIds, all) } : {}),
+    ...(all && refIds.length ? { materialRefs: selectMaterials(refIds, all) } : {}),
     ...(all && usesAllMaterials(rec.settings) ? { materialPool: { count: all.length } } : {}),
   };
   return new Blob([JSON.stringify(payload)], { type: 'application/json' });
@@ -204,6 +214,8 @@ export interface ParsedProjectFile {
   progress: Uint16Array | null;
   /** Materialliste der Datei; null = die Datei enthält keine (Version 1 oder beim Export nicht lesbar) */
   materials: unknown[] | null;
+  /** Materialien, auf die nur die Diagnose verweist (werden nur zugeordnet, nie angelegt) */
+  materialRefs: unknown[];
   /** Auswahl „alle Materialien“: Anzahl der Materialien auf dem Quellgerät (falls bekannt) */
   materialPool: number | null;
 }
@@ -257,6 +269,7 @@ export function parseProjectFile(text: string): ParsedProjectFile {
       mosaic,
       progress,
       materials: Array.isArray(payload.materials) ? payload.materials : null,
+      materialRefs: Array.isArray(payload.materialRefs) ? payload.materialRefs : [],
       materialPool: isObj(pool) && typeof pool.count === 'number' && Number.isFinite(pool.count) ? pool.count : null,
     };
   } catch (e) {
@@ -307,6 +320,28 @@ export interface ProjectImportSummary {
   missing: { colors: number; selected: number };
   /** Auswahl „alle Materialien“: Anzahl auf dem Quellgerät und hier (nach dem Import); null = nicht betroffen/unbekannt */
   pool: { source: number; here: number } | null;
+  /**
+   * Freiformsteine der Datei mit ungültigen (z. B. überlappenden) Teilen – Bezeichnungen (A001 …). Sie werden importiert
+   * und im Projekt gemeldet (nicht still umgewandelt); Flächen und PDF-Plan erst nach der Korrektur.
+   */
+  freeInvalid: string[];
+}
+
+/** Freiformsteine eines gespeicherten Rasters mit ungültigen Teilen (Bezeichnungen); leer, wenn nicht prüfbar. */
+export function invalidFreeCellIds(rec: Pick<ProjectRecord, 'computedWith'>, mosaic: StoredMosaicNoProgress | null | undefined): string[] {
+  if (!mosaic || !rec.computedWith) return [];
+  try {
+    const lp = (JSON.parse(rec.computedWith) as { l: LayoutParams }).l;
+    const layout = computeLayout(lp);
+    const n = mosaic.cols * mosaic.rows;
+    if (layout.cols !== mosaic.cols || layout.rows !== mosaic.rows) return [];
+    const data = unpackMosaic({ ...mosaic, progress: new Uint16Array(n) });
+    if (!data.free.size) return [];
+    return invalidFreeCells(layout, data).map((c) => cellId(layout, c.row, c.col));
+  } catch {
+    // nicht lesbares Raster: das meldet die Integritätsprüfung beim Öffnen
+    return [];
+  }
 }
 
 /**
@@ -320,18 +355,20 @@ export function prepareProjectImport(
   opts: { id: string; now: number; nameSuffix?: string },
 ): { rec: ProjectRecord; inserts: Material[]; summary: ProjectImportSummary } {
   const plan = planProjectMaterialImport(parsed.materials ?? [], local);
+  // Nur erwähnte Materialien (Diagnose „Fehlende Farben“) vorhandenen zuordnen – nie anlegen
+  const mapping: Record<string, string> = { ...linkReferencedMaterials(parsed.materialRefs ?? [], local), ...plan.mapping };
   const src = parsed.record;
   let rec: ProjectRecord = structuredClone(src);
-  if (mappingChangesIds(plan.mapping)) {
+  if (mappingChangesIds(mapping)) {
     // Verweise auf die zugeordneten Materialien dieses Geräts umschreiben – auch im Berechnungsschlüssel und im
     // Paletten-Fingerabdruck, damit das Projekt nicht fälschlich als „geändert“ bzw. „bearbeitet“ gilt
     rec = {
       ...rec,
-      palette: remapPaletteMaterials(rec.palette, plan.mapping),
-      settings: { ...rec.settings, materialIds: remapIdList(rec.settings.materialIds, plan.mapping) },
-      ...(rec.computedWith !== undefined ? { computedWith: remapComputeKey(rec.computedWith, plan.mapping) } : {}),
-      ...(rec.computedPaletteSig !== undefined ? { computedPaletteSig: remapPaletteSig(rec.computedPaletteSig, plan.mapping) } : {}),
-      ...(rec.diagnostics !== undefined ? { diagnostics: remapMaterialRefsDeep(rec.diagnostics, plan.mapping) } : {}),
+      palette: remapPaletteMaterials(rec.palette, mapping),
+      settings: { ...rec.settings, materialIds: remapIdList(rec.settings.materialIds, mapping) },
+      ...(rec.computedWith !== undefined ? { computedWith: remapComputeKey(rec.computedWith, mapping) } : {}),
+      ...(rec.computedPaletteSig !== undefined ? { computedPaletteSig: remapPaletteSig(rec.computedPaletteSig, mapping) } : {}),
+      ...(rec.diagnostics !== undefined ? { diagnostics: remapMaterialRefsDeep(rec.diagnostics, mapping) } : {}),
     };
   }
   const originalName = src.meta.name;
@@ -358,6 +395,7 @@ export function prepareProjectImport(
       },
       missing: danglingMaterialRefs(rec.palette, rec.settings.materialIds, available),
       pool,
+      freeInvalid: invalidFreeCellIds(rec, parsed.mosaic),
     },
   };
 }

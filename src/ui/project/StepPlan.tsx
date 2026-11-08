@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { cellPieceCount } from '../../core/pieces';
 import { setRangePlaced, togglePiecePlaced } from '../../core/edits';
 import { packMosaic } from '../../core/serialize';
-import type { Stats } from '../../core/stats';
+import { jointAreaValid, type Stats } from '../../core/stats';
 import type { Material } from '../../core/types';
-import { useI18n } from '../../i18n';
+import { tCount, useI18n } from '../../i18n';
 import { runWorker } from '../../workers/client';
 import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Swatch, Toggle } from '../components';
 import { StoneDialog } from './StoneDialog';
@@ -400,6 +400,14 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
   const s = api.rec!.settings;
   const reserves = [5, 10, 15, 20];
   if (!st) return <p className="muted">{t('common.loading')}</p>;
+  // Flächen nur als Zahl, wenn sie der Geometrie entsprechen (sonst z. B. negative Fugenfläche durch überlappende
+  // Freiformteile älterer/importierter Projekte)
+  const areasOk = jointAreaValid(st);
+  const areaInvalid = (
+    <span className="warn" data-testid="area-invalid">
+      {st.invalidFreeCells > 0 ? tCount(t, 'w3fx.area.invalid', st.invalidFreeCells, { n: n(st.invalidFreeCells) }) : t('w3fx.area.inconsistent')}
+    </span>
+  );
   return (
     <div data-testid="material-calc">
       <Field label={t('plan.reserve')}>
@@ -436,14 +444,26 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
           </tr>
           <tr>
             <th>{t('plan.areaStones')}</th>
-            <td>
-              {n(st.stoneArea / 1e6, 4)} m² ({n((st.stoneArea / st.finishedArea) * 100, 1)} %)
+            <td data-testid="mc-area-stones">
+              {areasOk ? (
+                <>
+                  {n(st.stoneArea / 1e6, 4)} m² ({n((st.stoneArea / st.finishedArea) * 100, 1)} %)
+                </>
+              ) : (
+                areaInvalid
+              )}
             </td>
           </tr>
           <tr>
             <th>{t('plan.areaJoints')}</th>
-            <td>
-              {n(st.jointArea / 1e6, 4)} m² ({n((st.jointArea / st.finishedArea) * 100, 1)} %)
+            <td data-testid="mc-area-joints">
+              {areasOk ? (
+                <>
+                  {n(st.jointArea / 1e6, 4)} m² ({n((st.jointArea / st.finishedArea) * 100, 1)} %)
+                </>
+              ) : (
+                areaInvalid
+              )}
             </td>
           </tr>
           <tr>
@@ -453,7 +473,13 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
           <tr>
             <th>{t('plan.waste')}</th>
             <td>
-              {n(st.wasteArea / 1e6, 4)} m² ({n(st.wastePct, 1)} %)
+              {areasOk ? (
+                <>
+                  {n(st.wasteArea / 1e6, 4)} m² ({n(st.wastePct, 1)} %)
+                </>
+              ) : (
+                areaInvalid
+              )}
             </td>
           </tr>
           <tr>
@@ -464,8 +490,14 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
           </tr>
           <tr>
             <th>{t('plan.grout')}</th>
-            <td>
-              ≈ {n(st.groutKg, 2)} kg <small className="muted">({t('plan.estimate')})</small>
+            <td data-testid="mc-grout">
+              {areasOk ? (
+                <>
+                  ≈ {n(st.groutKg, 2)} kg <small className="muted">({t('plan.estimate')})</small>
+                </>
+              ) : (
+                areaInvalid
+              )}
             </td>
           </tr>
           {st.totalCost > 0 && (

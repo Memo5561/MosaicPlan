@@ -90,7 +90,11 @@ export interface PaletteColor {
   userNamed?: boolean;
   /** Abweichung der Steine dieser Farbe vom Foto bei der Berechnung (siehe MatchDeltaE) */
   matchDeltaE?: MatchDeltaE;
-  /** Nur „Automatisch → eigene Materialien“: Anzahl der Bildfarben (K-Means), die auf dieses Material zusammengelegt wurden */
+  /**
+   * Nur „Automatisch → eigene Materialien“ beim Verfahren Bildfarbe → nächstes Material ('nearest' oder Schutz der
+   * Auswahl gegriffen): Anzahl der Bildfarben (K-Means), die auf dieses Material zusammengelegt wurden. Bei der direkten
+   * Auswahl aus dem Bestand nicht gesetzt – dort wird nichts zusammengelegt.
+   */
   mergedFrom?: number;
   /** @deprecated nie gesetzt – siehe matchDeltaE */
   deltaE?: number;

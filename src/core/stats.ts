@@ -14,6 +14,7 @@
  */
 import type { Pt, ShapeType } from './geometry';
 import type { Layout } from './layout';
+import { invalidFreeCells } from './edits';
 import { analyzeCut, cellPieces, type CutInfo } from './pieces';
 import { CellKind, type Material, type MosaicData, type PaletteColor } from './types';
 
@@ -111,6 +112,12 @@ export interface Stats {
    * nicht“) enthalten, sondern nur hier gezählt.
    */
   invalidPieces: number;
+  /**
+   * Freiformzellen mit ungültigen Teilen (z. B. überlappend, aus älteren oder importierten Projekten; siehe
+   * invalidFreeCells). Ihre Teile sind in den Summen enthalten, aber die Flächen stimmen dann nicht: Überlappungen
+   * zählen doppelt. Ist der Wert > 0, sind Fugenfläche und Fugenmasse nicht berechenbar (siehe jointAreaValid).
+   */
+  invalidFreeCells: number;
   /** Palettenindizes, deren Material-ID auf kein vorhandenes Material zeigt */
   missingMaterials: number[];
   rawTotal: number;
@@ -126,6 +133,15 @@ export interface Stats {
   totalCost: number;
   /** false, sobald eine Farbe mit Steinen kein Material, keine Packungsgröße oder keinen Preis hat */
   costComplete: boolean;
+}
+
+/**
+ * Sind Fugenfläche (Gesamtfläche − Steinfläche) und die daraus geschätzte Fugenmasse gültig? Nein, wenn eine
+ * Freiformzelle ungültige (z. B. überlappende) Teile hat oder die Steinfläche die Gesamtfläche übersteigt – dann
+ * sind die Flächen nicht exakt und werden nicht als Zahl angezeigt oder gedruckt.
+ */
+export function jointAreaValid(s: Pick<Stats, 'invalidFreeCells' | 'stoneArea' | 'finishedArea'>): boolean {
+  return !(s.invalidFreeCells > 0) && s.stoneArea <= s.finishedArea * (1 + 1e-9) + 1e-6;
 }
 
 export interface Range {
@@ -482,6 +498,7 @@ export function computeStats(
     }
   }
   const mt = materialTotals(perColor, layout);
+  const badFree = data.free.size ? invalidFreeCells(layout, data, rg).length : 0;
   const finishedArea = fw * fh;
   const jointArea = finishedArea - stoneArea;
   const groutMl = (jointArea * opts.groutDepthMm) / 1000;
@@ -496,6 +513,7 @@ export function computeStats(
     finishedArea,
     stoneArea,
     jointArea,
+    invalidFreeCells: badFree,
     perColor,
     perMaterial: mt.perMaterial,
     perShape,

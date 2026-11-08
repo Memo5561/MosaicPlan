@@ -280,8 +280,17 @@ describe('describeComputeInputs: Fingerabdruck aller Eingaben', () => {
     expect(sig(m, { materials: [{ ...MATS[0], hex: '#cc2223' }, MATS[1]] })).not.toBe(s0);
     expect(sig(m, { materials: [{ ...MATS[0], stock: 100 }, MATS[1]] })).not.toBe(s0);
     expect(sig(rec({ paletteMode: 'materials', materialIds: ['m1'] }), { materials: MATS })).not.toBe(s0);
-    // computeKey kennt die Materialinhalte nicht – der Fingerabdruck schon (sonst würde eine falsche Vorschau übernommen)
-    expect(computeKey(m)).toBe(computeKey(m));
+    // computeKey kennt die Materialinhalte nicht – der Fingerabdruck schon (sonst würde eine falsche Vorschau übernommen).
+    // Dass ein gespeichertes Mosaik nach einer Materialänderung nicht mehr als „aktuell“ gilt, sichert der eigens
+    // gespeicherte Material-Fingerabdruck (computedMaterialSig, siehe tests/w3-review-fixes.test.ts).
+    const changed = rec({ paletteMode: 'materials' });
+    expect(computeKey(changed)).toBe(computeKey(m));
+    const inp = (mats: Material[]) => {
+      const d = describeComputeInputs(m, { ...ENV, materials: mats });
+      if (!d.ok) throw new Error(d.error);
+      return d.materialSig;
+    };
+    expect(inp([{ ...MATS[0], hex: '#cc2223' }, MATS[1]])).not.toBe(inp(MATS));
   });
 
   it('eigene Palette: Name ist Eingabe (Fingerabdruck), aber nicht Teil von computeKey', () => {

@@ -61,6 +61,16 @@ export function shortHash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
+/** Hinweis unter der Vorschau je nach gezeigtem Stand */
+type NoteKind = 'committed' | 'committedOld' | 'committedOldMaterials' | 'outdated' | 'current';
+const NOTE_KEYS: Record<NoteKind, string> = {
+  committed: 'w3lp.hintCommitted',
+  committedOld: 'w3lp.hintCommittedOld',
+  committedOldMaterials: 'w3lp.hintMaterialsChanged',
+  outdated: 'w3lp.hintOutdated',
+  current: 'w3lp.hint',
+};
+
 interface Shown {
   /** 'preview': Vorschau · 'committed': gespeichertes Mosaik passt zu den Einstellungen · 'committed-old': gespeichertes, veraltetes Mosaik */
   kind: 'preview' | 'committed' | 'committed-old';
@@ -117,66 +127,84 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
 
   const outdated = !!shown && (shown.kind === 'committed-old' || (shown.kind === 'preview' && !pv.current));
   const blocked = !!pv.inputError || !!pv.error;
+  /** Gespeichertes Mosaik veraltet, weil (nur) die Materialien seither geändert wurden */
+  const oldByMaterials = shown?.kind === 'committed-old' && api.materialsChanged;
   const manual = outdated || !shown ? !pv.auto && !pv.runningCurrent && !pv.paused && !blocked : false;
   const waiting = (outdated || !shown) && pv.paused && !blocked;
   const updating = (outdated || !shown) && !manual && !waiting && !blocked;
   const state = pv.inputError ? 'input' : pv.error ? 'failed' : waiting ? 'paused' : manual ? 'manual' : updating ? 'updating' : 'ready';
 
   // ---------- Zeichnen
+  // Das Mosaikbild wird nur neu gerendert, wenn sich das gezeigte Ergebnis, Fugenfarbe oder Oberfläche ändern – nicht
+  // bei anderen Projektänderungen (z. B. Tippen im Namen): Bei Millionen Positionen kostet jedes Rendern spürbar Zeit.
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const groutHex = rec.settings.groutHex;
   const surface = rec.settings.surface;
   const { bitmap, effectiveCrop } = api;
   const adjust = rec.adjust;
   const [photoKind, setPhotoKind] = useState<'processed' | 'crop' | null>(null);
+  const mosaicCanvas = useMemo(() => {
+    if (!shown || collapsed) return null;
+    try {
+      return renderFull(shown.layout, shown.data, shown.palette, PREVIEW_PX, { groutHex, surface, realistic: true });
+    } catch (e) {
+      console.warn('Vorschau konnte nicht gezeichnet werden', e);
+      return null;
+    }
+  }, [shown, groutHex, surface, collapsed]);
+  const mW = mosaicCanvas?.width ?? 0;
+  const mH = mosaicCanvas?.height ?? 0;
+  const shownProcessed = shown?.processed ?? null;
+  // Foto nach Bildoptimierung des gezeigten Ergebnisses, auf Bildgröße skaliert (einmal je Ergebnis)
+  const processedCanvas = useMemo(() => {
+    if (view !== 'photo' || !mW || !mH || !shownProcessed) return null;
+    try {
+      const p = shownProcessed;
+      const out = document.createElement('canvas');
+      out.width = mW;
+      out.height = mH;
+      const ctx = out.getContext('2d')!;
+      ctx.imageSmoothingQuality = 'high';
+      if ('data' in p) {
+        const tmp = document.createElement('canvas');
+        tmp.width = p.width;
+        tmp.height = p.height;
+        tmp.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(p.data), p.width, p.height), 0, 0);
+        ctx.drawImage(tmp, 0, 0, mW, mH);
+      } else ctx.drawImage(p, 0, 0, mW, mH);
+      return out;
+    } catch (e) {
+      console.warn('Foto konnte nicht gezeichnet werden', e);
+      return null;
+    }
+  }, [view, mW, mH, shownProcessed]);
+  // Ohne bearbeitetes Foto: Foto im aktuellen Zuschnitt (nur dann hängt das Bild an Zuschnitt und Fotobearbeitung)
+  const cropCanvas = useMemo(() => {
+    if (view !== 'photo' || !mW || !mH || shownProcessed || !bitmap || !effectiveCrop) return null;
+    try {
+      return renderCropped(bitmap, adjust, effectiveCrop, mW, mH);
+    } catch (e) {
+      // z. B. Foto inzwischen freigegeben – das nächste Ergebnis zeichnet neu
+      console.warn('Foto konnte nicht gezeichnet werden', e);
+      return null;
+    }
+  }, [view, mW, mH, shownProcessed, bitmap, effectiveCrop, adjust]);
   useEffect(() => {
     const cv = canvasRef.current;
-    if (!cv || !shown || collapsed) return;
-    let src: CanvasImageSource & { width: number; height: number };
+    if (!cv || !mosaicCanvas) return;
+    const pk: 'processed' | 'crop' | null = view !== 'photo' ? null : processedCanvas ? 'processed' : cropCanvas ? 'crop' : null;
+    const src = pk === 'processed' ? processedCanvas! : pk === 'crop' ? cropCanvas! : mosaicCanvas;
+    setPhotoKind(pk);
     try {
-      const mosaic = renderFull(shown.layout, shown.data, shown.palette, PREVIEW_PX, { groutHex, surface, realistic: true });
-      src = mosaic;
-      let pk: 'processed' | 'crop' | null = null;
-      if (view === 'photo') {
-        const W = mosaic.width;
-        const H = mosaic.height;
-        const p = shown.processed;
-        if (p && 'data' in p) {
-          const tmp = document.createElement('canvas');
-          tmp.width = p.width;
-          tmp.height = p.height;
-          tmp.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(p.data), p.width, p.height), 0, 0);
-          const out = document.createElement('canvas');
-          out.width = W;
-          out.height = H;
-          const ctx = out.getContext('2d')!;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(tmp, 0, 0, W, H);
-          src = out;
-          pk = 'processed';
-        } else if (p) {
-          const out = document.createElement('canvas');
-          out.width = W;
-          out.height = H;
-          out.getContext('2d')!.drawImage(p, 0, 0, W, H);
-          src = out;
-          pk = 'processed';
-        } else if (bitmap && effectiveCrop) {
-          src = renderCropped(bitmap, adjust, effectiveCrop, W, H);
-          pk = 'crop';
-        }
-      }
-      setPhotoKind(pk);
       cv.width = src.width;
       cv.height = src.height;
       const ctx = cv.getContext('2d')!;
       ctx.clearRect(0, 0, cv.width, cv.height);
       ctx.drawImage(src, 0, 0);
     } catch (e) {
-      // z. B. Foto inzwischen freigegeben – das nächste Ergebnis zeichnet neu
       console.warn('Vorschau konnte nicht gezeichnet werden', e);
     }
-  }, [shown, view, groutHex, surface, collapsed, bitmap, effectiveCrop, adjust]);
+  }, [mosaicCanvas, processedCanvas, cropCanvas, view]);
 
   // Noch kein Mosaik: das Foto im aktuellen Zuschnitt (abgedunkelt, ausdrücklich als Foto gekennzeichnet)
   const photoRef = useRef<HTMLCanvasElement>(null);
@@ -233,13 +261,15 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
       </span>
     ) : shown?.kind === 'committed-old' ? (
       <span className="w3lp-badge w3lp-badge-old" data-testid="live-preview-badge" data-kind="committed-old">
-        {t('w3lp.badge.committedOld')}
+        {oldByMaterials ? t('w3lp.badge.committedOldMaterials') : t('w3lp.badge.committedOld')}
       </span>
     ) : (
       <span className="w3lp-badge" data-testid="live-preview-badge" data-kind="preview">
         {t('w3lp.badge.preview')}
       </span>
     );
+
+  const noteKind: NoteKind = !shown ? 'current' : shown.kind === 'committed' ? 'committed' : shown.kind === 'committed-old' ? (oldByMaterials ? 'committedOldMaterials' : 'committedOld') : outdated ? 'outdated' : 'current';
 
   const busyText = pct !== null ? t('w3lp.updatingPct', { pct }) : shown ? t('w3lp.updating') : t('w3lp.first');
   const layout = shown?.layout ?? api.layout;
@@ -277,7 +307,8 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
         <div className="w3lp-body">
           {shown ? (
             <>
-              <div className={`w3lp-stage${updating || waiting || manual ? ' w3lp-dim' : ''}`} style={{ aspectRatio: aspect }}>
+              {/* Veraltetes Bild nie wie ein aktuelles aussehen lassen – auch nicht, wenn die aktuellen Einstellungen keine Vorschau erlauben */}
+              <div className={`w3lp-stage${updating || waiting || manual || (outdated && blocked) ? ' w3lp-dim' : ''}`} style={{ aspectRatio: aspect }} data-testid="live-preview-stage">
                 <canvas ref={canvasRef} className="w3lp-canvas" data-testid="live-preview-canvas" data-kind={shown.kind} data-key={shown.key} data-view={view} />
                 {updating && (
                   <div className="w3lp-busy" role="status" data-testid="live-preview-busy">
@@ -285,7 +316,11 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
                     <span>{busyText}</span>
                   </div>
                 )}
-                {outdated && !updating && <div className="w3lp-outdated small">{t('w3lp.outdated')}</div>}
+                {outdated && !updating && (
+                  <div className="w3lp-outdated small" data-testid="live-preview-outdated">
+                    {blocked ? t('w3lp.noValid') : t('w3lp.outdated')}
+                  </div>
+                )}
               </div>
               <div className="w3lp-tools">
                 <Segmented
@@ -331,7 +366,10 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
                 </div>
               </dl>
               {status}
-              <p className="muted small w3lp-note">{shown.kind === 'committed' ? t('w3lp.hintCommitted') : t('w3lp.hint')}</p>
+              {/* Hinweis passend zum gezeigten Stand – nie „aktuelle Einstellungen“ für ein veraltetes Bild */}
+              <p className="muted small w3lp-note" data-testid="live-preview-note" data-kind={noteKind}>
+                {t(NOTE_KEYS[noteKind])}
+              </p>
             </>
           ) : (
             <>

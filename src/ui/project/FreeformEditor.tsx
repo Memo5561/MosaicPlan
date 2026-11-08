@@ -111,6 +111,8 @@ export function FreeformEditor(props: FreeformEditorProps) {
   const [dragging, setDragging] = useState<string | null>(null);
   // Bildschirmpixel je mm: damit Griffe, Linien und Beschriftungen auf jeder Größe gleich groß bleiben
   const [ppm, setPpm] = useState(40);
+  /** Verfügbarer Platz der Zeichenfläche in CSS-Pixeln (Breite des Containers, höchstens 560; Höhe 60 % des Fensters) */
+  const [avail, setAvail] = useState<{ w: number; h: number } | null>(null);
   const coarse = useMemo(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches, []);
 
   const v = useMemo(() => validateFreePieces(W, H, pieces, props.minPieceMm, joint), [W, H, pieces, props.minPieceMm, joint]);
@@ -128,6 +130,12 @@ export function FreeformEditor(props: FreeformEditorProps) {
     const measure = () => {
       const m = svg.getScreenCTM();
       if (m && m.a > 0 && Number.isFinite(m.a)) setPpm(m.a);
+      const cw = svg.parentElement?.clientWidth ?? 0;
+      const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
+      if (cw > 0 && vh > 0) {
+        const next = { w: Math.min(560, cw), h: 0.6 * vh };
+        setAvail((a) => (a && Math.abs(a.w - next.w) < 0.5 && Math.abs(a.h - next.h) < 0.5 ? a : next));
+      }
     };
     measure();
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
@@ -283,7 +291,12 @@ export function FreeformEditor(props: FreeformEditorProps) {
 
   // ---------- Maße (exakt aus den gezeichneten Koordinaten)
   const maxD = Math.max(W, H);
-  const pad = maxD * 0.1;
+  // Rand um die Zelle in BILDSCHIRMPIXELN bemessen (nicht als Anteil der Zelle): Die Kantenlängen stehen außen und
+  // brauchen ~LABEL_PX – sonst würden sie auf dem Handy am Rand abgeschnitten („4,:“). Aus pad · ppm ≥ LABEL_PX mit
+  // ppm = Platz / (Maß + 2 · pad) folgt pad ≥ LABEL_PX · Maß / (Platz − 2 · LABEL_PX), für Breite und Höhe.
+  const LABEL_PX = 44;
+  const padFor = (dim: number, space: number) => (space > 2 * LABEL_PX + 20 ? (LABEL_PX * dim) / (space - 2 * LABEL_PX) : maxD * 0.5);
+  const pad = Math.max(maxD * 0.1, avail ? Math.max(padFor(W, avail.w), padFor(H, avail.h)) : maxD * 0.2);
   const px = (v0: number) => v0 / ppm;
   const fs = px(12);
   const gridStep = maxD <= 30 ? 1 : maxD <= 150 ? 5 : 10;
@@ -441,12 +454,17 @@ export function FreeformEditor(props: FreeformEditorProps) {
                   const off = px(13 + Math.abs(o.x) * label.length * 3.6 + Math.abs(o.y) * 5);
                   const mx = (a.x + b.x) / 2;
                   const my = (a.y + b.y) / 2;
+                  // Sicherheitsnetz: Beschriftung bleibt innerhalb der Zeichenfläche
+                  const halfW = px(label.length * 3.6 + 3);
+                  const halfH = px(8);
+                  const lx = Math.min(W + pad - halfW, Math.max(-pad + halfW, mx + o.x * off));
+                  const ly = Math.min(H + pad - halfH, Math.max(-pad + halfH, my + o.y * off));
                   const showMid = L * ppm >= 30;
                   return (
                     <g key={`e${k}`}>
                       <text
-                        x={mx + o.x * off}
-                        y={my + o.y * off}
+                        x={lx}
+                        y={ly}
                         fontSize={fs}
                         dy="0.35em"
                         textAnchor="middle"

@@ -50,6 +50,13 @@ export interface ProjectRecord {
    * sind Bearbeitungen, die dabei verloren gehen (siehe paletteEditsSince). Fehlt bei älteren Projekten.
    */
   computedPaletteSig?: Record<string, string>;
+  /**
+   * Fingerabdruck der Materialien, aus denen die letzte Berechnung ihre Farben genommen hat (Modi „Materialien“ und
+   * „Meine Steine – begrenzte Farbanzahl“; siehe materialInputSig in useProject.ts). Weicht der Fingerabdruck der
+   * aktuellen Materialien ab (Farbton, Name, Bestand, hinzugefügt/gelöscht), würde Neu berechnen andere Farben
+   * ergeben. Fehlt bei älteren Projekten und in den anderen Modi.
+   */
+  computedMaterialSig?: string;
 }
 
 export interface ImageRecord {
@@ -369,6 +376,8 @@ export interface ComputeFields {
    * nicht blind durch das Ergebnis ersetzt (siehe resolveComputedPalette).
    */
   customInput?: PaletteColor[];
+  /** Fingerabdruck der angebotenen Materialien (siehe ProjectRecord.computedMaterialSig) */
+  computedMaterialSig?: string;
 }
 
 /** Fehlertext: die eigene Palette wurde während der Berechnung so geändert, dass das Ergebnis nicht mehr passt. */
@@ -457,6 +466,7 @@ export function mergeComputeFields(latest: ProjectRecord, f: ComputeFields): Pro
     computedImageRev: f.computedImageRev,
     // Palette, wie diese Berechnung sie festschreibt (bei eigener Palette ggf. mit den Ergänzungen des Benutzers)
     computedPaletteSig: paletteSignature(pal.palette),
+    computedMaterialSig: f.computedMaterialSig,
     meta: dropUndefined({ ...latest.meta, computed: true, thumb: f.thumb ?? latest.meta.thumb, updatedAt: f.updatedAt, manualEdits: 0 }),
   });
 }
@@ -495,6 +505,7 @@ export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectReco
     mosaicRev: stored.mosaicRev,
     computedImageRev: stored.computedImageRev,
     computedPaletteSig: stored.computedPaletteSig,
+    computedMaterialSig: stored.computedMaterialSig,
     meta: dropUndefined({ ...mine.meta, computed: stored.meta.computed, thumb: stored.meta.thumb, manualEdits: stored.meta.manualEdits }),
   });
 }

@@ -421,15 +421,23 @@ describe('Abweichung je Farbe vom Foto (matchDeltaE) und angefordert/verwendet',
     expect(d.usedColors).toBe(res.palette.length);
     // Auswahl direkt aus dem Bestand (w3-colour-quality): die angeforderte Anzahl, obwohl Bildfarben zusammenfallen
     expect(d.usedColors!).toBe(d.requestedColors!);
-    expect(d.mergedColors!).toBeGreaterThan(0);
-    // jede Materialfarbe nennt, wie viele Bildfarben ihr am nächsten liegen (0 = ergänzt für Zwischentöne)
-    expect(res.palette.every((p) => (p.mergedFrom ?? -1) >= 0)).toBe(true);
-    expect(res.palette.some((p) => p.mergedFrom! > 1)).toBe(true);
-    const sumMerged = res.palette.reduce((s, p) => s + p.mergedFrom!, 0);
-    expect(sumMerged).toBeLessThanOrEqual(d.imageColors!);
-    expect(d.imageColors! - d.mergedColors!).toBeLessThanOrEqual(d.usedColors!);
+    // Bei der direkten Auswahl wird nichts zusammengelegt: keine „aus n Bildfarben … zusammengelegt“-Angaben
+    // (Review Welle 3 – sie beschrieben etwas, das nicht geschah)
+    expect(d.snapSelection?.method).toBe('select');
+    expect(d.snapSelection?.fallback).toBeUndefined();
+    expect(d.mergedColors).toBeUndefined();
+    expect(res.palette.every((p) => p.mergedFrom === undefined)).toBe(true);
     // Materialnamen bleiben, kein automatischer Schlüssel
     expect(res.palette.every((p) => p.nameKey === undefined && p.name.startsWith('Kat '))).toBe(true);
+    // Verfahren Bildfarbe → nächstes Material: hier wird wirklich zusammengelegt – die Angaben sind exakt
+    const near = computeMosaic(su.img, baseParams(su, { paletteMode: 'auto-snap', colorCount: 32, fixedPalette: catalogue, snapMethod: 'nearest' }));
+    const dn = near.diagnostics;
+    expect(dn.mergedColors!).toBeGreaterThan(0);
+    expect(near.palette.every((p) => (p.mergedFrom ?? 0) >= 1)).toBe(true);
+    expect(near.palette.some((p) => p.mergedFrom! > 1)).toBe(true);
+    const sumMerged = near.palette.reduce((s, p) => s + p.mergedFrom!, 0);
+    expect(sumMerged).toBe(dn.imageColors!);
+    expect(dn.imageColors! - dn.mergedColors!).toBe(near.palette.length);
   });
 
   it('„Meine Steine – alle Farben“ und eigene Auswahl: angefordert = Anzahl Farben, verwendet = Farben mit Steinen', () => {

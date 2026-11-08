@@ -1,8 +1,8 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { pointInPolygon } from '../../core/geometry';
 import { indexAt, type Layout, type Section, type SectionGrid } from '../../core/layout';
 import { cellPieces } from '../../core/pieces';
-import { buildOverviewRGBA, renderMosaic, type View } from '../../core/render';
+import { buildOverviewRGBA, buildProgressOverlayRGBA, dimmedPalette, overviewActive, renderMosaic, type View } from '../../core/render';
 import type { MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
 import '../css/w1-touch-input-safety.css';
@@ -71,16 +71,47 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
   }, []);
   useEffect(() => () => window.clearTimeout(hintTimer.current), []);
 
-  const overview = useMemo(() => {
-    const { layout, data, palette } = props;
+  /**
+   * Übersichtsbilder (1 Pixel je Zelle) werden erst gebaut, wenn renderMosaic sie wirklich zeichnet
+   * (kleiner Maßstab oder sehr viele sichtbare Steine), und nur neu, wenn sich ihre Eingaben ändern:
+   * Raster, Palette, Bearbeitungen, Fugenfarbe, hervorgehobene Farbe – bzw. für das Fortschritts-Overlay
+   * der Fortschritt. Beim Hineinzoomen und Bearbeiten großer Projekte entfällt so der Neuaufbau.
+   */
+  const ovCache = useRef<{ key: unknown[]; canvas: HTMLCanvasElement } | null>(null);
+  const progCache = useRef<{ key: unknown[]; canvas: HTMLCanvasElement | null } | null>(null);
+  const sameKey = (a: unknown[] | undefined, b: unknown[]) => !!a && a.length === b.length && a.every((v, i) => v === b[i]);
+  const toCanvas = (rgba: Uint8ClampedArray, w: number, h: number) => {
     const c = document.createElement('canvas');
-    c.width = layout.cols;
-    c.height = layout.rows;
-    const rgba = buildOverviewRGBA(layout, data, palette);
-    c.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, layout.cols, layout.rows), 0, 0);
+    c.width = w;
+    c.height = h;
+    c.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
     return c;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.layout, props.data, props.palette, props.version]);
+  };
+  const overviewFor = (p: ViewerProps): HTMLCanvasElement => {
+    const focus = p.focusColor ?? null;
+    const key = [p.layout, p.data, p.palette, p.version, p.groutHex, focus];
+    if (!ovCache.current || !sameKey(ovCache.current.key, key)) {
+      const pal = focus !== null ? dimmedPalette(p.palette, focus) : p.palette;
+      ovCache.current = { key, canvas: toCanvas(buildOverviewRGBA(p.layout, p.data, pal, p.groutHex), p.layout.cols, p.layout.rows) };
+    }
+    return ovCache.current.canvas;
+  };
+  const progressOverlayFor = (p: ViewerProps): HTMLCanvasElement | null => {
+    const key = [p.layout, p.data, p.version, p.progressVersion];
+    if (!progCache.current || !sameKey(progCache.current.key, key)) {
+      const pr = buildProgressOverlayRGBA(p.layout, p.data);
+      progCache.current = { key, canvas: pr.any ? toCanvas(pr.rgba, p.layout.cols, p.layout.rows) : null };
+    }
+    return progCache.current.canvas;
+  };
+
+  /** Hintergrund des Viewers aus der CSS-Variable --viewer-bg: einmal lesen, neu nur bei Themenwechsel */
+  const bg = useRef('#e9e5de');
+  const readBg = useCallback(() => {
+    const cv = canvas.current;
+    const v = cv ? getComputedStyle(cv).getPropertyValue('--viewer-bg').trim() : '';
+    bg.current = v || '#e9e5de';
+  }, []);
 
   const draw = useCallback(() => {
     cancelAnimationFrame(raf.current);
@@ -92,6 +123,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       const ctx = cv.getContext('2d')!;
       // aktueller Maßstab (CSS-px je mm) – für Browser-Tests und Fehlersuche
       cv.dataset.scale = view.current.scale.toFixed(4);
+      const ov = overviewActive(p.layout, view.current);
+      cv.dataset.overview = ov ? '1' : '0';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       renderMosaic(ctx, p.layout, p.data, p.palette, view.current, {
         groutHex: p.groutHex,
@@ -103,11 +136,34 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
         selectedSection: p.selectedSection,
         highlight: p.highlight,
         focusColor: p.focusColor,
-        overview,
-        background: getComputedStyle(cv).getPropertyValue('--viewer-bg') || '#e9e5de',
+        overview: ov ? overviewFor(p) : null,
+        overviewProgress: ov && p.progressMode ? progressOverlayFor(p) : null,
+        background: bg.current,
       });
     });
-  }, [overview]);
+    // overviewFor/progressOverlayFor lesen nur Refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --viewer-bg beim Einhängen und bei Themenwechsel (Systemeinstellung, data-theme/class am Dokument) lesen
+  useEffect(() => {
+    readBg();
+    draw();
+    const update = () => {
+      readBg();
+      draw();
+    };
+    const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    mq?.addEventListener?.('change', update);
+    const mo = typeof MutationObserver === 'function' ? new MutationObserver(update) : null;
+    const opts = { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] };
+    mo?.observe(document.documentElement, opts);
+    if (document.body) mo?.observe(document.body, opts);
+    return () => {
+      mq?.removeEventListener?.('change', update);
+      mo?.disconnect();
+    };
+  }, [readBg, draw]);
 
   const fit = useCallback(() => {
     stopAnim();

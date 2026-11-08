@@ -329,3 +329,96 @@ export function fmtMm(v: number, decimals = 1, locale = 'de'): string {
   const trimmed = decimals > 0 ? s.replace(/\.?0+$/, '') : s;
   return locale === 'en' ? trimmed : trimmed.replace('.', ',');
 }
+
+/**
+ * Konvexe Hülle (Andrews Monotone-Chain-Verfahren). Doppelte und kollineare
+ * Punkte entfallen; bei weniger als drei verschiedenen Punkten werden diese
+ * unverändert (ohne Duplikate) zurückgegeben.
+ */
+export function convexHull(poly: Pt[]): Pt[] {
+  const pts = poly.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y)).sort((a, b) => a.x - b.x || a.y - b.y);
+  const u: Pt[] = [];
+  for (const p of pts) {
+    const l = u[u.length - 1];
+    if (!l || Math.abs(l.x - p.x) > 1e-12 || Math.abs(l.y - p.y) > 1e-12) u.push({ x: p.x, y: p.y });
+  }
+  if (u.length < 3) return u;
+  const cross = (o: Pt, a: Pt, b: Pt) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Pt[] = [];
+  for (const p of u) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 1e-12) lower.pop();
+    lower.push(p);
+  }
+  const upper: Pt[] = [];
+  for (let i = u.length - 1; i >= 0; i--) {
+    const p = u[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 1e-12) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+/**
+ * Kleinste Breite (minimale Kaliberweite, „schmalste Stelle“) in mm: Minimum über alle
+ * Kantenrichtungen der konvexen Hülle von (max − min) der Projektion auf die Kantennormale.
+ * Für konvexe Polygone ist das exakt die schmalste Stelle (die minimale Breite wird immer
+ * an einer Kante angenommen). Für nicht-konvexe Polygone ist es die Breite der Hülle – also
+ * eine obere Schranke, die dünne Stellen in Einbuchtungen nicht erkennt.
+ * Kanten der Länge 0 werden übersprungen; weniger als drei Punkte ergeben 0.
+ */
+export function minCaliperWidth(poly: Pt[]): number {
+  const p = convexHull(poly);
+  const n = p.length;
+  if (n < 3) return 0;
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const a = p[i];
+    const b = p[(i + 1) % n];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len = Math.hypot(ex, ey);
+    if (len < 1e-12) continue;
+    const nx = -ey / len;
+    const ny = ex / len;
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (const q of p) {
+      const d = nx * q.x + ny * q.y;
+      if (d < mn) mn = d;
+      if (d > mx) mx = d;
+    }
+    if (mx - mn < best) best = mx - mn;
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+/** Kleinster Innenwinkel in Grad (0 bei weniger als drei Ecken). */
+export function minInteriorAngle(poly: Pt[]): number {
+  const p = cleanPoly(poly);
+  if (p.length < 3) return 0;
+  return Math.min(...interiorAngles(p));
+}
+
+/** Abstand eines Punkts zur Strecke a–b. */
+export function distToSegment(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l = dx * dx + dy * dy;
+  let t = l > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/** Abstand eines Punkts zum Rand des Polygons. */
+export function distToBoundary(p: Pt, poly: Pt[]): number {
+  let m = Infinity;
+  for (let i = 0, n = poly.length; i < n; i++) m = Math.min(m, distToSegment(p, poly[i], poly[(i + 1) % n]));
+  return m;
+}
+
+/** true, wenn p echt im Inneren liegt (nicht auf dem Rand, Toleranz eps in mm). */
+export function pointStrictlyInside(p: Pt, poly: Pt[], eps = 1e-6): boolean {
+  return pointInPolygon(p, poly) && distToBoundary(p, poly) > eps;
+}

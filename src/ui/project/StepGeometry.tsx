@@ -17,26 +17,127 @@ import {
   type GroutScore,
 } from '../../core/grout';
 import { applyAdjustments } from '../../core/imageOps';
-import { computeLayout, estimateCells, type Layout } from '../../core/layout';
-import { useI18n } from '../../i18n';
-import { Badge, Field, NumberInput, Segmented, Swatch } from '../components';
+import { computeLayout, isLayoutError, jointShareOf, type Layout, type LayoutError } from '../../core/layout';
+import { subdivisionCuttable } from '../../core/pieces';
+import { useI18n, type TFunc } from '../../i18n';
+import { Badge, Field, Modal, NumberInput, Segmented, Swatch } from '../components';
 import '../css/w2-grout-preview.css';
+import '../css/w3-face-guidance.css';
 import { layoutParamsOf, type ProjectApi } from './useProject';
 import { canvasToRaw, renderCropped, rotatedSize } from './imagePrep';
 import { computedMatchesPhoto } from './staleReasons';
+import { stepHash } from './stepNav';
+import { FACE_GREEN_FROM, FACE_RED_BELOW, faceLight, faceRegionsOf, smallestFaceSpan, subStoneSize, tradeoffRows, type TradeoffRow } from './faceGuidance';
 
 const UNIT_F = { mm: 1, cm: 10, m: 1000 } as const;
 
-export function LayoutSummary({ api }: { api: ProjectApi }) {
+type NumFmt = (v: number, decimals?: number) => string;
+
+/** Sehr große Zahlen (absurde Eingaben) nicht als hunderstellige Ziffernfolge ausgeben */
+const bigNum = (v: number, n: NumFmt) => (v < 1e15 ? n(v) : v.toExponential(2));
+
+/** Rasterfehler in der Sprache der Oberfläche (Rückfall: deutscher Text des Kerns) – Fehlertext und Handlungshinweis. */
+export function layoutErrorText(e: LayoutError | Error, t: TFunc, n: NumFmt): { text: string; hint: string | null } {
+  if (!isLayoutError(e)) return { text: e.message, hint: null };
+  const p = e.params;
+  const num = (k: string, d = 2) => (typeof p[k] === 'number' ? n(p[k] as number, d) : String(p[k] ?? ''));
+  switch (e.code) {
+    case 'invalidDims':
+      return { text: t('layout.err.invalidDims'), hint: t('layout.hint.invalidDims') };
+    case 'smallerThanTile': {
+      const dim = t(p.axis === 'y' ? 'layout.dim.y' : 'layout.dim.x');
+      const vals = { dim, len: num('length'), tile: num('tile'), min: num('minCut') };
+      // „nur ganze Steine“: es fehlt ein ganzer Stein; mit Zuschnitt: auch die kleinste Randsteinbreite ist unterschritten
+      return p.mode === 'whole'
+        ? { text: t('layout.err.smallerThanTile', vals), hint: t('layout.hint.smallerThanTile', vals) }
+        : { text: t('layout.err.smallerThanMinCut', vals), hint: t('layout.hint.smallerThanMinCut', vals) };
+    }
+    case 'tooManyCells':
+      return {
+        text: t('layout.err.tooManyCells', { cells: bigNum(Number(p.cells), n), cols: bigNum(Number(p.cols), n), rows: bigNum(Number(p.rows), n), max: n(Number(p.max)) }),
+        hint: t('layout.hint.tooManyCells'),
+      };
+    default:
+      return { text: e.message, hint: null };
+  }
+}
+
+/** Rasterfehler der aktuellen Einstellungen: lokal neu berechnet, damit Code und Zahlen übersetzt werden können. */
+function LayoutErrorBox({ api }: { api: ProjectApi }) {
+  const { t, n } = useI18n();
+  let err: Error | null = null;
+  try {
+    computeLayout(layoutParamsOf(api.rec!.settings));
+  } catch (e) {
+    err = e instanceof Error ? e : new Error(String(e));
+  }
+  // Ohne lokalen Fehler (sollte nicht vorkommen): den Text aus useProject zeigen
+  const { text, hint } = err ? layoutErrorText(err, t, n) : { text: api.layoutError ?? '', hint: null };
+  return (
+    <div className="w3fg-layout-err" role="alert" data-testid="layout-error" data-code={err && isLayoutError(err) ? err.code : ''}>
+      <p className="error">{text}</p>
+      {hint && <p className="small">{hint}</p>}
+    </div>
+  );
+}
+
+/** zu Schritt 6 „Steinformen“ (eigener Verlaufseintrag; Workspace folgt der Adresse) */
+const goStep = (api: ProjectApi, step: 'shapes' | 'compute') => {
+  if (api.rec) location.hash = stepHash(api.rec.meta.id, step);
+};
+
+/**
+ * „Detailgrad (Richtwert)“: wie viele Rasterpositionen über das (kleinste) markierte Gesicht gehen – exakt aus
+ * dem Raster gezählt; nur die Ampel-Schwellen sind ein Richtwert. Ohne Gesichtsbereich ein neutraler Hinweis.
+ */
+function DetailMeter({ api, layout, withTradeoff }: { api: ProjectApi; layout: Layout; withTradeoff: boolean }) {
+  const { t, n } = useI18n();
+  const regions = api.rec!.regions;
+  const info = smallestFaceSpan(layout, regions);
+  const light = info ? faceLight(info.span.cols) : null;
+  return (
+    <div className="w3fg-detail" data-testid="detail-meter" data-light={light ?? 'none'}>
+      <div className="w3fg-detail-head">
+        <b>{t('w3fg.detail.title')}</b> <Badge kind="info">{t('w3fg.richtwert')}</Badge>
+      </div>
+      {info && light ? (
+        <>
+          <p className="w3fg-face-line">
+            <span className={`w3fg-dot w3fg-${light}`} aria-hidden="true" />
+            <b data-testid="face-span" data-cols={info.span.cols} data-rows={info.span.rows}>
+              {t('w3fg.detail.face', { cols: n(info.span.cols), rows: n(info.span.rows) })}
+            </b>
+            <span className={`w3fg-light w3fg-${light}`}>{t(`w3fg.light.${light}`)}</span>
+            <span className="muted small">{t('w3fg.detail.faceSize', { w: n(info.span.mmW / 10, 1), h: n(info.span.mmH / 10, 1) })}</span>
+          </p>
+          {info.count > 1 && <p className="muted small">{t('w3fg.detail.smallest', { n: info.count, i: info.index + 1 })}</p>}
+          <p className="small">{t(`w3fg.reason.${light}`)}</p>
+          {light !== 'green' && <p className="small">{t(withTradeoff ? 'w3fg.detail.moreHere' : 'w3fg.detail.moreSteps')}</p>}
+          <details className="w3fg-how">
+            <summary className="small">{t('w3fg.detail.howTitle')}</summary>
+            <p className="muted small">{t('w3fg.detail.how')}</p>
+          </details>
+        </>
+      ) : (
+        <p className="muted small w3fg-noface" data-testid="detail-noface">
+          {t('w3fg.detail.noFace')}{' '}
+          <button className="btn small" onClick={() => goStep(api, 'shapes')} data-testid="detail-go-shapes">
+            {t('w3fg.detail.goShapes')}
+          </button>
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function LayoutSummary({ api, withTradeoff = false }: { api: ProjectApi; withTradeoff?: boolean }) {
   const { t, n } = useI18n();
   const { layout, layoutError, rec } = api;
-  if (layoutError) return <p className="error">{layoutError}</p>;
+  if (rec && (layoutError || !layout)) return <LayoutErrorBox api={api} />;
   if (!layout || !rec) return null;
   const cells = layout.cols * layout.rows;
   const cutCols = Array.from(layout.colW).filter((w) => Math.abs(w - layout.tileW) > 1e-9).length;
   const cutRows = Array.from(layout.rowH).filter((h) => Math.abs(h - layout.tileH) > 1e-9).length;
-  const stoneArea = Array.from(layout.colW).reduce((a, b) => a + b, 0) * Array.from(layout.rowH).reduce((a, b) => a + b, 0);
-  const total = layout.finishedW * layout.finishedH;
   return (
     <div className="summary-box" data-testid="layout-summary">
       <div className="stat">
@@ -57,7 +158,7 @@ export function LayoutSummary({ api }: { api: ProjectApi }) {
       </div>
       <div className="stat">
         <span>{t('size.jointShare')}</span>
-        <b>{n(((total - stoneArea) / total) * 100, 1)} %</b>
+        <b>{n(jointShareOf(layout) * 100, 1)} %</b>
       </div>
       {(cutCols > 0 || cutRows > 0) && (
         <div className="stat">
@@ -77,6 +178,187 @@ export function LayoutSummary({ api }: { api: ProjectApi }) {
       )}
       <p className="muted small">{t('size.formula', { w: n(layout.tileW, 2), g: n(layout.joint, 2) })}</p>
       {cells > 2_000_000 && <Badge kind="warn">{t('size.manyCells')}</Badge>}
+      <DetailMeter api={api} layout={layout} withTradeoff={withTradeoff} />
+    </div>
+  );
+}
+
+/**
+ * Vergleichstabelle Steingröße / Mosaikgröße – jede Zahl exakt aus computeLayout (siehe faceGuidance.ts).
+ * „Übernehmen“ ändert nur die Einstellung; ist schon ein Mosaik berechnet, wird vorher nachgefragt.
+ */
+function TradeoffTable({ api }: { api: ProjectApi }) {
+  const { t, n, lang } = useI18n();
+  // Fugenanteil immer mit einer Nachkommastelle („36,0 %“ neben „30,4 %“)
+  const locale = lang === 'de' ? 'de-DE' : lang === 'tr' ? 'tr-TR' : 'en-GB';
+  const pct = (v: number) => (v * 100).toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const rec = api.rec!;
+  const s = rec.settings;
+  const f = UNIT_F[s.unit];
+  const rows = useMemo(
+    () => tradeoffRows(s, rec.regions),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [s.widthMm, s.heightMm, s.tileW, s.tileH, s.joint, s.edgeMode, s.minCutMm, rec.regions],
+  );
+  const [pending, setPending] = useState<TradeoffRow | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
+  const hasFace = faceRegionsOf(rec.regions).length > 0;
+  const label = (r: TradeoffRow) =>
+    r.kind === 'width'
+      ? t('w3fg.to.size', { w: n(r.widthMm / f, 2), h: n(r.heightMm / f, 2), unit: s.unit, f: n(r.factor ?? 1, 1) })
+      : t('w3fg.to.tile', { w: n(r.tileW, 2), h: n(r.tileH, 2) });
+  const doApply = (r: TradeoffRow) => {
+    api.setSettings(r.patch);
+    setApplied(label(r));
+  };
+  const placed = api.progress?.total.placed ?? 0;
+  const edits = api.manualEdits;
+  const pal = api.paletteEdits;
+  return (
+    <section className="w3fg-to" data-testid="tradeoff">
+      <h4>{t('w3fg.to.title')}</h4>
+      <p className="muted small">{t('w3fg.to.intro', { g: n(s.joint, 2) })}</p>
+      <div className="table-wrap">
+        <table className="data w3fg-to-table">
+          <thead>
+            <tr>
+              <th>{t('w3fg.to.col.option')}</th>
+              <th className="num">{t('w3fg.to.col.cells')}</th>
+              <th className="num">{t('w3fg.to.col.joint')}</th>
+              {hasFace && <th className="num">{t('w3fg.to.col.face')}</th>}
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const res = r.result;
+              return (
+                <tr key={r.key} className={r.isCurrent ? 'w3fg-current' : ''} data-testid={`to-${r.key}`} data-cells={res.ok ? res.cells : ''}>
+                  <td className="w3fg-c-label">
+                    <span className="w3fg-to-label">{label(r)}</span>
+                    {r.isCurrent && <span className="w3fg-tag">{t('w3fg.to.current')}</span>}
+                    {res.ok && (res.tiny || res.highJoint) && (
+                      <span className="w3fg-flags">
+                        {res.tiny && <Badge kind="warn">{t('w3fg.to.flag.tiny')}</Badge>}
+                        {res.highJoint && <Badge kind="warn">{t('w3fg.to.flag.highJoint')}</Badge>}
+                      </span>
+                    )}
+                    {!res.ok && (
+                      <span className="w3fg-to-err small" title={layoutErrorText(res.error, t, n).text}>
+                        {isLayoutError(res.error)
+                          ? `${t('w3fg.to.notPossible')}: ${t(`w3fg.to.err.${res.error.code}`, { cells: bigNum(Number(res.error.params.cells ?? 0), n) })}`
+                          : res.error.message}
+                      </span>
+                    )}
+                  </td>
+                  <td className="num w3fg-c-num" data-label={t('w3fg.to.col.cells')}>
+                    {res.ok ? (
+                      <>
+                        {n(res.cells)}
+                        <span className="w3fg-grid muted">
+                          {n(res.cols)} × {n(res.rows)}
+                        </span>
+                      </>
+                    ) : (
+                      '–'
+                    )}
+                  </td>
+                  <td className="num w3fg-c-num" data-label={t('w3fg.to.col.joint')}>
+                    {res.ok ? `${pct(res.jointShare)} %` : '–'}
+                  </td>
+                  {hasFace && (
+                    <td className="num w3fg-c-num" data-label={t('w3fg.to.col.face')}>
+                      {res.ok && res.face && res.light ? (
+                        <span className="w3fg-face-cell" data-light={res.light} title={t(`w3fg.light.${res.light}`)}>
+                          <span className={`w3fg-dot w3fg-${res.light}`} aria-hidden="true" />
+                          {n(res.face.cols)}
+                          <span className="sr-only"> ({t(`w3fg.light.${res.light}`)})</span>
+                        </span>
+                      ) : (
+                        '–'
+                      )}
+                    </td>
+                  )}
+                  <td className="w3fg-c-act">
+                    {!r.isCurrent && res.ok && (
+                      <button className="btn small" onClick={() => (api.computed ? setPending(r) : doApply(r))} data-testid={`to-apply-${r.key}`}>
+                        {t('common.apply')}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasFace && (
+        <p className="muted small">
+          <span className="w3fg-dot w3fg-red" aria-hidden="true" /> &lt; {FACE_RED_BELOW} · <span className="w3fg-dot w3fg-yellow" aria-hidden="true" /> {FACE_RED_BELOW}–{FACE_GREEN_FROM - 1} ·{' '}
+          <span className="w3fg-dot w3fg-green" aria-hidden="true" /> ≥ {FACE_GREEN_FROM} ({t('w3fg.richtwert')})
+        </p>
+      )}
+      {applied && (
+        <p className="small w3fg-applied" role="status" data-testid="to-applied">
+          {t('w3fg.to.applied', { what: applied })}
+        </p>
+      )}
+      {pending && (
+        <Modal
+          title={t('w3fg.to.confirm.title')}
+          onClose={() => setPending(null)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setPending(null)} data-testid="to-confirm-cancel">
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn primary"
+                data-testid="to-confirm"
+                onClick={() => {
+                  const r = pending;
+                  setPending(null);
+                  doApply(r);
+                }}
+              >
+                {t('common.apply')}
+              </button>
+            </>
+          }
+        >
+          <p>{t('w3fg.to.confirm.text', { what: label(pending) })}</p>
+          <p className="small">{placed > 0 || edits > 0 || pal > 0 ? t('w3fg.to.confirm.keep', { placed: n(placed), edits: n(edits), pal: n(pal) }) : t('w3fg.to.confirm.keepNone')}</p>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+/** Ehrlicher Hinweis zu gemischten Steingrößen (Anforderung 18: Unvollständiges als unvollständig markieren). */
+function MixedSizesNote({ api }: { api: ProjectApi }) {
+  const { t, n } = useI18n();
+  const s = api.rec!.settings;
+  const sz = (tile: number, k: number) => {
+    const v = subStoneSize(tile, s.joint, k);
+    return v > 0 ? n(v, 2) : '–';
+  };
+  // dieselbe Prüfung wie Berechnung und Schritt 6 (Mindestbreite eines Schnittteils)
+  const tile = { x: 0, y: 0, w: s.tileW, h: s.tileH };
+  const tooSmall = [2, 3].filter((k) => !subdivisionCuttable(tile, k, s.joint, s.shapes.minPieceMm)).map((k) => `${k}×${k}`);
+  return (
+    <div className="note w3fg-mixed" data-testid="mixed-sizes">
+      <p className="small">{t('tiles.mixedHint')}</p>
+      <p className="small">
+        <Badge kind="incomplete">{t('common.incomplete')}</Badge> {t('w3fg.tiles.mixedIncomplete')}
+      </p>
+      <p className="small muted" data-testid="sub-sizes">
+        {t('w3fg.tiles.subSizes', { w: n(s.tileW, 2), h: n(s.tileH, 2), g: n(s.joint, 2), a2: sz(s.tileW, 2), b2: sz(s.tileH, 2), a3: sz(s.tileW, 3), b3: sz(s.tileH, 3) })}
+      </p>
+      {tooSmall.length > 0 && (
+        <p className="small w3fg-msg-warn" data-testid="sub-too-narrow">
+          {t('w3fg.tiles.subTooNarrow', { k: tooSmall.join(' / '), min: n(s.shapes.minPieceMm, 2) })}
+        </p>
+      )}
     </div>
   );
 }
@@ -155,7 +437,8 @@ export function StepSize({ api }: { api: ProjectApi }) {
         </p>
       </div>
       <div>
-        <LayoutSummary api={api} />
+        <LayoutSummary api={api} withTradeoff />
+        <TradeoffTable api={api} />
         <p className="muted small">{t('size.originHint')}</p>
       </div>
     </div>
@@ -202,14 +485,15 @@ export function StepTiles({ api }: { api: ProjectApi }) {
         <Field label={t('tiles.surface')}>
           <Segmented value={s.surface} options={[{ value: 'glass', label: t('mat.glass') }, { value: 'ceramic', label: t('mat.ceramic') }]} onChange={(v) => api.setSettings({ surface: v })} />
         </Field>
-        <p className="muted small">{t('tiles.mixedHint')}</p>
+        <MixedSizesNote api={api} />
         <p className="muted small">{t('tiles.materialHint')}</p>
       </div>
       <div>
-        <LayoutSummary api={api} />
+        <LayoutSummary api={api} withTradeoff />
         <p className="muted small">
           {t('tiles.pitch')}: {n(s.tileW + s.joint, 2)} × {n(s.tileH + s.joint, 2)} mm
         </p>
+        <TradeoffTable api={api} />
       </div>
     </div>
   );
@@ -228,7 +512,6 @@ export function StepJoint({ api }: { api: ProjectApi }) {
   } catch {
     naive = null;
   }
-  const est = estimateCells(layoutParamsOf(s));
   return (
     <div className="two-col">
       <div>
@@ -251,7 +534,6 @@ export function StepJoint({ api }: { api: ProjectApi }) {
           <NumberInput value={s.groutDepthMm} onChange={(v) => api.setSettings({ groutDepthMm: v })} min={0} max={30} suffix="mm" />
         </Field>
         {naive !== null && naive > 0 && <p className="muted small">{t('joint.naive', { n: naive })}</p>}
-        <p className="muted small">{t('joint.estimate', { c: n(est.cols), r: n(est.rows) })}</p>
       </div>
       <div>
         <LayoutSummary api={api} />

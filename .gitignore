@@ -9,3 +9,6 @@ test-output
 
 *.jks
 *.keystore
+
+# temporäre Arbeitskopien paralleler Agenten
+.claude/worktrees/

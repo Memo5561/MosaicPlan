@@ -1,0 +1,152 @@
+/* w2-grout-preview: Fugenfarbe (HEX-Feld) und Empfehlung für die Fernwirkung im Schritt „Fuge“ */
+.gp-color {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.gp-color input[type='color'] {
+  width: 44px;
+  height: 36px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  cursor: pointer;
+}
+.gp-hex {
+  width: 6.5em;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-transform: uppercase;
+}
+.gp-hex.invalid {
+  border-color: var(--err);
+  outline-color: var(--err);
+}
+.gp-hex-err {
+  color: var(--err);
+  font-size: 0.8rem;
+}
+
+.gp-box {
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 12px);
+  background: #f8f6f1;
+  padding: 10px 12px 6px;
+  margin: 10px 0 14px;
+}
+.gp-box h4 {
+  margin: 0 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.gp-rec {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff6e8;
+  border: 1px solid #f0d6a8;
+  line-height: 1.4;
+}
+.gp-rec-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.gp-rec.ok {
+  background: #eef6f0;
+  border-color: #c4e0cb;
+}
+.gp-rec .btn {
+  min-height: 36px;
+}
+.gp-mosaic {
+  margin: 8px 0 0;
+}
+
+.gp-preview {
+  margin: 10px 0 4px;
+}
+.gp-thumbs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.gp-thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.gp-thumb canvas {
+  width: 100%;
+  height: auto;
+  max-height: 180px;
+  object-fit: contain;
+  object-position: left center;
+  image-rendering: auto;
+}
+.gp-thumb > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.gp-preview figcaption {
+  margin-top: 4px;
+}
+
+.gp-details {
+  margin: 8px 0 4px;
+}
+.gp-details > summary {
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 6px 0;
+}
+.gp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+.gp-table th,
+.gp-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.gp-table th:nth-child(2),
+.gp-table th:nth-child(3),
+.gp-table td:nth-child(2),
+.gp-table td:nth-child(3) {
+  text-align: right;
+  white-space: nowrap;
+}
+.gp-table td:last-child {
+  text-align: right;
+}
+.gp-table tr.current td {
+  background: #eef6f0;
+  font-weight: 600;
+}
+.gp-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 520px) {
+  .gp-table .muted {
+    display: none;
+  }
+}

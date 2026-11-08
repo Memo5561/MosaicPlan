@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { tCount, useI18n, type Lang, type TFunc } from '../../i18n';
+import { timestampedName } from '../../platform';
 import { downloadBlob, Modal, safeFileName } from '../components';
 import { saveErrorText } from './SaveStatus';
 import { classifySaveError, type ProjectApi } from './useProject';
@@ -142,8 +143,11 @@ export function useGuardedCompute(api: ProjectApi, onDone: () => void) {
     const a = apiRef.current;
     try {
       const blob = await a.exportCurrent();
-      await downloadBlob(blob, `${safeFileName(a.rec?.meta.name ?? '')}.mosaicplan.json`);
-      if (mounted.current) setDownloadMsg({ ok: true, text: t('w2ws.guard.downloaded') });
+      const r = await downloadBlob(blob, timestampedName(safeFileName(a.rec?.meta.name ?? ''), 'mosaicplan.json'));
+      // Im APK wirft downloadBlob nie – ein Fehlschlag steht im Ergebnis (Details zeigt zusätzlich die Meldungsleiste)
+      const failed = r.kind === 'native' && !r.savedPath && !r.shared;
+      if (mounted.current)
+        setDownloadMsg(failed ? { ok: false, text: t('w2ws.save.downloadFailed', { msg: r.error ?? r.reason ?? '?' }) } : { ok: true, text: t('w2ws.guard.downloaded') });
     } catch (e) {
       if (mounted.current) setDownloadMsg({ ok: false, text: t('w2ws.save.downloadFailed', { msg: errText(e) }) });
     }

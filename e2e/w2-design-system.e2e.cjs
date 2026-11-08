@@ -283,13 +283,26 @@ const hOverflow = (page) => page.evaluate(() => document.documentElement.scrollW
   await pp.goto(BASE);
   await pp.tap('[data-testid="sample-portrait"]');
   await pp.waitForSelector('[data-testid="compute-btn"]');
+  // Nach dem Zusammenführen mit w2-workspace-shell: kompakter Kopf – „←“ (nur Symbol, aria-label) links,
+  // Projektname daneben über fast die ganze Breite (statt eigener Zeile; spart Höhe über der Vorschau).
   const head = await pp.evaluate(() => {
     const ti = document.querySelector('.title-input').getBoundingClientRect();
     const wh = document.querySelector('.ws-head').getBoundingClientRect();
-    const back = document.querySelector('.ws-head .btn').getBoundingClientRect();
-    return { tw: ti.width, hw: wh.width, titleAbove: ti.bottom <= back.top + 1 };
+    const backEl = document.querySelector('.ws-head .btn');
+    const back = backEl.getBoundingClientRect();
+    return {
+      tw: ti.width,
+      hw: wh.width,
+      backLeft: back.right <= ti.left + 1 && back.bottom > ti.top && back.top < ti.bottom,
+      backLabel: !!backEl.getAttribute('aria-label'),
+      backH: back.height,
+    };
   });
-  check('Handy: Projektname auf eigener, voller Zeile über „← Projekte“', head.tw >= head.hw - 2 && head.titleAbove, `${Math.round(head.tw)}/${Math.round(head.hw)} px`);
+  check(
+    'Handy: Projektname breit neben „←“ (Zurück links, fingergroß, mit Beschriftung für Screenreader)',
+    head.tw >= head.hw * 0.8 && head.backLeft && head.backLabel && head.backH >= 44,
+    `${Math.round(head.tw)}/${Math.round(head.hw)} px, Zurück ${Math.round(head.backH)} px hoch`,
+  );
   await pp.tap('[data-testid="compute-btn"]');
   await pp.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 180000 });
   await pp.waitForTimeout(1200);

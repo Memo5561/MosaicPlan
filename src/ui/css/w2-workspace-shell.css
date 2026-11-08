@@ -185,8 +185,11 @@
   .w2ws .w2ws-back-label {
     display: none;
   }
+  /* order: 0 hebt das „order: -1“ aus styles.css (Name über dem Zurück-Knopf) auf:
+     im Arbeitsbereich steht ← links, der Name daneben – spart eine Zeile über der Vorschau */
   .w2ws .title-input {
     flex: 1 1 0;
+    order: 0;
     min-width: 0;
     font-size: 1.15rem;
     padding: 2px 6px;

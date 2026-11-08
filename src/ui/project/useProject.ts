@@ -61,12 +61,27 @@ export function layoutParamsOf(s: ProjectSettings): LayoutParams {
 export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'materialIds'>, palette: readonly PaletteColor[], materials: readonly Material[]): FixedColor[] | undefined {
   if (s.paletteMode === 'materials' || s.paletteMode === 'auto-snap') {
     const pool = materials.filter((m) => s.materialIds.length === 0 || s.materialIds.includes(m.id));
-    const fixed = pool.map((m) => ({ lab: hexToLab(m.hex), hex: m.hex.toUpperCase(), name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(), materialId: m.id }));
+    const fixed: FixedColor[] = pool.map((m) => ({
+      lab: hexToLab(m.hex),
+      hex: m.hex.toUpperCase(),
+      name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(),
+      materialId: m.id,
+      // Bestand: Vertrag für Welle 3 (die Berechnung nutzt ihn noch nicht)
+      ...(m.stock !== undefined ? { stock: m.stock } : {}),
+    }));
     if (!fixed.length) throw new Error('no-materials');
     return fixed;
   }
   if (s.paletteMode === 'custom') {
-    const fixed = palette.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, code: p.code }));
+    // nameKey/nameSuffix: automatische Namen bleiben automatisch (folgen der UI-Sprache), eingetippte bleiben wörtlich
+    const fixed: FixedColor[] = palette.map((p) => ({
+      lab: p.lab,
+      hex: p.hex,
+      name: p.name,
+      materialId: p.materialId,
+      code: p.code,
+      ...(p.nameKey ? { nameKey: p.nameKey, nameSuffix: p.nameSuffix } : {}),
+    }));
     if (!fixed.length) throw new Error('no-palette');
     return fixed;
   }

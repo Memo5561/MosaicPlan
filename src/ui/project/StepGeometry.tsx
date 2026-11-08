@@ -96,8 +96,10 @@ export function StepSize({ api }: { api: ProjectApi }) {
     [500, 300],
     [1000, 500],
   ];
+  // Maße des Originals (sourceSize), nicht der evtl. verkleinerten Arbeitskopie – sonst weicht
+  // „Höhe aus Foto“ durch Rundung der Arbeitskopie um bis zu 0,02 % ab
   const photoAspect = api.bitmap ? (() => {
-    const r = rotatedSize(api.bitmap.width, api.bitmap.height, api.rec!.adjust);
+    const r = rotatedSize(api.sourceSize?.w ?? api.bitmap.width, api.sourceSize?.h ?? api.bitmap.height, api.rec!.adjust);
     const c = api.rec!.adjust.crop;
     return c ? (c.w * r.w) / (c.h * r.h) : r.w / r.h;
   })() : null;

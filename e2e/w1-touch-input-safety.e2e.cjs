@@ -102,7 +102,10 @@ function check(name, ok, info = '') {
   // ---------- 2. Nach dem Hineinzoomen: ein Tippen öffnet genau den Stein unter dem Finger, ohne Geister-Klick
   const cx = 140;
   const rows = [];
-  for (const y of [360, 420, 470, 519, 544]) {
+  // Tippunkte relativ zur Oberkante der Vorschau (früher feste y-Werte 360…544 bei Oberkante 258 px):
+  // der Arbeitsbereichskopf ist seit Welle 2 (fingergroße Knöpfe) etwas höher.
+  const yRows = [360, 420, 470, 519, 544].map((y0) => Math.round(b.y + (y0 - 258)));
+  for (const y of yRows) {
     await fitView();
     await page.touchscreen.tap(cx, y); // zoomt hinein (Stein ≈ 40 px)
     await wait(450);
@@ -115,7 +118,7 @@ function check(name, ok, info = '') {
     const touchId = opened ? await stoneId() : null;
     const placed = opened ? await placedChecked() : null;
     const g = await ghosts();
-    if (y === 519) await shot('w1-02-dialog-after-touch-tap');
+    if (y === yRows[3]) await shot('w1-02-dialog-after-touch-tap');
     if (opened) {
       await page.tap('[data-testid="modal-close"]');
       await waitClosed();
@@ -138,14 +141,14 @@ function check(name, ok, info = '') {
   check('Dialog-Verlaufseinträge aufgeräumt', (await depth()) === 0);
 
   // ---------- 3. Zurück-Geste schließt zuerst den Dialog (Vorschau bleibt)
-  await page.touchscreen.tap(cx, 420);
+  await page.touchscreen.tap(cx, yRows[1]);
   await page.waitForSelector('[data-testid="stone-id"]', { timeout: 5000 });
   const urlBefore = page.url();
   await page.goBack();
   await wait(400);
   check('Zurück schließt nur den Steindialog', !(await dialogOpen()) && page.url() === urlBefore && /\/preview$/.test(page.url()) && (await page.isVisible('[data-testid="mosaic-canvas"]')), page.url().replace(/^.*#/, '#'));
   // verschachtelt: Freiform-Editor im Steindialog
-  await page.touchscreen.tap(cx, 420);
+  await page.touchscreen.tap(cx, yRows[1]);
   await page.waitForSelector('[data-testid="stone-id"]', { timeout: 5000 });
   await page.tap('button:has-text("Freiform …")');
   await page.waitForSelector('text=Freiform-Kontur zeichnen');
@@ -157,7 +160,7 @@ function check(name, ok, info = '') {
   await wait(400);
   check('Verschachtelt: Zurück schließt erst den Freiform-Editor, dann den Steindialog', d2 === 2 && innerClosed && !(await dialogOpen()) && page.url() === urlBefore, `Tiefe ${d2}`);
   // Esc wirkt nur auf den obersten Dialog
-  await page.touchscreen.tap(cx, 420);
+  await page.touchscreen.tap(cx, yRows[1]);
   await page.waitForSelector('[data-testid="stone-id"]', { timeout: 5000 });
   await page.tap('button:has-text("Freiform …")');
   await page.waitForSelector('text=Freiform-Kontur zeichnen');
@@ -175,7 +178,7 @@ function check(name, ok, info = '') {
   check('Esc schließt nur den obersten Dialog', escInner && !(await dialogOpen()));
   check('Abbrechen im inneren Dialog lässt den Steindialog offen, Verlauf stimmt', cancelOk && (await depth()) === 0);
   // Tippen auf den abgedunkelten Hintergrund schließt (Drücken und Loslassen auf dem Hintergrund)
-  await page.touchscreen.tap(cx, 420);
+  await page.touchscreen.tap(cx, yRows[1]);
   await page.waitForSelector('[data-testid="stone-id"]', { timeout: 5000 });
   await page.touchscreen.tap(195, 6);
   await wait(400);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useI18n, type TFunc } from '../../i18n';
+import { timestampedName } from '../../platform';
 import { downloadBlob, safeFileName } from '../components';
 import type { ProjectApi, SaveError, SaveState } from './useProject';
 import '../css/w2-workspace-shell.css';
@@ -76,7 +77,9 @@ export function SaveErrorBanner({ api }: { api: ProjectApi }) {
           setMsg(null);
           try {
             const blob = await api.exportCurrent();
-            await downloadBlob(blob, `${safeFileName(api.rec?.meta.name ?? '')}.mosaicplan.json`);
+            const r = await downloadBlob(blob, timestampedName(safeFileName(api.rec?.meta.name ?? ''), 'mosaicplan.json'));
+            // Im APK wirft downloadBlob nie – ein Fehlschlag steht im Ergebnis
+            if (r.kind === 'native' && !r.savedPath && !r.shared) setMsg(t('w2ws.save.downloadFailed', { msg: r.error ?? r.reason ?? '?' }));
           } catch (e) {
             setMsg(t('w2ws.save.downloadFailed', { msg: e instanceof Error ? e.message : String(e) }));
           } finally {

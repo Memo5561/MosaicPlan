@@ -78,6 +78,12 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   const compute = async () => {
     await page.click('[data-testid="step-compute"]');
     await page.click('[data-testid="compute-btn"]');
+    // Seit w2-workspace-shell fragt ein Dialog nach, wenn manuelle Änderungen verworfen würden
+    // (z. B. eine entfernte Palettenfarbe). Für diesen Test: ohne Sicherung neu berechnen.
+    await page.waitForSelector('[data-testid="recompute-guard"], [data-testid="mosaic-canvas"]', { timeout: 120000 });
+    if (await page.isVisible('[data-testid="recompute-guard"]')) {
+      await page.click('[data-testid="guard-nobackup"]');
+    }
     await page.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 120000 });
     await page.click('[data-testid="step-colors"]');
     await page.waitForSelector('[data-testid="palette-table"]');

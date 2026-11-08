@@ -89,9 +89,10 @@ async function readProjects(page) {
 
 const projectIdOf = (url) => (url.match(/#\/project\/([^/]+)/) || [])[1];
 
-/** „Veraltet / neu berechnen“-Hinweis im Projektkopf sichtbar? */
+/** „Veraltet / neu berechnen“-Hinweis im Projektkopf sichtbar?
+ *  Seit w2-workspace-shell lautet das Abzeichen „Einstellungen geändert“ (data-testid=stale-badge). */
 const staleVisible = (page) =>
-  page.evaluate(() => [...document.querySelectorAll('.ws-head .badge-warn, .ws-head [data-testid*="stale"]')].some((e) => e.offsetParent !== null && /berechnen|recompute|hesapla/i.test(e.textContent || '')));
+  page.evaluate(() => [...document.querySelectorAll('.ws-head .badge-warn, .ws-head [data-testid*="stale"]')].some((e) => e.offsetParent !== null && (e.getAttribute('data-testid') === 'stale-badge' || /berechnen|recompute|hesapla|geändert|changed|değişti/i.test(e.textContent || ''))));
 
 async function boxOf(page, sel) {
   const el = await page.$(sel);

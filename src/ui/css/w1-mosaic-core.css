@@ -1,0 +1,134 @@
+/* w1-mosaic-core: Farblegende – unbenutzte Farben, Entfernen-/Zusammenführen-Dialoge, Hinweise */
+
+.palette-editor .w1mc-count {
+  font-weight: 400;
+  font-size: 0.85rem;
+  margin-left: 6px;
+}
+
+/* Farben ohne Steine: sichtbar, löschbar, aber zurückgenommen */
+table.data tr.w1mc-unused > td {
+  background: #faf8f4;
+  color: var(--muted);
+}
+table.data tr.w1mc-unused input[type='color'] {
+  opacity: 0.6;
+}
+.w1mc-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px dashed #c9c2b5;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Rückmeldung nach Entfernen/Zusammenführen */
+.w1mc-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 10px 8px 12px;
+  border-radius: 9px;
+  background: #e6eef8;
+  color: #2b5c95;
+  font-size: 0.88rem;
+}
+.w1mc-notice .icon-btn {
+  color: inherit;
+  padding: 0 4px;
+}
+
+/* Dialoge */
+.w1mc-dialog p {
+  margin: 0 0 10px;
+}
+.w1mc-swap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #faf8f4;
+  font-size: 0.95rem;
+}
+.w1mc-swap .w1mc-arrow {
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+.w1mc-swap .w1mc-de {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+.w1mc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.w1mc-chip b {
+  font-variant-numeric: tabular-nums;
+}
+.w1mc-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.w1mc-select select {
+  max-width: 100%;
+}
+.w1mc-list {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.w1mc-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+.w1mc-list li:last-child {
+  border-bottom: 0;
+}
+.w1mc-list .w1mc-meta {
+  margin-left: auto;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.w1mc-added {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+  font-size: 0.86rem;
+}
+.w1mc-summary {
+  margin: 4px 0 10px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: #fff1d9;
+  color: #7a4a00;
+  font-size: 0.9rem;
+}
+.w1mc-summary.ok {
+  background: #e3f3e7;
+  color: var(--ok);
+}

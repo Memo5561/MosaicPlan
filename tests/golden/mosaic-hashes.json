@@ -1,0 +1,106 @@
+{
+ "_info": "Golden-Hashes der Mosaikberechnung (tests/w1-mosaic-core.test.ts): kind, c1, c2, rec, sub, line, free und Palette (Code+HEX). Jede Änderung muss bewusst erfolgen und im PR begründet werden. Neu aufnehmen: UPDATE_GOLDEN=1 npx vitest run tests/w1-mosaic-core.test.ts",
+ "samples": {
+  "portrait": {
+   "cells": 5628,
+   "kind": "b19184f99faa2258d9f4",
+   "c1": "65721a604a70365801cc",
+   "c2": "2c25bfe11759d02dd557",
+   "rec": "660b974630c79796bc3d",
+   "sub": "31ced81f1ed6d33297c9",
+   "line": "c9432e8566f41a16132a",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "749b84a7b63bac075aac"
+  },
+  "landscape": {
+   "cells": 10795,
+   "kind": "e4dfc45b3305d8b9fac4",
+   "c1": "19c8d86c66e1b24d9cf1",
+   "c2": "381090884e8284016f3a",
+   "rec": "88289481fc86c99bb97b",
+   "sub": "7c202b494c5b6436d31d",
+   "line": "8e594652028acc8094f7",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "cd4d39013d04c4fb60da"
+  },
+  "animal": {
+   "cells": 5184,
+   "kind": "c52bbc2035e0eef6c4e2",
+   "c1": "7f93df3bc07883d8c3f8",
+   "c2": "b6cdac5dbf547add0405",
+   "rec": "523862a510945f2c2fd5",
+   "sub": "1e719ebee3be7d306a03",
+   "line": "1445e833cb9f4f676f99",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "3afe1d5931beae4065c8"
+  },
+  "city": {
+   "cells": 18704,
+   "kind": "2e7bf949d595f42cafac",
+   "c1": "b210e4b23971a70520b5",
+   "c2": "7f3574a83dbbeb4c3432",
+   "rec": "5ad849ba138bf8ac338d",
+   "sub": "4c9c2c7a43f1d8ebcb19",
+   "line": "afa756f883f57a2cde01",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "4c2710ce6c127402bfcd"
+  }
+ },
+ "modes": {
+  "portrait/materials": {
+   "cells": 5628,
+   "kind": "b19184f99faa2258d9f4",
+   "c1": "d9037edc000bdaccbeda",
+   "c2": "2f6670bd44ae427f5b32",
+   "rec": "660b974630c79796bc3d",
+   "sub": "7220de69b5c68f67861f",
+   "line": "c9432e8566f41a16132a",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "3d3b916c7aca34cfaa41"
+  },
+  "portrait/auto-snap": {
+   "cells": 5628,
+   "kind": "b19184f99faa2258d9f4",
+   "c1": "55af84396ef1f5846ad5",
+   "c2": "b4bf854cf3ed276e562f",
+   "rec": "660b974630c79796bc3d",
+   "sub": "f2d85f6f07b9760370de",
+   "line": "c9432e8566f41a16132a",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "8dd8e966e9b2f2347ec1"
+  },
+  "portrait/dither-cie76": {
+   "cells": 5628,
+   "kind": "b19184f99faa2258d9f4",
+   "c1": "bfa7b017e8b68a44bfa1",
+   "c2": "f6f6fcef4d2c0e8123ee",
+   "rec": "660b974630c79796bc3d",
+   "sub": "e278bcf44fdb9ad6392b",
+   "line": "c9432e8566f41a16132a",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "749b84a7b63bac075aac"
+  },
+  "city/detail-k3": {
+   "cells": 18704,
+   "kind": "74050d79a4b66bdadc62",
+   "c1": "0452072346526d112edb",
+   "c2": "24dc28f9da2d16808493",
+   "rec": "5ad849ba138bf8ac338d",
+   "sub": "41f7e94c85636bb8bc96",
+   "line": "a4b80d462d82502cd964",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "0af1f76e7a61d6866422"
+  },
+  "animal/no-shapes": {
+   "cells": 5184,
+   "kind": "523862a510945f2c2fd5",
+   "c1": "0e939b425b507ce07c71",
+   "c2": "c9d22e355bbaae2da3ff",
+   "rec": "33684ef81a52ef991fca",
+   "sub": "e3b0c44298fc1c149afb",
+   "line": "e3b0c44298fc1c149afb",
+   "free": "e3b0c44298fc1c149afb",
+   "palette": "70fc34c8bb590529dbb5"
+  }
+ }
+}

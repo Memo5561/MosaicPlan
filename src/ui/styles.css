@@ -1,17 +1,22 @@
 :root {
+  /* Farben: Text-Paare erfüllen WCAG AA (≥ 4,5 : 1), geprüft in tests/w2-design-system.test.ts */
   --bg: #f4f1ec;
   --panel: #ffffff;
   --ink: #1d2a3a;
   --ink-soft: #4a5566;
-  --muted: #7a8291;
+  --muted: #5f6675; /* 5,1 : 1 auf --bg, 5,8 : 1 auf Weiß */
   --line: #e2ddd3;
-  --accent: #d4573b;
+  --field-line: #928a7d; /* Rahmen von Eingabefeldern: ≥ 3 : 1 zu Weiß und --bg (WCAG 1.4.11) */
+  --accent: #b6452b; /* Terrakotta, 5,4 : 1 mit weißer Schrift */
+  --accent-hover: #9e3a23;
   --accent-ink: #ffffff;
+  --accent-soft: #fff4f0;
   --teal: #3f8f8a;
   --gold: #e8b04a;
-  --ok: #1b8a3a;
-  --warn: #b26a00;
+  --ok: #177535; /* 5,0 : 1 auf dem grünen Badge */
+  --warn: #8a5200; /* 5,7 : 1 auf --bg und auf dem gelben Badge */
   --err: #c0262d;
+  --focus: #1f5fbf;
   --radius: 12px;
   --shadow: 0 1px 2px rgba(29, 42, 58, 0.06), 0 4px 16px rgba(29, 42, 58, 0.06);
   --viewer-bg: #e9e5de;
@@ -75,6 +80,27 @@ p {
 .grow {
   flex: 1;
 }
+/* nur für Screenreader */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Sichtbarer Tastaturfokus (nur bei Tastaturbedienung) */
+:where(button, a[href], input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.topbar :where(button, select):focus-visible,
+.hero :where(button):focus-visible {
+  outline-color: #fff;
+}
 
 /* ---------- Kopfzeile */
 .topbar {
@@ -123,6 +149,13 @@ p {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
+.mainnav button.active {
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+/* Kurzbezeichnungen der Hauptnavigation nur auf schmalen Bildschirmen (siehe unten) */
+.nav-short {
+  display: none;
+}
 .lang {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
@@ -136,6 +169,7 @@ p {
 
 main {
   padding-bottom: 40px;
+  padding-bottom: calc(40px + env(safe-area-inset-bottom));
 }
 .page {
   max-width: 1400px;
@@ -180,7 +214,8 @@ main {
   color: var(--accent-ink);
 }
 .btn.primary:hover {
-  background: #c04a30;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 .btn.danger {
   color: var(--err);
@@ -244,7 +279,7 @@ select,
   font: inherit;
   font-size: 0.92rem;
   padding: 7px 9px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: 8px;
   background: #fff;
   color: var(--ink);
@@ -275,7 +310,7 @@ input[type='color'] {
   width: 38px;
   height: 32px;
   padding: 2px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: 8px;
   background: #fff;
   cursor: pointer;
@@ -356,7 +391,7 @@ input[type='color'] {
   width: 38px;
   height: 22px;
   border-radius: 11px;
-  background: #cfc8bb;
+  background: #918a7e; /* „aus“ ≥ 3 : 1 zu Weiß (WCAG 1.4.11) */
   position: relative;
   transition: background 0.15s;
   margin-top: 1px;
@@ -380,7 +415,8 @@ input[type='color'] {
   left: 19px;
 }
 .toggle input:focus-visible + .toggle-track {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 label.inline {
   display: inline-flex;
@@ -431,7 +467,8 @@ label.inline {
 }
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, var(--teal), #57b3a9);
+  /* hell genug, dass die mittige Beschriftung (--ink) auch über der Füllung ≥ 4,5 : 1 hat */
+  background: linear-gradient(90deg, #5fb3a9, #7cc6bc);
   transition: width 0.2s;
 }
 .progress-label {
@@ -458,22 +495,38 @@ label.inline {
   color: #fff;
   border-radius: 18px;
   padding: 28px 30px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   position: relative;
   overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr);
+  grid-template-areas:
+    'text drop'
+    'privacy drop';
+  gap: 10px 36px;
+  align-items: center;
+}
+.hero-text {
+  grid-area: text;
+  align-self: end;
 }
 .hero::after {
   content: '';
   position: absolute;
-  right: -40px;
-  top: -40px;
-  width: 260px;
-  height: 260px;
+  right: -60px;
+  bottom: -70px;
+  width: 240px;
+  height: 240px;
   background:
     conic-gradient(from 45deg, var(--accent) 0 25%, var(--gold) 0 50%, var(--teal) 0 75%, #f2ede4 0) 0 0 / 60px 60px;
-  opacity: 0.22;
+  opacity: 0.12;
   transform: rotate(12deg);
   border-radius: 24px;
+  pointer-events: none;
+}
+.hero > * {
+  position: relative;
+  z-index: 1;
 }
 .hero h1 {
   font-size: 2.3rem;
@@ -482,41 +535,93 @@ label.inline {
 .hero .lead {
   font-size: 1.1rem;
   max-width: 640px;
-  margin: 0 0 6px;
+  margin: 0;
 }
-.hero .muted {
-  color: rgba(255, 255, 255, 0.7);
+.hero-privacy {
+  grid-area: privacy;
+  align-self: start;
+  margin: 0;
+  max-width: 600px;
+  font-size: 0.88rem;
+  color: rgba(255, 255, 255, 0.82);
 }
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 14px;
-}
-.tile {
+/* Ablagefläche mit der Hauptaktion; beim Ziehen eines Fotos hervorgehoben */
+.hero-drop {
+  grid-area: drop;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  text-align: left;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 22px 18px 16px;
+  border: 2px dashed rgba(255, 255, 255, 0.45);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.07);
+  transition: background 0.15s, border-color 0.15s;
+}
+.hero.drag .hero-drop {
+  border-color: #fff;
+  border-style: solid;
+  background: rgba(255, 255, 255, 0.18);
+}
+.hero-drop-icon {
+  font-size: 2.2rem;
+  line-height: 1;
+}
+.hero-cta {
+  width: 100%;
+  max-width: 380px;
+  white-space: normal;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.hero-drop-hint {
+  margin: 0;
+  font-size: 0.86rem;
+  color: rgba(255, 255, 255, 0.85);
+}
+.hero-link {
+  background: none;
+  border: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: #fff;
   font: inherit;
-  color: var(--ink);
-  transition: transform 0.1s, box-shadow 0.15s;
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
-.tile:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 24px rgba(29, 42, 58, 0.12);
+.hero-link:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
-.tile-icon {
-  font-size: 1.7rem;
+.home-status {
+  margin: 0 0 10px;
+  font-weight: 600;
+  color: var(--ink-soft);
 }
-.tile small {
-  color: var(--muted);
+.home-error {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid #efc7c7;
+  border-left: 4px solid var(--err);
+  border-radius: 10px;
+  background: #fff5f5;
+  font-weight: 600;
+  line-height: 1.45;
+}
+/* Weitere Bereiche: kompakte Zeile statt großer Kacheln (doppeln sonst die Hauptnavigation) */
+.home-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.home-links .btn {
+  font-weight: 500;
+}
+.home-samples {
+  scroll-margin-top: 76px;
 }
 .project-cards {
   display: grid;
@@ -725,7 +830,7 @@ label.inline {
 }
 .dropzone.drag {
   border-color: var(--accent);
-  background: #fff4f0;
+  background: var(--accent-soft);
 }
 .dropzone-icon {
   font-size: 2.6rem;
@@ -834,6 +939,16 @@ table.data th {
   background: #faf8f4;
   position: sticky;
   top: 0;
+  z-index: 1;
+}
+/* Codes, HEX/L*a*b* und Zahlen nicht über mehrere Zeilen umbrechen */
+table.data td.mono,
+table.data td.num {
+  white-space: nowrap;
+}
+/* Lange Tabellen: begrenzte Höhe, damit die Kopfzeile beim Scrollen stehen bleibt */
+.table-wrap.tall {
+  max-height: min(70vh, 640px);
 }
 table.data.small th,
 table.data.small td {
@@ -949,7 +1064,7 @@ table.mini .numin input {
 }
 .legend-item.active {
   border-color: var(--accent);
-  background: #fff4f0;
+  background: var(--accent-soft);
 }
 .orig-thumb {
   border-radius: 8px;
@@ -1005,12 +1120,16 @@ table.mini .numin input {
   justify-content: center;
   z-index: 100;
   padding: 12px;
+  /* Android randlos (viewport-fit=cover): Dialog nie unter Status- oder Navigationsleiste */
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
 }
 .modal {
   background: #fff;
   border-radius: 16px;
   width: min(560px, 100%);
   max-height: 92vh;
+  max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
@@ -1119,10 +1238,59 @@ table.mini .numin input {
   .stone-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'text'
+      'drop'
+      'privacy';
+    row-gap: 14px;
+  }
+}
+/* Hauptnavigation: alle vier Bereiche ohne Scrollen sichtbar (Anforderung 15) */
+@media (max-width: 820px) {
+  .topbar {
+    gap: 10px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .nav-long {
+    display: none;
+  }
+  .nav-short {
+    display: inline;
+  }
 }
 @media (max-width: 600px) {
   .page {
     padding: 12px;
+  }
+  .topbar {
+    gap: 6px;
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+  .brand {
+    padding: 0 4px;
+  }
+  .mainnav {
+    gap: 2px;
+    justify-content: space-between;
+  }
+  .mainnav button {
+    padding: 8px 7px;
+    font-size: 0.85rem;
+  }
+  /* Sprache steht auch in den Einstellungen – hier ist der Platz für die Hauptnavigation */
+  .lang {
+    display: none;
+  }
+  /* Projektname auf eigener, voller Zeile über „← Projekte“ */
+  .title-input {
+    flex: 1 1 100%;
+    order: -1;
+    min-width: 0;
+    font-size: 1.15rem;
   }
   .step-body {
     padding: 4px 12px 14px;
@@ -1134,25 +1302,147 @@ table.mini .numin input {
     display: inline;
   }
   .hero {
-    padding: 20px;
+    padding: 20px 16px 16px;
+    gap: 16px;
   }
   .hero h1 {
     font-size: 1.8rem;
   }
+  .hero .lead {
+    font-size: 1rem;
+  }
+  .hero-drop {
+    padding: 16px 12px 10px;
+  }
   .brand span {
     display: none;
-  }
-  .tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-  .tile {
-    padding: 12px;
   }
   .hero::after {
     opacity: 0.1;
   }
+  .home-links {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-links .btn {
+    justify-content: flex-start;
+    padding-left: 10px;
+    padding-right: 8px;
+    white-space: normal;
+    text-align: left;
+  }
   .project-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---------- Touch-Bedienung: fingergroße Bedienelemente (≥ 44 CSS-px; Android-Richtwert 48 dp).
+   Steht am Ende, damit es die Breiten-Regeln oben überstimmt. Gilt für Handy und Tablet mit Finger. */
+@media (pointer: coarse) {
+  .btn,
+  .btn.small,
+  .btn.chip,
+  .segmented button,
+  .neighbor,
+  .mainnav button,
+  .brand,
+  .step {
+    min-height: 44px;
+  }
+  .btn.small,
+  .btn.chip {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .legend-item,
+  .section-cell {
+    min-height: 40px;
+  }
+  .icon-btn,
+  .viewer-tools button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .color-pick {
+    gap: 6px;
+  }
+  .cp {
+    justify-content: center;
+    min-width: 44px;
+    min-height: 48px;
+  }
+  input.text,
+  select,
+  .numin input,
+  .title-input {
+    min-height: 44px;
+  }
+  /* 16 px verhindert das automatische Hineinzoomen beim Antippen (iOS/iPadOS) */
+  input.text,
+  select,
+  .numin input {
+    font-size: 16px;
+  }
+  /* auch schmale Zahlenfelder (Breite im Code gesetzt) bleiben bei 16 px lesbar */
+  .numin input {
+    min-width: 72px;
+  }
+  input[type='color'] {
+    width: 44px;
+    height: 44px;
+  }
+  /* größere Trefferfläche, Daumen bleibt der native */
+  input[type='range'] {
+    height: 40px;
+  }
+  input[type='checkbox'] {
+    width: 22px;
+    height: 22px;
+  }
+  .toggle input[type='checkbox'] {
+    width: 0;
+    height: 0;
+  }
+  .toggle {
+    min-height: 44px;
+  }
+  label.inline {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    gap: 8px;
+  }
+  .link,
+  .hero-link {
+    min-height: 44px;
+  }
+  /* kleine Badges, die Knöpfe sind: unsichtbar vergrößerte Trefferfläche, ohne das Layout zu ändern */
+  .badge.as-btn {
+    position: relative;
+  }
+  .badge.as-btn::before {
+    content: '';
+    position: absolute;
+    inset: -11px -4px;
+  }
+  /* Ziehen & Ablegen gibt es auf Touch-Geräten nicht: kein gestrichelter Ablagerahmen, kein Hinweis */
+  .drop-only {
+    display: none;
+  }
+  .hero-drop {
+    border-color: transparent;
+    background: none;
+    padding: 4px 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

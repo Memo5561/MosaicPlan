@@ -275,14 +275,21 @@ function check(name, ok, info = '') {
   const ev = await blurValue();
   check('„1,2,3“ ist ungültig und wird nicht übernommen', eInvalid && ev === '12,5', `ungültig: ${eInvalid}, danach „${ev}“`);
   // Englisch: Tausenderkomma
-  await page.selectOption('select.lang', 'en');
+  // Die Sprachwahl der Kopfzeile ist auf Handybreite ausgeblendet (w2-design-system, sie steht in den Einstellungen):
+  // für den Sprachwechsel kurz breiter stellen, dann wieder Handybreite.
+  const setLang = async (l) => {
+    await page.setViewportSize({ width: 700, height: 844 });
+    await page.selectOption('select.lang', l);
+    await page.setViewportSize({ width: 390, height: 844 });
+  };
+  await setLang('en');
   await wait(300);
   const f = await typeWidth('1,000');
   const fv = await blurValue();
   const g = await typeWidth('1.000');
   const gv = await blurValue();
   check('EN: „1,000“ → 1000, „1.000“ → 1', fv === '1000' && f.hint === '→ 1000 cm' && gv === '1', `${fv} | ${gv}`);
-  await page.selectOption('select.lang', 'de');
+  await setLang('de');
   await wait(300);
 
   check('Keine JavaScript-Fehler', errors.length === 0, errors.slice(0, 3).join(' | '));

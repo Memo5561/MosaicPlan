@@ -126,7 +126,9 @@ function changedPixels(a, b, thr = 12) {
     const ovBefore = await centreMean(page, R);
 
     // ---- hervorgehobene Farbe (Legende) auch in der Übersicht: andere Farben abgeblendet
-    const legend = await page.$('.legend-item');
+    // dunkelste Farbe (letzter Legendeneintrag): andere Farben werden heller abgeblendet (w3-viewer-features:
+    // bei einer hellen Fokusfarbe dunkelt der graue Schleier ab, damit sie sich abhebt)
+    const legend = (await page.$$('.legend-item')).pop();
     if (legend) {
       await legend.click();
       await wait(400);

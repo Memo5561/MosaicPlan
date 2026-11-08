@@ -1,0 +1,402 @@
+/* w4-laying-workbench: Werkbank „Verlegen“ (Schritt 9) und volle Breite für „Material & Einkauf“ */
+
+/* ---- Ansicht wählen (rechts in der Fortschrittsleiste) */
+.w4lw .summary-box {
+  align-items: center;
+}
+.w4lw-viewbar {
+  margin-left: auto;
+}
+
+/* ---- Werkzeugleiste über dem Viewer: Verlegemodus, Markieren durch, Nächster Stein, Rückgängig */
+.w4lw-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.w4lw-toolbar .toggle {
+  flex: none;
+}
+.w4lw-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.w4lw-undo {
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+/* Handy: Rückgängig nur als Pfeil mit Anzahl (vollständige Beschriftung als aria-label/Tooltip) */
+@media (max-width: 600px) {
+  .w4lw-undo-txt {
+    display: none;
+  }
+}
+
+/* Statuszeile: feste Höhe, damit eine Meldung das Mosaik nie verschiebt */
+.w4lw-status {
+  height: 1.75em;
+  line-height: 1.75em;
+  margin: 4px 2px;
+  font-size: 0.86rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.w4lw-status.on {
+  color: var(--ink);
+  font-weight: 600;
+}
+.w4lw-status.on::before {
+  content: '● ';
+  color: var(--teal);
+}
+
+/* ---- Viewer mit Einblendungen (Rechteck bestätigen, Abschnitt wechseln) */
+.w4lw-vwrap {
+  position: relative;
+  /* beim Hineinscrollen nicht unter Kopfzeile und klebender Schrittleiste */
+  scroll-margin-top: 116px;
+}
+@media (max-width: 600px), (max-height: 699px) {
+  .w4lw-vwrap {
+    scroll-margin-top: 68px;
+  }
+}
+.w4lw-overlays {
+  position: absolute;
+  top: 26px;
+  left: 30px;
+  right: 56px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+.w4lw-overlays > * {
+  pointer-events: auto;
+  max-width: 100%;
+}
+.w4lw-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+.w4lw-bar-btns {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.w4lw-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 2px 0;
+}
+.w4lw-notes .badge {
+  vertical-align: 1px;
+}
+
+/* ---- Seitenleiste */
+.w4lw-side .w4lw-find {
+  margin-bottom: 6px;
+}
+.w4lw-find form {
+  gap: 6px;
+}
+.w4lw-find input.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.w4lw-h {
+  margin: 12px 0 2px;
+}
+.w4lw-h small {
+  font-weight: 400;
+}
+.w4lw-secset {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.w4lw-secset > summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  min-height: 32px;
+  display: list-item;
+}
+
+/* ---- Farben mit offenen Steinen */
+.w4lw-chipbox {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.w4lw-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 6px;
+  max-height: 340px;
+  overflow: auto;
+  padding: 2px;
+}
+.w4lw-chip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.w4lw-chip .swatch {
+  grid-row: 1 / span 2;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.w4lw-chip b {
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+.w4lw-chip small {
+  font-size: 0.72rem;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.w4lw-chip:hover {
+  border-color: #c9c2b5;
+}
+.w4lw-chip.done {
+  background: #eef7f0;
+}
+.w4lw-chip.done small {
+  color: var(--ok);
+}
+.w4lw-chip.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-soft);
+}
+.w4lw-chipsum {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Karte „Nächster Stein“ */
+.w4lw-card {
+  margin: 0 0 12px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--teal);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.w4lw-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 8px;
+}
+.w4lw-card-head .icon-btn {
+  margin: -4px -6px -4px 0;
+}
+.w4lw-card-pos {
+  grid-column: 1 / -1;
+  font-variant-numeric: tabular-nums;
+}
+.w4lw-card-stone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 2px;
+}
+.w4lw-card-stone .swatch {
+  flex: none;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+.w4lw-card-idbox {
+  min-width: 0;
+}
+.w4lw-card-id {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.w4lw-card-id .badge {
+  font-size: 0.72rem;
+  vertical-align: 5px;
+  letter-spacing: 0;
+}
+.w4lw-card-cut {
+  margin: 6px 0 4px;
+  padding-left: 18px;
+  font-size: 0.86rem;
+}
+.w4lw-card-tpl {
+  display: flex;
+  justify-content: center;
+}
+.w4lw-card-tpl svg {
+  max-width: 100%;
+  height: auto;
+}
+.w4lw-card-done {
+  margin: 10px 0;
+  font-weight: 600;
+  color: var(--ok);
+}
+.w4lw-card .btn {
+  -webkit-tap-highlight-color: transparent;
+}
+.w4lw-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.w4lw-card-lay {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.w4lw-card-back,
+.w4lw-card-skip {
+  flex: none;
+}
+.w4lw-card-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 6px;
+}
+.w4lw-card-order {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+/* in der schmalen Seitenleiste: „zurück“/„überspringen“ nur als Pfeil (Beschriftung als Tooltip/aria-label) */
+.w4lw-side .w4lw-card-btxt {
+  display: none;
+}
+
+/* Handy/Tablet hochkant: Karte klebt unten am Bildschirm (über der Schrittnavigation, siehe StepPlan), kompakt */
+.w4lw-card.compact {
+  position: sticky;
+  bottom: 0;
+  z-index: 14;
+  margin: 10px 0 0;
+  padding: 8px 12px 10px;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -6px 22px rgba(29, 42, 58, 0.2);
+}
+.w4lw-card.compact .w4lw-card-stone {
+  margin-top: 2px;
+}
+.w4lw-card.compact .w4lw-card-id {
+  font-size: 1.35rem;
+}
+.w4lw-card.compact .w4lw-card-cut {
+  max-height: 2.9em;
+  overflow: auto;
+  margin: 2px 0;
+  font-size: 0.82rem;
+}
+.w4lw-card.compact .w4lw-card-orderlbl {
+  display: none;
+}
+.w4lw-card.compact .w4lw-card-order {
+  margin-left: 0;
+}
+@media (max-width: 420px) {
+  .w4lw-card.compact .w4lw-card-btxt {
+    display: none;
+  }
+}
+
+/* ---- Material & Einkauf: volle Breite, am Desktop zwei Spalten */
+.w4lw-mc {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  grid-template-areas:
+    'a b'
+    'c b';
+  grid-template-rows: auto 1fr;
+  gap: 0 32px;
+  align-items: start;
+}
+.w4lw-mc-a {
+  grid-area: a;
+  min-width: 0;
+}
+.w4lw-mc-b {
+  grid-area: b;
+  min-width: 0;
+}
+.w4lw-mc-c {
+  grid-area: c;
+  min-width: 0;
+}
+.w4lw-mc-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 20px;
+}
+@media (max-width: 980px) {
+  .w4lw-mc {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'a'
+      'b'
+      'c';
+  }
+}
+@media (max-width: 600px) {
+  .w4lw-mc-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- Touch: fingergroß */
+@media (pointer: coarse) {
+  .w4lw-chip {
+    min-height: 44px;
+  }
+  .w4lw-secset > summary {
+    min-height: 44px;
+    line-height: 44px;
+  }
+}

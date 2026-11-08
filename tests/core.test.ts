@@ -247,18 +247,33 @@ describe('Stückzahlen und Flächen', () => {
     // manuell nachzählen
     let pieces = 0;
     let stone = 0;
+    let cellAreaSum = 0;
     for (let r = 0; r < L.rows; r++)
       for (let c = 0; c < L.cols; c++) {
         const ps = cellPieces(L, d, r, c);
         pieces += ps.length;
-        for (const p of ps) stone += area(p.poly);
+        const cellArea = L.colW[c] * L.rowH[r];
+        cellAreaSum += cellArea;
+        let inCell = 0;
+        for (const p of ps) inCell += area(p.poly);
+        // Steine einer Zelle liegen in der Zelle: ihre Fläche ist nie größer als die Zellfläche
+        expect(inCell).toBeLessThanOrEqual(cellArea + 1e-9);
+        stone += inCell;
       }
     expect(s.pieces).toBe(pieces);
     expect(s.perColor.reduce((a, c) => a + c.pieces, 0)).toBe(pieces);
     expect(Object.values(s.perShape).reduce((a, b) => a + b, 0)).toBe(pieces);
     expect(s.perSize.reduce((a, b) => a + b.count, 0)).toBe(pieces);
     expect(s.stoneArea).toBeCloseTo(stone, 6);
-    expect(s.stoneArea + s.jointArea).toBeCloseTo(203 * 151, 6);
+    // unabhängige Prüfung der Fugenfläche: mindestens die Fugen zwischen den Zellen …
+    expect(s.finishedArea).toBeCloseTo(203 * 151, 6);
+    expect(s.jointArea).toBeGreaterThanOrEqual(s.finishedArea - cellAreaSum - 1e-6);
+    // … und die Fugen zwischen den Zellen ergeben sich aus Fugenbreite und Rasterlinien
+    const g = L.joint;
+    const between = (L.cols - 1) * g * s.finishedH + (L.rows - 1) * g * s.finishedW - (L.cols - 1) * (L.rows - 1) * g * g;
+    expect(s.finishedArea - cellAreaSum).toBeCloseTo(between, 6);
+    // geteilte Zellen haben innere Fugen: die Fugenfläche ist echt größer als die Rasterfugen
+    expect(s.jointArea).toBeGreaterThan(between + 1);
     expect(s.gridPositions).toBe(L.cols * L.rows);
     for (const c of s.perColor) expect(c.rawWithReserve).toBeGreaterThanOrEqual(c.raw);
   });

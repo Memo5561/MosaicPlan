@@ -1,5 +1,12 @@
 export type PaperFormat = 'a4' | 'a3' | 'a2' | 'a1' | 'a0' | 'custom';
 
+/**
+ * Codeplan-Seiten (vergrößerte Seiten nur zum Nachschlagen der Farbnummern, gleicher Rasterbereich wie das Blatt):
+ * 'auto' = nur für Blätter, auf denen Steine ohne Farbnummer bleiben würden (zu klein für den Maßstab);
+ * 'always' = für jedes Blatt; 'off' = nie (das Blatt nennt dann die fehlenden Nummern).
+ */
+export type CodePlanMode = 'auto' | 'always' | 'off';
+
 export interface PdfOptions {
   format: PaperFormat;
   customW?: number;
@@ -16,6 +23,8 @@ export interface PdfOptions {
   includeTemplates: boolean;
   templateLimit: number;
   includeImages: boolean;
+  /** Codeplan-Seiten (Standard 'auto'); fehlt der Wert in älteren gespeicherten Optionen, gilt 'auto'. */
+  codePlan: CodePlanMode;
 }
 
 export const PAPER: Record<Exclude<PaperFormat, 'custom'>, [number, number]> = {
@@ -36,6 +45,7 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   includeTemplates: true,
   templateLimit: 400,
   includeImages: true,
+  codePlan: 'auto',
 };
 
 /** Seitengröße (Breite, Höhe) in mm für Format und Ausrichtung */
@@ -45,18 +55,34 @@ export function pageSize(opts: Pick<PdfOptions, 'format' | 'customW' | 'customH'
   return { PW: portrait ? Math.min(pw0, ph0) : Math.max(pw0, ph0), PH: portrait ? Math.max(pw0, ph0) : Math.min(pw0, ph0) };
 }
 
-/** Ränder eines Verlegeblatts in mm: Seitenrand und Platz für Kopf/Spaltennummern/Lineal, Zeilenbeschriftung, Fußzeile */
-export const SHEET_MARGIN = 10;
-export const SHEET_TOP_RESERVE = 19;
-export const SHEET_LEFT_RESERVE = 12;
-export const SHEET_BOTTOM_RESERVE = 21;
+/**
+ * Ränder eines Verlegeblatts in mm – EINE Quelle für PDF-Generator, Seitenplan und Seitenschätzung:
+ * M = Seitenrand (Kopf-/Fußzeile, Kontrollstrecke außerhalb des nicht bedruckbaren Druckerrands),
+ * top = Titel + Spaltennummern + Lineal, left = Zeilenbeschriftung + Lineal, bottom = Anschlussangaben,
+ * Passmarken-Hinweis, Kontrollstrecke und Seitenzahl. Rechts bleibt nur der Seitenrand (Anschlussbeschriftung).
+ */
+export const SHEET_RESERVES = { M: 10, top: 19, left: 12, bottom: 21 } as const;
+export const SHEET_MARGIN = SHEET_RESERVES.M;
+export const SHEET_TOP_RESERVE = SHEET_RESERVES.top;
+export const SHEET_LEFT_RESERVE = SHEET_RESERVES.left;
+export const SHEET_BOTTOM_RESERVE = SHEET_RESERVES.bottom;
 
 /** Bedruckbare Fläche eines Verlegeblatts (Mosaikbereich) in mm – von PDF und Seitenschätzung gemeinsam genutzt. */
 export function sheetPrintArea(PW: number, PH: number): { printW: number; printH: number } {
+  const R = SHEET_RESERVES;
   return {
-    printW: PW - SHEET_MARGIN - SHEET_LEFT_RESERVE - SHEET_MARGIN,
-    printH: PH - SHEET_MARGIN - SHEET_TOP_RESERVE - SHEET_BOTTOM_RESERVE,
+    printW: PW - R.M - R.left - R.M,
+    printH: PH - R.M - R.top - R.bottom,
   };
+}
+
+/**
+ * Seitengröße und bedruckbarer Mosaikbereich eines Verlegeblatts für die gewählten PDF-Optionen (mm).
+ * A4 hoch: 210 × 297 → 178 × 247 mm. Bei Maßstab s passt ein Mosaikbereich von printW/s × printH/s mm auf ein Blatt.
+ */
+export function printableArea(opts: Pick<PdfOptions, 'format' | 'customW' | 'customH' | 'orientation'>): { PW: number; PH: number; printW: number; printH: number } {
+  const { PW, PH } = pageSize(opts);
+  return { PW, PH, ...sheetPrintArea(PW, PH) };
 }
 
 /**

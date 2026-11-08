@@ -2,15 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState, type TextareaHTMLAttribut
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
 import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, removePaletteColor, resetAutoName, updatePaletteColor } from '../../core/edits';
-import type { ComputeDiagnostics } from '../../core/mosaic';
+import type { ComputeDiagnostics, MissingColor } from '../../core/mosaic';
 import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
-import type { Material, MosaicData, PaletteColor, PaletteMode } from '../../core/types';
+import { DEFAULT_SETTINGS, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import { computedDeltaE } from './staleReasons';
 import type { ProjectApi } from './useProject';
 import '../css/w1-mosaic-core.css';
 import '../css/w2-colour-honesty.css';
+import '../css/w3-colour-quality.css';
 
 export const COLOR_COUNTS = [8, 12, 16, 24, 32, 48, 64, 100, 150, 200];
 
@@ -58,7 +59,22 @@ export function colorCountNotice(d: ComputeDiagnostics | undefined, t: TFunc): {
     if (d.imageColors !== undefined && d.imageColors < req) parts.push(t('w2ch.count.fewerImage', { n: d.imageColors }));
     const noStones = (d.imageColors ?? req) - used;
     if (noStones > 0) parts.push(tCount(t, 'w2ch.count.noStones', noStones, { n: noStones }));
+  } else if (d.paletteMode === 'auto-snap' && d.poolColors !== undefined && !d.snapSelection?.fallback) {
+    // Auswahl direkt aus dem Bestand (w3-colour-quality): weniger Farben nur aus genannten Gründen
+    const merged = d.mergedColors ?? 0;
+    const selected = d.snapSelection?.selected ?? used;
+    if (used < req) {
+      parts.push(merged > 0 ? t('w2ch.count.snap', { req, used, merged }) : t('w2ch.count.auto', { req, used }));
+      if (d.poolColors < req) parts.push(tCount(t, 'w3cq.count.poolSmall', d.poolColors, { n: d.poolColors }));
+      else if (selected < req) parts.push(tCount(t, 'w3cq.count.noGain', selected, { n: selected }));
+      if (selected > used) parts.push(tCount(t, 'w2ch.count.noStones', selected - used, { n: selected - used }));
+      parts.push(t('w2ch.count.snapMore'));
+      warn = true;
+    } else parts.push(t('w2ch.count.auto', { req, used }));
+    const stock = d.snapSelection?.stockSwaps ?? 0;
+    if (stock > 0) parts.push(tCount(t, 'w3cq.count.stock', stock, { n: stock }));
   } else if (d.paletteMode === 'auto-snap') {
+    // ältere Ergebnisse bzw. Schutz gegriffen (Bildfarbe → nächstes Material)
     const merged = d.mergedColors ?? 0;
     parts.push(t('w2ch.count.snap', { req, used, merged }));
     const noStones = (d.imageColors ?? req) - merged - used;
@@ -77,7 +93,7 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
   const s = api.rec!.settings;
   const usesMaterials = s.paletteMode === 'materials' || s.paletteMode === 'auto-snap';
   const locked = api.paletteLocked;
-  const nonDefault = s.deltaE !== '2000' || s.dither > 0;
+  const nonDefault = s.deltaE !== DEFAULT_SETTINGS.deltaE || s.dither !== DEFAULT_SETTINGS.dither;
   // „Erweitert“ ist geöffnet, wenn dort etwas vom Standard abweicht – danach entscheidet der Benutzer
   const [advOpen, setAdvOpen] = useState(nonDefault);
   return (
@@ -89,7 +105,7 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
       )}
       {/* Während einer Berechnung gesperrt: das Ergebnis bestimmt, worauf die Farbindizes zeigen */}
       <fieldset className="w1fx-fieldset" disabled={locked}>
-        <Field label={t('colors.mode')} hint={t(`colors.mode.${s.paletteMode}.hint`)}>
+        <Field label={t('colors.mode')} hint={s.paletteMode === 'auto-snap' ? t('w3cq.mode.autoSnapHint') : t(`colors.mode.${s.paletteMode}.hint`)}>
           <Segmented
             value={s.paletteMode}
             testId="palette-mode"
@@ -161,7 +177,7 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
           </div>
           <div>
             <Slider label={t('colors.dither')} value={Math.round(s.dither * 100)} min={0} max={100} onChange={(v) => api.setSettings({ dither: v / 100 })} format={(v) => `${v} %`} />
-            <small className="muted">{t('colors.ditherHint')}</small>
+            <small className="muted" data-testid="dither-hint">{t('w3cq.ditherHint')}</small>
           </div>
         </div>
       </details>
@@ -398,6 +414,15 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
         <p className={`w2ch-counts ${counts.warn ? 'warn-box' : ''}`} data-testid="palette-counts">
           {counts.text}
         </p>
+      )}
+      {api.computed && (
+        <MissingColorsPanel
+          d={rec.diagnostics}
+          materials={materials}
+          formula={resultDE}
+          stale={api.stale}
+          totalPieces={statsOk ? stats.pieces : palette.every((p) => p.matchDeltaE) ? palette.reduce((s, p) => s + p.matchDeltaE!.pieces, 0) : undefined}
+        />
       )}
       {notice && (
         <div className="w1mc-notice" role="status" data-testid="palette-notice">
@@ -728,5 +753,118 @@ function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: Merg
         )}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * „Fehlende Farben – Farbton zum Nachkaufen (Zielwert)“ (Modi mit eigenen Materialien): typische Fotofarben, die kein
+ * angebotenes Material auf ΔE ≤ 5 trifft – als Zielfarbton (HEX, L*a*b*) mit exakter Steinzahl und dem ähnlichsten
+ * eigenen Material. Nennt nie ein Produkt. Stand der Berechnung (ältere Ergebnisse haben keine Liste → nichts).
+ */
+export function MissingColorsPanel({
+  d,
+  materials,
+  formula,
+  stale,
+  totalPieces,
+}: {
+  d: ComputeDiagnostics | undefined;
+  materials: Material[];
+  formula: '2000' | '76' | null;
+  stale: boolean;
+  totalPieces?: number;
+}) {
+  const { t, n, lang } = useI18n();
+  const [open, setOpen] = useState(false);
+  // ΔE und L*a*b* immer mit genau einer Nachkommastelle („6,0“ neben „5,9“, nicht „6“)
+  const locale = lang === 'de' ? 'de-DE' : lang === 'tr' ? 'tr-TR' : 'en-GB';
+  const f1 = (v: number) => (Number.isFinite(v) ? v.toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '–');
+  if (!d || !d.missingColors || (d.paletteMode !== 'auto-snap' && d.paletteMode !== 'materials')) return null;
+  const list: MissingColor[] = d.missingColors;
+  const de = formula === '76' ? 'ΔE76' : formula === '2000' ? 'ΔE00' : 'ΔE';
+  const thr = f1(d.missingThreshold ?? 5);
+  if (!list.length) {
+    return (
+      <p className="w3cq-missing-none" data-testid="missing-none">
+        {t('w3cq.missing.none', { n: d.missingChecked ?? 0, de, thr })}
+        {stale && <span className="muted"> {t('w3cq.missing.stale')}</span>}
+      </p>
+    );
+  }
+  const stones = list.reduce((s, m) => s + m.stones, 0);
+  const pctV = totalPieces ? Math.min(100, (stones / totalPieces) * 100) : null;
+  const pct = pctV === null ? '' : t('w3cq.missing.pct', { pct: pctV > 0 && pctV < 0.1 ? `< ${n(0.1, 1)}` : n(pctV, 1) });
+  const matById = new Map(materials.map((m) => [m.id, m]));
+  return (
+    <details className="w3cq-missing" data-testid="missing-colors" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary>
+        <span className="w3cq-missing-title">{t('w3cq.missing.title')}</span>
+        <span className="w3cq-missing-sum" data-testid="missing-summary">
+          {tCount(t, 'w3cq.missing.summary', list.length, { n: list.length, stones: n(stones), pct })}
+        </span>
+      </summary>
+      <p className="muted small">{t('w3cq.missing.intro', { de, thr, checked: d.missingChecked ?? list.length })}</p>
+      {stale && <p className="muted small">{t('w3cq.missing.stale')}</p>}
+      <div className="table-wrap">
+        <table className="data w3cq-missing-table" data-testid="missing-table">
+          <thead>
+            <tr>
+              <th>{t('w3cq.missing.col.target')}</th>
+              <th className="num">{t('w3cq.missing.col.stones')}</th>
+              <th>{t('w3cq.missing.col.nearest')}</th>
+              <th className="num w3cq-got-col">{t('w3cq.missing.col.got')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((m, i) => {
+              const mat = m.nearestMaterialId ? matById.get(m.nearestMaterialId) : undefined;
+              const gone = !!m.nearestMaterialId && !mat;
+              const matName = mat ? [mat.manufacturer, mat.colorNumber, mat.colorName].filter(Boolean).join(' ') : m.nearestName;
+              const got = t('w3cq.missing.got', { de, v: f1(m.assignedDeltaE) });
+              return (
+                <tr key={`${m.hex}-${i}`} data-testid="missing-row">
+                  <td data-col="target">
+                    <span className="w3cq-target">
+                      <Swatch hex={m.hex} size={22} />
+                      <span>
+                        <b className="mono">{m.hex}</b>
+                        <small className="mono muted w3cq-lab">
+                          L {f1(m.lab[0])} a {f1(m.lab[1])} b {f1(m.lab[2])}
+                        </small>
+                      </span>
+                    </span>
+                  </td>
+                  <td className="num" data-col="stones">
+                    {n(m.stones)}
+                    <small className="muted w3cq-stones-label"> {t('w3cq.missing.col.stones')}</small>
+                  </td>
+                  <td data-col="nearest">
+                    <span className="w3cq-near">
+                      <Swatch hex={isValidHex(m.nearestHex) ? m.nearestHex : '#000'} size={16} />
+                      <span>
+                        {matName}
+                        {gone && <small className="muted"> ({t('w3cq.missing.materialGone')})</small>}
+                        <small className="w3cq-de">
+                          {' '}
+                          · {de} {f1(m.deltaE)}
+                        </small>
+                        {/* Handy: „Erhalten“ als zweite Zeile statt eigener Spalte */}
+                        <small className="muted w3cq-got-inline">
+                          {t('w3cq.missing.col.got')}: {got}
+                        </small>
+                      </span>
+                    </span>
+                  </td>
+                  <td className="num small w3cq-got-col" data-col="got">
+                    {got}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">{t('w3cq.missing.stonesHint')}</p>
+    </details>
   );
 }

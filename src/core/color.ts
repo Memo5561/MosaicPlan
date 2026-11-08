@@ -185,6 +185,21 @@ export const MATCHER_BRUTE_FORCE_MAX = 16;
 /** Kandidaten aus der CIE94-artigen Vorauswahl bei größeren Paletten. */
 export const MATCHER_PREFILTER_K = 12;
 /**
+ * Farbmischung (Dithering, siehe mosaic.ts): Ein Stein darf statt der nächsten Palettenfarbe nur eine Farbe erhalten,
+ * die seiner eigenen (unvermischten) Bildfarbe höchstens um diesen Wert (ΔE der Projektformel) ferner liegt – so
+ * entstehen weichere Verläufe aus ähnlichen Tönen, aber keine fremden Farbtupfer (Orange in der Wange, Schwarz im Haar).
+ */
+export const DITHER_TOLERANCE = 3;
+/** Höchstens so viele Kandidaten je Bildfarbe (die nächsten innerhalb der Toleranz) */
+export const DITHER_CANDIDATES_MAX = 6;
+
+/** Kandidaten der Farbmischung: Palettenindizes und ihr ΔE zur Bildfarbe, aufsteigend (Index 0 = nächste Farbe). */
+export interface ColorCandidates {
+  idx: Int32Array;
+  d: Float64Array;
+}
+
+/**
  * Faktor der unteren Schranke für den Buntheitsteil von CIEDE2000 (siehe nearestExact):
  * 1 − max|R_T|/2 = 1 − sin(60°) ≈ 0,134, mit Sicherheitsabstand abgerundet.
  */
@@ -217,6 +232,16 @@ export class NearestColorMatcher {
   /** C* je Palettenfarbe (für Vorauswahl und Schranke) */
   private readonly C: Float64Array;
   private readonly cache = new Map<number, number>();
+  /**
+   * Zwischenspeicher der Kandidaten (gleicher Schlüssel wie nearest(), je Toleranz), kompakt als [i0…, d0…] – ein
+   * großes Foto hat Hunderttausende verschiedene Steinfarben.
+   */
+  private readonly candCache = new Map<number, number[]>();
+  /** wiederverwendete Rückgabeobjekte je Kandidatenzahl (candidates() erzeugt keinen Müll je Stein) */
+  private readonly candOut: ColorCandidates[] = Array.from({ length: DITHER_CANDIDATES_MAX + 1 }, (_, n) => ({ idx: new Int32Array(n), d: new Float64Array(n) }));
+  private candT = NaN;
+  /** ΔE der zuletzt von nearestExact gefundenen Farbe */
+  private lastD = 0;
   /** Indizes der erlaubten Farben */
   private readonly idx: Int32Array;
   // Arbeitsspeicher je Abfrage (nicht reentrant – JS ist einfädig)
@@ -248,12 +273,17 @@ export class NearestColorMatcher {
     this.stamp = new Int32Array(n);
   }
 
-  /** Index der nächsten (erlaubten) Palettenfarbe, mit Zwischenspeicher (siehe Klassenbeschreibung). */
-  nearest(l: number, a: number, b: number): number {
+  /** Schlüssel des Zwischenspeichers: L auf dem Raster der gespeicherten Steinfarben, a/b auf 0,5. */
+  private static key(l: number, a: number, b: number): number {
     const kl = Math.round(l * 2.55);
     const ka = Math.round(a * 2) + 512;
     const kb = Math.round(b * 2) + 512;
-    const key = (kl * 1024 + ka) * 1024 + kb;
+    return (kl * 1024 + ka) * 1024 + kb;
+  }
+
+  /** Index der nächsten (erlaubten) Palettenfarbe, mit Zwischenspeicher (siehe Klassenbeschreibung). */
+  nearest(l: number, a: number, b: number): number {
+    const key = NearestColorMatcher.key(l, a, b);
     const hit = this.cache.get(key);
     if (hit !== undefined) return hit;
     const res = this.nearestExact(l, a, b);
@@ -280,6 +310,7 @@ export class NearestColorMatcher {
           best = i;
         }
       }
+      this.lastD = Math.sqrt(bd);
       return best;
     }
     if (m <= MATCHER_BRUTE_FORCE_MAX) {
@@ -293,6 +324,7 @@ export class NearestColorMatcher {
           best = i;
         }
       }
+      this.lastD = bd;
       return best;
     }
     // 1. Vorauswahl (symmetrischer CIE94-artiger Abstand) und untere Schranke von CIEDE2000 je Farbe
@@ -357,7 +389,85 @@ export class NearestColorMatcher {
       this.query = 0;
       stamp.fill(0);
     }
+    this.lastD = bestD;
     return bestI;
+  }
+
+  /**
+   * Kandidaten der Farbmischung für die (unvermischte) Bildfarbe (l, a, b): die nächste erlaubte Farbe und jede
+   * weitere, deren ΔE höchstens um `T` über dem der nächsten liegt – aufsteigend nach ΔE (bei Gleichstand die
+   * niedrigere Position), höchstens DITHER_CANDIDATES_MAX. Exakt (dieselbe Formel und dieselbe untere Schranke wie
+   * nearestExact, keine Vorauswahl, die eine Farbe übersehen könnte). Zwischengespeichert mit dem Schlüssel von
+   * nearest(): für ganze Steine (Farben auf dem gespeicherten Raster) also exakt.
+   * Das zurückgegebene Objekt wird wiederverwendet: gültig bis zum nächsten Aufruf.
+   */
+  candidates(l: number, a: number, b: number, T = DITHER_TOLERANCE): ColorCandidates {
+    if (T !== this.candT) {
+      this.candCache.clear();
+      this.candT = T;
+    }
+    const key = NearestColorMatcher.key(l, a, b);
+    let packed = this.candCache.get(key);
+    if (!packed) {
+      const res = this.candidatesExact(l, a, b, T);
+      packed = [...res.idx, ...res.d];
+      if (this.candCache.size >= 500_000) this.candCache.clear();
+      this.candCache.set(key, packed);
+    }
+    const n = packed.length >> 1;
+    const out = this.candOut[n];
+    for (let q = 0; q < n; q++) {
+      out.idx[q] = packed[q];
+      out.d[q] = packed[n + q];
+    }
+    return out;
+  }
+
+  /** Wie candidates(), ohne Zwischenspeicher. */
+  candidatesExact(l: number, a: number, b: number, T = DITHER_TOLERANCE): ColorCandidates {
+    const best = this.nearestExact(l, a, b);
+    const dBest = this.lastD;
+    const lim = dBest + Math.max(0, T);
+    const lim2 = lim * lim * (1 + 1e-9) + 1e-12;
+    const ci: number[] = [best];
+    const cd: number[] = [dBest];
+    const idx = this.idx;
+    const cq = Math.sqrt(a * a + b * b);
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k];
+      if (i === best) continue;
+      const dl = l - this.L[i];
+      const da = a - this.A[i];
+      const db = b - this.B[i];
+      let d: number;
+      if (this.formula === '76') {
+        const d2 = dl * dl + da * da + db * db;
+        if (d2 > lim2) continue;
+        d = Math.sqrt(d2);
+      } else {
+        // untere Schranke von CIEDE2000 (siehe Klassenbeschreibung) – spart die meisten exakten Vergleiche
+        const cbar = (cq + this.C[i]) / 2;
+        const lm = ((l + this.L[i]) / 2 - 50) ** 2;
+        const sl = 1 + (0.015 * lm) / Math.sqrt(20 + lm);
+        const scMax = 1 + 0.0675 * cbar;
+        if ((dl * dl) / (sl * sl) + (LB_CHROMA * (da * da + db * db)) / (scMax * scMax) > lim2) continue;
+        d = deltaE2000(l, a, b, this.L[i], this.A[i], this.B[i]);
+      }
+      if (d <= lim) {
+        ci.push(i);
+        cd.push(d);
+      }
+    }
+    const order = ci.map((_, q) => q);
+    // nächste Farbe bleibt vorn (auch bei Gleichstand); übrige nach ΔE, dann Position
+    order.sort((p, q) => (p === q ? 0 : p === 0 ? -1 : q === 0 ? 1 : cd[p] - cd[q] || ci[p] - ci[q]));
+    const n = Math.min(DITHER_CANDIDATES_MAX, order.length);
+    const out: ColorCandidates = { idx: new Int32Array(n), d: new Float64Array(n) };
+    for (let q = 0; q < n; q++) {
+      out.idx[q] = ci[order[q]];
+      out.d[q] = cd[order[q]];
+    }
+    return out;
   }
 }
 

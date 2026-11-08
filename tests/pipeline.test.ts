@@ -169,6 +169,34 @@ describe.each(CASES)('Testprojekt $name', (c) => {
   }
 });
 
+describe('Farbmischung (Dithering) ändert weder Geometrie noch Stückzahlen', () => {
+  it('Porträt: Mischung 0 % und 100 % – gleiche Zellarten, Steine, Rasterpositionen und Summe je Farbe', () => {
+    const c = CASES[0];
+    const layout = computeLayout(c.lp);
+    const img = applyAdjustments(prepareFor(loadPng(c.file), layout), { ...DEFAULT_ADJUST, sharpen: 20 }, c.regions ?? []);
+    const run = (dither: number) =>
+      computeMosaic(img, { layout, shapes: { ...DEFAULT_SHAPES }, paletteMode: 'auto', colorCount: c.colors, dither, deltaE: '2000', regions: c.regions ?? [], seed: 7 });
+    const a = run(0);
+    const b = run(1);
+    expect(Array.from(b.data.kind)).toEqual(Array.from(a.data.kind));
+    expect(Array.from(b.data.rec)).toEqual(Array.from(a.data.rec));
+    const sa = computeStats(layout, a.data, a.palette, [], { reservePct: 10, groutDepthMm: 3 });
+    const sb = computeStats(layout, b.data, b.palette, [], { reservePct: 10, groutDepthMm: 3 });
+    expect(sb.pieces).toBe(sa.pieces);
+    expect(sb.gridPositions).toBe(sa.gridPositions);
+    expect(sb.perColor.reduce((s, x) => s + x.pieces, 0)).toBe(sb.pieces);
+    expect(sa.perColor.reduce((s, x) => s + x.pieces, 0)).toBe(sa.pieces);
+    expect(sb.stoneArea).toBeCloseTo(sa.stoneArea, 6);
+    // die Mischung hat tatsächlich etwas verändert – aber nur Farben ganzer Steine
+    let changed = 0;
+    for (let i = 0; i < a.data.kind.length; i++) {
+      if (a.data.kind[i] !== CellKind.FULL) continue;
+      if (a.palette[a.data.c1[i]].hex !== b.palette[b.data.c1[i]].hex) changed++;
+    }
+    expect(changed).toBeGreaterThan(0);
+  });
+});
+
 describe('Großformat', () => {
   it('200 × 100 cm, 5 mm, 1 mm Fuge mit Formen: 55.778 Positionen', () => {
     const layout = computeLayout({ widthMm: 2000, heightMm: 1000, tileW: 5, tileH: 5, joint: 1, edgeMode: 'cut-end', minCutMm: 2 });

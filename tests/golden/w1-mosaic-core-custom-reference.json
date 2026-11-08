@@ -1,5 +1,5 @@
 {
- "_info": "Referenz der ALTEN Implementierung (mosaic.ts vor w1-mosaic-core, Stand 9abf68b) im Modus „Eigene Palette“, Porträt, Seed 7: Stückzahlen je HEX – erzeugt mit dem übrigen Rechenkern des jeweiligen Stands (Schnittregeln nach w1-cut-correctness, exakter Farbzuordner nach w2-colour-honesty). Die alte Version hat unbenutzte Farben entfernt und nach Helligkeit neu nummeriert; die Zuordnung der Steine war aber dieselbe. Die neue Version muss je HEX dieselben Stückzahlen liefern. Nur bewusst und nur mit der alten mosaic.ts (Stand vor w1-mosaic-core) neu erzeugen, z. B. nach geänderten Schnittregeln in pieces.ts oder einem geänderten Farbzuordner in color.ts.",
+ "_info": "Referenz der ALTEN Implementierung (mosaic.ts vor w1-mosaic-core, Stand 9abf68b) im Modus „Eigene Palette“, Porträt, Seed 7: Stückzahlen je HEX – erzeugt mit dem übrigen Rechenkern des jeweiligen Stands (Schnittregeln nach w1-cut-correctness, exakter Farbzuordner nach w2-colour-honesty, Farbmischung auf ähnliche Farben beschränkt nach w3-colour-quality – in der alten mosaic.ts gleich nachgebildet). Die alte Version hat unbenutzte Farben entfernt und nach Helligkeit neu nummeriert; die Zuordnung der Steine war aber dieselbe. Die neue Version muss je HEX dieselben Stückzahlen liefern. Nur bewusst und nur mit der alten mosaic.ts (Stand vor w1-mosaic-core) neu erzeugen, z. B. nach geänderten Schnittregeln in pieces.ts, einem geänderten Farbzuordner in color.ts oder einer geänderten Farbmischung (dann in der alten mosaic.ts gleich nachbilden).",
  "custom8/dither0": {
   "oldPalette": [
    "01=Weiß #F4F1EA",
@@ -33,13 +33,13 @@
   ],
   "totalPieces": 6030,
   "perHex": {
-   "#F4F1EA": 46,
-   "#E8B494": 946,
-   "#7FA0BA": 2247,
-   "#A02432": 670,
-   "#2E4A62": 1168,
-   "#4E2C1C": 886,
-   "#1E1A18": 67
+   "#F4F1EA": 37,
+   "#E8B494": 964,
+   "#7FA0BA": 2264,
+   "#A02432": 695,
+   "#2E4A62": 1158,
+   "#4E2C1C": 870,
+   "#1E1A18": 42
   }
  },
  "materials12/dither0": {
@@ -91,16 +91,16 @@
   "totalPieces": 6030,
   "perHex": {
    "#F7F4EE": 32,
-   "#F0C8A8": 373,
-   "#9BBDD3": 827,
-   "#D2946E": 605,
-   "#5F7F99": 2151,
-   "#A52A36": 319,
+   "#F0C8A8": 382,
+   "#9BBDD3": 878,
+   "#D2946E": 596,
+   "#5F7F99": 2150,
+   "#A52A36": 305,
    "#2F5A44": 22,
-   "#2C4258": 429,
-   "#5A341F": 413,
-   "#6A1420": 483,
-   "#33190F": 370,
+   "#2C4258": 379,
+   "#5A341F": 428,
+   "#6A1420": 497,
+   "#33190F": 355,
    "#141414": 6
   }
  }

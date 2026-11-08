@@ -170,6 +170,8 @@ export interface ProjectSettings {
   surface: 'glass' | 'ceramic';
   /** Fugentiefe in mm für die Fugenmassen-Schätzung */
   groutDepthMm: number;
+  /** Vom Benutzer bestätigte Akzentfarben, die in die Palette sollen. Vertrag für Welle 4 – noch ungenutzt. */
+  pinnedColors?: { hex: string; name?: string }[];
 }
 
 export interface ProjectMeta {
@@ -236,7 +238,9 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   minCutMm: 2,
   paletteMode: 'auto',
   colorCount: 24,
-  dither: 0,
+  // Farbübergänge mischen: nur ähnliche Farbtöne (siehe DITHER_TOLERANCE in color.ts) – weichere Verläufe ohne
+  // fremde Farbtupfer, dafür mehr Farbwechsel beim Legen. Gilt nur für neue Projekte (gespeicherte behalten ihren Wert).
+  dither: 0.5,
   deltaE: '2000',
   materialIds: [],
   shapes: { ...DEFAULT_SHAPES },

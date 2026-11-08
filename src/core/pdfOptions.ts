@@ -5,7 +5,10 @@ export interface PdfOptions {
   customW?: number;
   customH?: number;
   orientation: 'portrait' | 'landscape';
-  /** Papier-mm je Mosaik-mm: 1 = 1:1, 2 = 2:1 (vergrößert), 0 = je Abschnitt an Seite anpassen */
+  /**
+   * Papier-mm je Mosaik-mm: 1 = 1:1, 2 = 2:1 (vergrößert), 0 = an Seite anpassen – dann gilt EIN
+   * Normmaßstab für alle Abschnitte des Projekts (fitSheetScale), damit Passkreuze benachbarter Blätter passen.
+   */
   sheetScale: number;
   sectionIds: string[] | null;
   includeCoords: boolean;
@@ -35,3 +38,64 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   includeImages: true,
 };
 
+/** Seitengröße (Breite, Höhe) in mm für Format und Ausrichtung */
+export function pageSize(opts: Pick<PdfOptions, 'format' | 'customW' | 'customH' | 'orientation'>): { PW: number; PH: number } {
+  const [pw0, ph0] = opts.format === 'custom' ? [opts.customW ?? 210, opts.customH ?? 297] : PAPER[opts.format];
+  const portrait = opts.orientation === 'portrait';
+  return { PW: portrait ? Math.min(pw0, ph0) : Math.max(pw0, ph0), PH: portrait ? Math.max(pw0, ph0) : Math.min(pw0, ph0) };
+}
+
+/** Ränder eines Verlegeblatts in mm: Seitenrand und Platz für Kopf/Spaltennummern/Lineal, Zeilenbeschriftung, Fußzeile */
+export const SHEET_MARGIN = 10;
+export const SHEET_TOP_RESERVE = 19;
+export const SHEET_LEFT_RESERVE = 12;
+export const SHEET_BOTTOM_RESERVE = 21;
+
+/** Bedruckbare Fläche eines Verlegeblatts (Mosaikbereich) in mm – von PDF und Seitenschätzung gemeinsam genutzt. */
+export function sheetPrintArea(PW: number, PH: number): { printW: number; printH: number } {
+  return {
+    printW: PW - SHEET_MARGIN - SHEET_LEFT_RESERVE - SHEET_MARGIN,
+    printH: PH - SHEET_MARGIN - SHEET_TOP_RESERVE - SHEET_BOTTOM_RESERVE,
+  };
+}
+
+/**
+ * Normmaßstäbe für „an Seite anpassen“ (Papier-mm je Mosaik-mm), absteigend:
+ * 4:1, 3:1, 2:1, 1:1, 1:1,25, 1:1,5, 1:2, 1:2,5, 1:3, 1:4, 1:5 … 1:100.
+ */
+export const FIT_SCALE_DENOMINATORS = [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12.5, 15, 20, 25, 30, 40, 50, 60, 75, 100];
+export const STANDARD_SCALES: number[] = [4, 3, 2, ...FIT_SCALE_DENOMINATORS.map((d) => 1 / d)];
+
+/**
+ * Ein gemeinsamer Maßstab für „an Seite anpassen“: das Minimum über ALLE Abschnitte des Projekts von
+ * min(printW / w, printH / h), abgerundet auf den nächstkleineren Normmaßstab. Damit hat jedes Blatt –
+ * auch bei getrennt exportierten Abschnitten – denselben Maßstab, jeder Abschnitt passt auf genau ein Blatt
+ * und die Passkreuze benachbarter Blätter liegen deckungsgleich. Unterhalb von 1:100: 1:⌈1/raw⌉.
+ */
+export function fitSheetScale(sections: readonly { w: number; h: number }[], printW: number, printH: number): number {
+  let raw = Infinity;
+  for (const s of sections) {
+    if (!(s.w > 0) || !(s.h > 0)) continue;
+    const v = Math.min(printW / s.w, printH / s.h);
+    if (v < raw) raw = v;
+  }
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  for (const s of STANDARD_SCALES) if (s <= raw + 1e-9) return s;
+  return 1 / Math.ceil(1 / raw - 1e-9);
+}
+
+/** Wirksamer Maßstab der Verlegeblätter: fester Maßstab oder gemeinsamer Anpassungsmaßstab. */
+export function effectiveSheetScale(opts: Pick<PdfOptions, 'sheetScale'>, sections: readonly { w: number; h: number }[], printW: number, printH: number): number {
+  return opts.sheetScale > 0 ? opts.sheetScale : fitSheetScale(sections, printW, printH);
+}
+
+/** Maßstab in üblicher Schreibweise: 2:1, 1:1, 1:1,5 (Dezimalkomma außer Englisch). */
+export function fmtScale(s: number, locale: 'de' | 'en' | 'tr' = 'de'): string {
+  const f = (v: number) => {
+    const r = Math.round(v * 100) / 100;
+    const str = String(r);
+    return locale === 'en' ? str : str.replace('.', ',');
+  };
+  if (!(s > 0)) return '–';
+  return s >= 1 - 1e-9 ? `${f(s)}:1` : `1:${f(1 / s)}`;
+}

@@ -1,0 +1,107 @@
+{
+ "_info": "Referenz der ALTEN Implementierung (vor w1-mosaic-core) im Modus „Eigene Palette“, Porträt, Seed 7: Stückzahlen je HEX. Die alte Version hat unbenutzte Farben entfernt und nach Helligkeit neu nummeriert; die Zuordnung der Steine war aber dieselbe. Die neue Version muss je HEX dieselben Stückzahlen liefern. Nicht neu erzeugen.",
+ "custom8/dither0": {
+  "oldPalette": [
+   "01=Weiß #F4F1EA",
+   "02=Haut #E8B494",
+   "03=Blaugrau #7FA0BA",
+   "04=Rot #A02432",
+   "05=Dunkelblau #2E4A62",
+   "06=Braun #4E2C1C",
+   "07=Schwarz #1E1A18"
+  ],
+  "totalPieces": 5972,
+  "perHex": {
+   "#F4F1EA": 38,
+   "#E8B494": 939,
+   "#7FA0BA": 2294,
+   "#A02432": 754,
+   "#2E4A62": 1106,
+   "#4E2C1C": 822,
+   "#1E1A18": 19
+  }
+ },
+ "custom8/dither0.6": {
+  "oldPalette": [
+   "01=Weiß #F4F1EA",
+   "02=Haut #E8B494",
+   "03=Blaugrau #7FA0BA",
+   "04=Rot #A02432",
+   "05=Dunkelblau #2E4A62",
+   "06=Braun #4E2C1C",
+   "07=Schwarz #1E1A18"
+  ],
+  "totalPieces": 5972,
+  "perHex": {
+   "#F4F1EA": 47,
+   "#E8B494": 922,
+   "#7FA0BA": 2239,
+   "#A02432": 661,
+   "#2E4A62": 1154,
+   "#4E2C1C": 885,
+   "#1E1A18": 64
+  }
+ },
+ "materials12/dither0": {
+  "oldPalette": [
+   "01=Weiß #F7F4EE",
+   "02=Haut hell #F0C8A8",
+   "03=Hellblau #9BBDD3",
+   "04=Haut dunkel #D2946E",
+   "05=Mittelblau #5F7F99",
+   "06=Rot #A52A36",
+   "07=Grün #2F5A44",
+   "08=Dunkelblau #2C4258",
+   "09=Braun #5A341F",
+   "10=Dunkelrot #6A1420",
+   "11=Dunkelbraun #33190F",
+   "12=Schwarz #141414"
+  ],
+  "totalPieces": 5972,
+  "perHex": {
+   "#F7F4EE": 31,
+   "#F0C8A8": 387,
+   "#9BBDD3": 913,
+   "#D2946E": 564,
+   "#5F7F99": 2122,
+   "#A52A36": 294,
+   "#2F5A44": 14,
+   "#2C4258": 355,
+   "#5A341F": 452,
+   "#6A1420": 501,
+   "#33190F": 330,
+   "#141414": 9
+  }
+ },
+ "materials12/dither0.6": {
+  "oldPalette": [
+   "01=Weiß #F7F4EE",
+   "02=Haut hell #F0C8A8",
+   "03=Hellblau #9BBDD3",
+   "04=Haut dunkel #D2946E",
+   "05=Mittelblau #5F7F99",
+   "06=Rot #A52A36",
+   "07=Grün #2F5A44",
+   "08=Dunkelblau #2C4258",
+   "09=Braun #5A341F",
+   "10=Dunkelrot #6A1420",
+   "11=Dunkelbraun #33190F",
+   "12=Schwarz #141414"
+  ],
+  "totalPieces": 5972,
+  "perHex": {
+   "#F7F4EE": 31,
+   "#F0C8A8": 362,
+   "#9BBDD3": 824,
+   "#D2946E": 589,
+   "#5F7F99": 2140,
+   "#A52A36": 310,
+   "#2F5A44": 14,
+   "#2C4258": 426,
+   "#5A341F": 423,
+   "#6A1420": 485,
+   "#33190F": 359,
+   "#141414": 9
+  }
+ }
+}

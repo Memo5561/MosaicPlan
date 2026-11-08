@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { addPaletteColor, removePaletteColor, updatePaletteColor } from '../../core/edits';
-import type { Material, PaletteColor } from '../../core/types';
+import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
+import type { Material, MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
-import { Badge, Field, NumberInput, Segmented, Slider, Swatch } from '../components';
+import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import type { ProjectApi } from './useProject';
+import '../css/w1-mosaic-core.css';
 
 export const COLOR_COUNTS = [8, 12, 16, 24, 32, 48, 64, 100, 150, 200];
 
@@ -96,23 +98,118 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
   );
 }
 
+const codeStr = (c: number) => String(c).padStart(2, '0');
+
+/** Farbfeld + Nummer + Name, z. B. „■ 09 Hellblau“. */
+function ColorChip({ code, hex, name }: { code: number; hex: string; name: string }) {
+  return (
+    <span className="w1mc-chip">
+      <Swatch hex={hex} size={16} />
+      <b>{codeStr(code)}</b>
+      <span>{name}</span>
+    </span>
+  );
+}
+
+/** Zustand, auf den sich ein geöffneter Dialog bezieht – ändert er sich, wird nicht blind angewendet. */
+interface Snapshot {
+  palette: PaletteColor[];
+  data: MosaicData | null;
+  version: number;
+}
+
+type MergeDialog = { kind: 'merge'; plan: MaterialMergePlan; snap: Snapshot } | { kind: 'replace'; next: PaletteColor[]; snap: Snapshot };
+
 export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: Material[] }) {
   const { t, n, lang } = useI18n();
   const rec = api.rec!;
   const palette = rec.palette;
+  const formula = rec.settings.deltaE;
   const [newHex, setNewHex] = useState('#3366CC');
+  const [removing, setRemoving] = useState<{ plan: RemovalPlan; target: number; snap: Snapshot } | null>(null);
+  const [merging, setMerging] = useState<MergeDialog | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const stats = api.stats;
+  // Statistik passt nur zur Palette, wenn sie für genau diese Farben berechnet wurde
+  const statsOk = !!stats && stats.perColor.length === palette.length;
+  const usedCount = statsOk ? stats.perColor.filter((c) => c.pieces > 0).length : null;
   const custom = rec.settings.paletteMode === 'custom';
   const editable = custom || !!api.computed;
   const matById = new Map(materials.map((m) => [m.id, m]));
 
-  const remove = (i: number) => {
+  const snapNow = (): Snapshot => ({ palette, data: api.computed?.data ?? null, version: api.version });
+  const unchangedSince = (s: Snapshot) => s.palette === palette && s.data === (api.computed?.data ?? null) && s.version === api.version;
+
+  // ---------- Farbe entfernen: erst Dialog (betroffene Steine, Ersatzfarbe wählbar), dann ausführen
+  const askRemove = (i: number) => {
     if (palette.length <= 1) return;
+    setNotice(null);
+    const plan = planColorRemoval(palette, api.computed?.data ?? null, i, formula);
+    setRemoving({ plan, target: plan.options[0].index, snap: snapNow() });
+  };
+
+  const doRemove = () => {
+    if (!removing) return;
+    if (!unchangedSince(removing.snap)) {
+      setRemoving(null);
+      setNotice(t('colors.rm.changed'));
+      return;
+    }
+    const { plan, target } = removing;
+    const p = palette[plan.index];
+    const tp = palette[target];
     if (api.computed) {
-      const next = removePaletteColor(palette, api.computed.data, i, undefined, rec.settings.deltaE);
+      const next = removePaletteColor(palette, api.computed.data, plan.index, target, formula);
       api.setPalette(next);
       api.touchMosaic();
-    } else api.setPalette(palette.filter((_, k) => k !== i));
+    } else api.setPalette(palette.filter((_, k) => k !== plan.index));
+    setNotice(
+      api.computed && plan.pieces > 0
+        ? t('colors.rm.done', { code: codeStr(p.code), n: n(plan.pieces), target: `${codeStr(tp.code)} ${tp.name}` })
+        : t('colors.rm.doneNoStones', { code: codeStr(p.code) }),
+    );
+    setRemoving(null);
+  };
+
+  // ---------- Palette aus Materialien: nach einer Berechnung zusammenführen (Indizes/Nummern bleiben), sonst ersetzen
+  const openMerge = () => {
+    setNotice(null);
+    if (api.computed) {
+      setMerging({ kind: 'merge', plan: planMaterialMerge(palette, api.computed.data, materials, formula, lang), snap: snapNow() });
+      return;
+    }
+    let p: PaletteColor[] = [];
+    for (const m of materials) if (isValidHex(m.hex)) p = addPaletteColor(p, m.hex, m.colorName || m.colorNumber, lang, m.id);
+    if (!p.length) {
+      setNotice(t('colors.merge.noValid'));
+      return;
+    }
+    if (palette.length === 0) {
+      api.setPalette(p);
+      setNotice(t('colors.merge.replaced', { n: p.length }));
+      return;
+    }
+    setMerging({ kind: 'replace', next: p, snap: snapNow() });
+  };
+
+  const applyMerge = () => {
+    if (!merging) return;
+    if (!unchangedSince(merging.snap)) {
+      setMerging(null);
+      setNotice(t('colors.rm.changed'));
+      return;
+    }
+    if (merging.kind === 'replace') {
+      api.setPalette(merging.next);
+      setNotice(t('colors.merge.replaced', { n: merging.next.length }));
+    } else if (api.computed && !merging.plan.unchanged && !merging.plan.noValidMaterials) {
+      const plan = merging.plan;
+      const next = applyMaterialMerge(plan, api.computed.data, formula);
+      api.setPalette(next);
+      api.touchMosaic();
+      setNotice(t('colors.merge.done', { added: plan.added.length, removed: plan.removed.length, n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }));
+    }
+    setMerging(null);
   };
 
   const matchAll = (adoptColor: boolean) => {
@@ -129,6 +226,11 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
       <div className="row-between">
         <h3>
           {t('colors.palette')} ({palette.length})
+          {usedCount !== null && usedCount < palette.length && (
+            <small className="muted w1mc-count" data-testid="palette-used-count">
+              {t('colors.usedOf', { used: usedCount, total: palette.length })}
+            </small>
+          )}
         </h3>
         <div className="btn-row wrap">
           {materials.length > 0 && palette.length > 0 && (
@@ -142,19 +244,20 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
             </>
           )}
           {custom && materials.length > 0 && (
-            <button
-              className="btn small"
-              onClick={() => {
-                let p: PaletteColor[] = [];
-                for (const m of materials) if (isValidHex(m.hex)) p = addPaletteColor(p, m.hex, m.colorName || m.colorNumber, lang, m.id);
-                api.setPalette(p);
-              }}
-            >
+            <button className="btn small" onClick={openMerge} data-testid="palette-from-materials">
               {t('colors.fromMaterials')}
             </button>
           )}
         </div>
       </div>
+      {notice && (
+        <div className="w1mc-notice" role="status" data-testid="palette-notice">
+          <span>{notice}</span>
+          <button className="icon-btn" onClick={() => setNotice(null)} aria-label={t('common.close')}>
+            ✕
+          </button>
+        </div>
+      )}
       {!editable && <p className="muted">{t('colors.afterCompute')}</p>}
       {editable && (
         <>
@@ -175,16 +278,17 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
               </thead>
               <tbody>
                 {palette.map((p, i) => {
-                  const cs = stats?.perColor[i];
+                  const cs = statsOk ? stats.perColor[i] : undefined;
+                  const unused = !!cs && cs.pieces === 0;
                   const m = p.materialId ? matById.get(p.materialId) : undefined;
                   const dm = m && isValidHex(m.hex) ? (() => {
                     const l = hexToLab(m.hex);
                     return deltaE2000(p.lab[0], p.lab[1], p.lab[2], l[0], l[1], l[2]);
                   })() : null;
                   return (
-                    <tr key={`${p.code}-${i}`}>
+                    <tr key={`${p.code}-${i}`} className={unused ? 'w1mc-unused' : undefined} data-unused={unused ? 'true' : undefined}>
                       <td>
-                        <b>{String(p.code).padStart(2, '0')}</b>
+                        <b>{codeStr(p.code)}</b>
                       </td>
                       <td>
                         <input type="color" value={p.hex.length === 7 ? p.hex.toLowerCase() : '#000000'} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { hex: e.target.value }))} aria-label={t('colors.swatch')} />
@@ -196,8 +300,12 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                       <td className="mono small">
                         {n(p.lab[0], 1)} / {n(p.lab[1], 1)} / {n(p.lab[2], 1)}
                       </td>
-                      <td className="num">{cs ? n(cs.pieces) : '–'}</td>
-                      <td className="num small">{cs ? `${n(cs.rawWithReserve)} ${t('colors.rawShort')}` : '–'}</td>
+                      <td className="num">
+                        {cs ? n(cs.pieces) : '–'}
+                        {unused && <span className="w1mc-tag">{t('colors.unused')}</span>}
+                      </td>
+                      {/* Math.max: computeStats liefert für Farben ohne Steine ceil(−1e−9) = −0 */}
+                      <td className="num small">{cs ? `${n(Math.max(0, cs.rawWithReserve))} ${t('colors.rawShort')}` : '–'}</td>
                       <td>
                         <select value={p.materialId ?? ''} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { materialId: e.target.value || undefined }))}>
                           <option value="">–</option>
@@ -210,7 +318,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                         {dm !== null && <small className={dm > 5 ? 'warn' : 'muted'}> ΔE {n(dm, 1)}</small>}
                       </td>
                       <td>
-                        <button className="icon-btn" title={t('common.remove')} onClick={() => remove(i)} disabled={palette.length <= 1}>
+                        <button className="icon-btn" title={t('common.remove')} aria-label={`${t('common.remove')} ${codeStr(p.code)}`} onClick={() => askRemove(i)} disabled={palette.length <= 1} data-testid="palette-remove">
                           🗑
                         </button>
                       </td>
@@ -230,6 +338,164 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           {api.computed && <p className="muted small">{t('colors.removeHint')}</p>}
         </>
       )}
+
+      {removing && (
+        <RemoveDialog
+          palette={palette}
+          plan={removing.plan}
+          target={removing.target}
+          computed={!!api.computed}
+          onTarget={(target) => setRemoving({ ...removing, target })}
+          onCancel={() => setRemoving(null)}
+          onConfirm={doRemove}
+        />
+      )}
+      {merging && <MergeDialogView dialog={merging} oldCount={palette.length} onCancel={() => setMerging(null)} onApply={applyMerge} />}
     </div>
+  );
+}
+
+function RemoveDialog(props: {
+  palette: PaletteColor[];
+  plan: RemovalPlan;
+  target: number;
+  computed: boolean;
+  onTarget: (i: number) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t, n } = useI18n();
+  const { palette, plan, target } = props;
+  const p = palette[plan.index];
+  const tp = palette[target];
+  const opt = plan.options.find((o) => o.index === target);
+  const showChoice = props.computed && plan.pieces > 0;
+  return (
+    <Modal
+      title={t('colors.rm.title', { code: codeStr(p.code), name: p.name })}
+      onClose={props.onCancel}
+      footer={
+        <>
+          <button className="btn" onClick={props.onCancel}>
+            {t('common.cancel')}
+          </button>
+          <button className="btn primary" onClick={props.onConfirm} data-testid="palette-remove-confirm">
+            {t('colors.rm.confirm')}
+          </button>
+        </>
+      }
+    >
+      <div className="w1mc-dialog" data-testid="palette-remove-dialog">
+        {!props.computed && <p>{t('colors.rm.notComputed')}</p>}
+        {props.computed && plan.pieces === 0 && <p>{t('colors.rm.noStones')}</p>}
+        {showChoice && (
+          <>
+            <p data-testid="palette-remove-stones">{t('colors.rm.stones', { n: n(plan.pieces) })}</p>
+            <div className="w1mc-swap" data-testid="palette-remove-swap">
+              <ColorChip code={p.code} hex={p.hex} name={p.name} />
+              <span className="w1mc-arrow" aria-hidden="true">
+                →
+              </span>
+              <ColorChip code={tp.code} hex={tp.hex} name={tp.name} />
+              {opt && <span className="w1mc-de">ΔE {n(opt.deltaE, 1)}</span>}
+            </div>
+            <label className="w1mc-select">
+              {t('colors.rm.replacement')}
+              <select value={target} onChange={(e) => props.onTarget(Number(e.target.value))} data-testid="palette-remove-target">
+                {plan.options.map((o, k) => (
+                  <option key={o.index} value={o.index}>
+                    {codeStr(palette[o.index].code)} {palette[o.index].name} – ΔE {n(o.deltaE, 1)}
+                    {k === 0 ? ` (${t('colors.rm.nearest')})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        {props.computed && <p className="muted small">{t('colors.rm.note')}</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function MergeDialogView({ dialog, oldCount, onCancel, onApply }: { dialog: MergeDialog; oldCount: number; onCancel: () => void; onApply: () => void }) {
+  const { t, n } = useI18n();
+  const plan = dialog.kind === 'merge' ? dialog.plan : null;
+  const nothingToDo = !!plan && (plan.unchanged || plan.noValidMaterials);
+  return (
+    <Modal
+      title={t('colors.merge.title')}
+      onClose={onCancel}
+      footer={
+        nothingToDo ? (
+          <button className="btn" onClick={onCancel}>
+            {t('common.close')}
+          </button>
+        ) : (
+          <>
+            <button className="btn" onClick={onCancel}>
+              {t('common.cancel')}
+            </button>
+            <button className="btn primary" onClick={onApply} data-testid="palette-merge-apply">
+              {t('colors.merge.apply')}
+            </button>
+          </>
+        )
+      }
+    >
+      <div className="w1mc-dialog" data-testid="palette-merge-dialog">
+        {dialog.kind === 'replace' && <p>{t('colors.merge.replaceInfo', { n: dialog.next.length, last: codeStr(dialog.next.length), old: oldCount })}</p>}
+        {plan && plan.noValidMaterials && <p>{t('colors.merge.noValid')}</p>}
+        {plan && plan.unchanged && <p className="w1mc-summary ok">{t('colors.merge.unchanged')}</p>}
+        {plan && !nothingToDo && (
+          <>
+            <p className="muted small">{t('colors.merge.intro')}</p>
+            <div className={`w1mc-summary ${plan.movedStones > 0 ? '' : 'ok'}`} data-testid="palette-merge-summary">
+              {plan.movedStones > 0 ? t('colors.merge.moved', { n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }) : t('colors.merge.movedNone')}
+            </div>
+            {plan.removed.length > 0 && (
+              <>
+                <p>{t('colors.merge.removed', { n: plan.removed.length })}</p>
+                <ul className="w1mc-list" data-testid="palette-merge-removed">
+                  {plan.removed.map((r) => (
+                    <li key={r.code}>
+                      <ColorChip code={r.code} hex={r.hex} name={r.name} />
+                      <span className="w1mc-arrow" aria-hidden="true">
+                        →
+                      </span>
+                      <ColorChip code={r.targetCode} hex={r.targetHex} name={r.targetName} />
+                      <span className="w1mc-meta">
+                        {n(r.pieces)} {t('colors.stones')} · ΔE {n(r.deltaE, 1)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {plan.added.length > 0 && (
+              <>
+                <p>{t('colors.merge.added', { n: plan.added.length })}</p>
+                <div className="w1mc-added">
+                  {plan.added.map((a) => (
+                    <ColorChip key={a.code} code={a.code} hex={a.hex} name={a.name} />
+                  ))}
+                </div>
+              </>
+            )}
+            {plan.linked > 0 && <p>{t('colors.merge.linked', { n: plan.linked })}</p>}
+            {plan.recolored.length > 0 && (
+              <p>
+                {t('colors.merge.recolored', {
+                  n: plan.recolored.length,
+                  stones: n(plan.recolored.reduce((s, r) => s + r.pieces, 0)),
+                  de: n(Math.max(...plan.recolored.map((r) => r.deltaE)), 1),
+                })}
+              </p>
+            )}
+            <p className="muted small">{t('colors.merge.recompute')}</p>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }

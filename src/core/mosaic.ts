@@ -18,6 +18,11 @@ export interface FixedColor {
   hex: string;
   name: string;
   materialId?: string;
+  /**
+   * Farbnummer der eigenen Palette (nur Modus 'custom'). Sind alle Nummern eindeutige positive
+   * ganze Zahlen, bleiben sie bei der Berechnung erhalten, sonst wird fortlaufend 1…n vergeben.
+   */
+  code?: number;
 }
 
 export interface ComputeParams {
@@ -214,9 +219,23 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         for (let col = tx; col < xEnd; col++) {
           const idx = row * cols + col;
           sampleCell(row, col);
-          const all = groupOf(() => 0, 1)[0];
-          const mean = meanOf(all);
-          const fullSSE = sse(all);
+          // Statistik der ganzen Zelle: skalare Summen statt groupOf(() => 0, 1) – gleiche Formel und
+          // Summationsreihenfolge (bitgleich), aber ohne Objekt-/Closure-Allokation je Zelle (heißeste Schleife).
+          let tl = 0;
+          let ta = 0;
+          let tb = 0;
+          let tq = 0;
+          for (let k = 0; k < NS; k++) {
+            const l = SL[k];
+            const a = SA[k];
+            const b = SB[k];
+            tl += l;
+            ta += a;
+            tb += b;
+            tq += l * l + a * a + b * b;
+          }
+          const mean: Lab = [tl / NS, ta / NS, tb / NS];
+          const fullSSE = tq - (tl * tl + ta * ta + tb * tb) / NS;
 
           // Gewichte/Regionen an Zellmitte
           const cxp = Math.min(W - 1, Math.max(0, Math.floor((layout.colX[col] + layout.colW[col] / 2) * sx)));
@@ -324,10 +343,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
                   let cnt = 0;
                   while (cnt < NS && T[ord[cnt]] < dq) cnt++;
                   if (cnt < NS * 0.12 || cnt > NS * 0.88) continue;
-                  const gA: SSEGroup = { n: pre[cnt * 5], sl: pre[cnt * 5 + 1], sa: pre[cnt * 5 + 2], sb: pre[cnt * 5 + 3], sq: pre[cnt * 5 + 4] };
+                  // n als ganze Zahl (identischer Wert wie pre[cnt·5]); ein Double aus dem Float64Array
+                  // würde die SSEGroup-Objekte polymorph machen und sse() überall verlangsamen.
+                  const gA: SSEGroup = { n: cnt, sl: pre[cnt * 5 + 1], sa: pre[cnt * 5 + 2], sb: pre[cnt * 5 + 3], sq: pre[cnt * 5 + 4] };
                   const tot = NS * 5;
                   const gB: SSEGroup = {
-                    n: pre[tot] - gA.n,
+                    n: NS - cnt,
                     sl: pre[tot + 1] - gA.sl,
                     sa: pre[tot + 2] - gA.sa,
                     sb: pre[tot + 3] - gA.sb,
@@ -409,7 +430,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const fromQ = (arr: Uint8Array, i: number): Lab => [arr[i * 3] / 2.55, arr[i * 3 + 1] - 128, arr[i * 3 + 2] - 128];
 
   let paletteLab: Lab[] = [];
-  let paletteMeta: { hex?: string; name?: string; materialId?: string }[] = [];
+  let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number }[] = [];
   const fixed = params.fixedPalette ?? [];
 
   if (params.paletteMode === 'auto' || params.paletteMode === 'auto-snap') {
@@ -465,7 +486,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   } else {
     if (!fixed.length) throw new Error('Die Palette ist leer.');
     paletteLab = fixed.map((f) => f.lab);
-    paletteMeta = fixed.map((f) => ({ hex: f.hex, name: f.name, materialId: f.materialId }));
+    paletteMeta = fixed.map((f) => ({ hex: f.hex, name: f.name, materialId: f.materialId, code: f.code }));
   }
   onProgress?.('palette', 1);
 
@@ -546,40 +567,61 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   }
   onProgress?.('assign', 1);
 
-  // ---------------- Unbenutzte Farben entfernen, nach Helligkeit sortieren, nummerieren
-  const used = new Uint8Array(paletteLab.length);
-  for (let i = 0; i < N; i++) {
-    const kind = data.kind[i];
-    if (kind === CellKind.FULL) used[data.c1[i]] = 1;
-    else if (kind === CellKind.SUB) for (const c of data.sub.get(i)!) used[c] = 1;
-    else {
-      used[data.c1[i]] = 1;
-      used[data.c2[i]] = 1;
+  // ---------------- Palette abschließen
+  let palette: PaletteColor[];
+  if (params.paletteMode === 'custom') {
+    // Eigene Palette: Jede Farbe bleibt erhalten – Reihenfolge, Farbnummer, HEX, Name und Material –,
+    // auch wenn kein Stein sie verwendet (dann 0 Steine in der Statistik). Die Indizes in data zeigen
+    // bereits auf genau diese Reihenfolge, daher ist keine Umnummerierung nötig.
+    const codes = paletteMeta.map((m) => m.code);
+    const keepCodes = codes.every((c) => c !== undefined && Number.isInteger(c) && c > 0) && new Set(codes).size === codes.length;
+    palette = paletteLab.map((l, i) => {
+      const meta = paletteMeta[i] ?? {};
+      return {
+        code: keepCodes ? (codes[i] as number) : i + 1,
+        lab: [round2(l[0]), round2(l[1]), round2(l[2])],
+        hex: meta.hex ?? labToHex(l[0], l[1], l[2]),
+        name: meta.name ?? describeColor(l, lang),
+        materialId: meta.materialId,
+      };
+    });
+  } else {
+    // Automatisch/Materialien: Die Palette wird bei jeder Berechnung neu gebildet – unbenutzte Farben
+    // entfernen, nach Helligkeit sortieren, fortlaufend nummerieren.
+    const used = new Uint8Array(paletteLab.length);
+    for (let i = 0; i < N; i++) {
+      const kind = data.kind[i];
+      if (kind === CellKind.FULL) used[data.c1[i]] = 1;
+      else if (kind === CellKind.SUB) for (const c of data.sub.get(i)!) used[c] = 1;
+      else {
+        used[data.c1[i]] = 1;
+        used[data.c2[i]] = 1;
+      }
     }
+    const keep = paletteLab.map((_, i) => i).filter((i) => used[i]);
+    keep.sort((a, b) => paletteLab[b][0] - paletteLab[a][0]);
+    const remap = new Uint16Array(paletteLab.length);
+    keep.forEach((old, ni) => (remap[old] = ni));
+    for (let i = 0; i < N; i++) {
+      data.c1[i] = remap[data.c1[i]];
+      data.c2[i] = remap[data.c2[i]];
+    }
+    for (const [k, v] of data.sub) {
+      for (let q = 0; q < v.length; q++) v[q] = remap[v[q]];
+      data.sub.set(k, v);
+    }
+    palette = keep.map((old, ni) => {
+      const l = paletteLab[old];
+      const meta = paletteMeta[old] ?? {};
+      return {
+        code: ni + 1,
+        lab: [round2(l[0]), round2(l[1]), round2(l[2])],
+        hex: meta.hex ?? labToHex(l[0], l[1], l[2]),
+        name: meta.name ?? describeColor(l, lang),
+        materialId: meta.materialId,
+      };
+    });
   }
-  const keep = paletteLab.map((_, i) => i).filter((i) => used[i]);
-  keep.sort((a, b) => paletteLab[b][0] - paletteLab[a][0]);
-  const remap = new Uint16Array(paletteLab.length);
-  keep.forEach((old, ni) => (remap[old] = ni));
-  for (let i = 0; i < N; i++) {
-    data.c1[i] = remap[data.c1[i]];
-    data.c2[i] = remap[data.c2[i]];
-  }
-  for (const [k, v] of data.sub) {
-    for (let q = 0; q < v.length; q++) v[q] = remap[v[q]];
-    data.sub.set(k, v);
-  }
-  const palette: PaletteColor[] = keep.map((old, ni) => {
-    const l = paletteLab[old];
-    const meta = paletteMeta[old] ?? {};
-    return {
-      code: ni + 1,
-      lab: [round2(l[0]), round2(l[1]), round2(l[2])],
-      hex: meta.hex ?? labToHex(l[0], l[1], l[2]),
-      name: meta.name ?? describeColor(l, lang),
-      materialId: meta.materialId,
-    };
-  });
 
   let acc = 0;
   let p95 = 0;

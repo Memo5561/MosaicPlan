@@ -1,0 +1,84 @@
+/* w4-progress-engine: Verlegefortschritt in Projektlisten und Hinweis zur Übernahme beim Neuberechnen */
+
+.w4pe-laid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  max-width: 340px;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+.w4pe-laid-text {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.w4pe-bar {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 6px;
+  border-radius: 3px;
+  background: #e8e3da;
+  overflow: hidden;
+}
+.w4pe-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--teal);
+}
+.w4pe-done .w4pe-laid-text {
+  color: var(--ok);
+}
+.w4pe-done .w4pe-bar-fill {
+  background: var(--ok);
+}
+/* Karten der Startseite: unter dem Namen, volle Kartenbreite */
+.w4pe-laid.w4pe-compact {
+  margin-top: 2px;
+  max-width: none;
+  font-size: 0.78rem;
+}
+
+/* Hinweis nach dem Neuberechnen */
+.w4pe-carry {
+  align-items: flex-start;
+}
+.w4pe-carry .w4pe-carry-body {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.w4pe-carry .w4pe-carry-how {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+.w4pe-carry .w4pe-carry-toggle {
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.w4pe-carry .w4pe-cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+}
+.w4pe-carry .w4pe-cells .btn.small {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* geänderte bzw. nicht übertragbare Steine: Warnung (gelb), nicht Fehler */
+.w1fx-banner.w4pe-carry.w4pe-warn {
+  border-color: #e3c98f;
+  background: #fdf6e6;
+  color: #5c3b00;
+}

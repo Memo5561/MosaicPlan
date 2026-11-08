@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { cellId } from '../../core/layout';
 import type { Material } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
 import { Badge, downloadBlob, Modal, safeFileName } from '../components';
@@ -21,8 +22,9 @@ import { StepPhoto } from './StepPhoto';
 import { StepPlan } from './StepPlan';
 import { StepPreview } from './StepPreview';
 import { StepShapes } from './StepShapes';
-import { computeKey, useProject } from './useProject';
+import { computeKey, useProject, type ProjectApi } from './useProject';
 import '../css/w1-review-fixes.css';
+import '../css/w4-progress-engine.css';
 import '../css/w2-workspace-shell.css';
 import '../css/w3-live-preview.css';
 
@@ -112,6 +114,12 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   useEffect(() => {
     if (api.loaded && api.rec) rememberStep(id, step);
   }, [api.loaded, api.rec, id, step]);
+
+  // Eine in Schritt 8 geöffnete Stein-Anforderung (Hinweise im Projektkopf) gilt nur einmal – beim Verlassen vergessen
+  const clearStoneRequest = api.clearStoneRequest;
+  useEffect(() => {
+    if (step !== 'preview') clearStoneRequest();
+  }, [step, clearStoneRequest]);
 
   // Fertig-Hinweis, wenn eine Berechnung endet, während ein anderer Schritt offen ist
   const [doneNotice, setDoneNotice] = useState(false);
@@ -413,6 +421,13 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           </span>
         </div>
       )}
+      <CarryOverNotice
+        api={api}
+        onOpen={(row, col) => {
+          api.requestStone(row, col);
+          goStep('preview');
+        }}
+      />
       {guard.backup && (
         <div className="w1fx-banner info" role="status" data-testid="backup-notice">
           <span>{t('w2ws.backupDone', { name: guard.backup.name })}</span>
@@ -564,6 +579,79 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           </div>
         </Modal>
       )}
+    </div>
+  );
+}
+
+/** Höchstens so viele betroffene Positionen als Knöpfe (der Rest als Anzahl) */
+const CARRY_SHOW_CELLS = 12;
+
+/**
+ * Einmaliger Hinweis nach dem Neuberechnen (bis er geschlossen oder neu berechnet wird): wie viele verlegte Steine
+ * übernommen wurden und wie viele sich geändert haben (mit den Positionen) – oder dass das Raster geändert wurde und
+ * der Fortschritt nicht übertragbar ist. Zahlen exakt aus der Übernahme (core/progressCarry.ts).
+ */
+function CarryOverNotice({ api, onOpen }: { api: ProjectApi; onOpen: (row: number, col: number) => void }) {
+  const { t, n } = useI18n();
+  const [open, setOpen] = useState(false);
+  const info = api.lastCarryOver;
+  const layout = api.computed?.layout;
+  if (!info || !layout) return null;
+  const close = (
+    <button className="icon-btn" onClick={api.dismissCarryOver} aria-label={t('w4pe.carry.dismiss')} title={t('w4pe.carry.dismiss')} data-testid="carry-dismiss">
+      ✕
+    </button>
+  );
+  if (info.status === 'layout') {
+    return (
+      <div className="w1fx-banner w4pe-carry w4pe-warn" role="status" data-testid="carry-notice" data-status="layout" data-kept={0} data-reset={info.reset}>
+        <span className="w4pe-carry-body">
+          <b>{tCount(t, 'w4pe.carry.layout', info.reset, { n: n(info.reset) })}</b>
+          <span className="w4pe-carry-how">{t('w4pe.carry.layoutHint')}</span>
+        </span>
+        {close}
+      </div>
+    );
+  }
+  const cells = info.cells.filter((idx) => idx >= 0 && idx < layout.cols * layout.rows);
+  const more = Math.max(0, info.cellCount - Math.min(cells.length, CARRY_SHOW_CELLS));
+  return (
+    <div className={`w1fx-banner ${info.reset > 0 ? 'w4pe-warn' : 'info'} w4pe-carry`} role="status" data-testid="carry-notice" data-status="kept" data-kept={info.kept} data-reset={info.reset}>
+      <span className="w4pe-carry-body">
+        <span>
+          {t('w4pe.carry.lead')} {tCount(t, 'w4pe.carry.kept', info.kept, { n: n(info.kept) })}
+          {info.reset > 0 ? (
+            <>
+              , {tCount(t, 'w4pe.carry.changed', info.reset, { n: n(info.reset) })}{' '}
+              {cells.length > 0 && (
+                <button type="button" className="w4pe-carry-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid="carry-show">
+                  ({open ? t('w4pe.carry.hide') : t('w4pe.carry.show')})
+                </button>
+              )}
+            </>
+          ) : (
+            <> {t('w4pe.carry.allSame')}</>
+          )}
+        </span>
+        <span className="w4pe-carry-how">{t('w4pe.carry.how')}</span>
+        {open && cells.length > 0 && (
+          <span className="w4pe-cells" data-testid="carry-cells">
+            <span className="small">{t('w4pe.carry.where')}</span>
+            {cells.slice(0, CARRY_SHOW_CELLS).map((idx) => {
+              const row = Math.floor(idx / layout.cols);
+              const col = idx - row * layout.cols;
+              const id = cellId(layout, row, col);
+              return (
+                <button key={idx} type="button" className="btn small" title={t('w4pe.carry.openStone', { id })} onClick={() => onOpen(row, col)} data-testid="carry-cell">
+                  {id}
+                </button>
+              );
+            })}
+            {more > 0 && <span className="small">{t('w4pe.carry.more', { n: n(more) })}</span>}
+          </span>
+        )}
+      </span>
+      {close}
     </div>
   );
 }

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hexToLab } from '../../core/color';
+import { hexToLab, isValidHex } from '../../core/color';
 import { invalidFreeCells, repairDegenerateCells } from '../../core/edits';
 import { checkMosaicIntegrity } from '../../core/integrity';
 import { cellId, computeLayout, sectionsFor, type Layout, type LayoutParams, type SectionGrid } from '../../core/layout';
 import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
 import { renderFull } from '../../core/render';
+import { carryOverProgress, type CarryOverReport, type CarrySide } from '../../core/progressCarry';
+import { applyDiff, applyDirty, buildProgressIndex, countProgress, progressFromIndex, type ProgressIndex } from '../../core/progressIndex';
 import { packMosaic, unpackMosaic, type MosaicDataWithRev } from '../../core/serialize';
-import { popcount, progressOf, type Stats } from '../../core/stats';
+import { popcount, type Stats } from '../../core/stats';
 import { DEFAULT_ADJUST, type ImageAdjust, type Material, type MosaicData, type PaletteColor, type ProjectSettings, type Region } from '../../core/types';
 import {
   commitComputed,
@@ -23,8 +25,11 @@ import {
   saveProjectState,
   txMulti,
   uid,
+  type CarryOverInfo,
+  type CommitCarry,
   type ComputeFields,
   type ImageRecord,
+  type ProgressSummary,
   type ProjectRecord,
   type SaveGuard,
   type SaveParts,
@@ -56,6 +61,20 @@ import { announceNotice } from '../SaveResultNote';
 
 export function layoutParamsOf(s: ProjectSettings): LayoutParams {
   return { widthMm: s.widthMm, heightMm: s.heightMm, tileW: s.tileW, tileH: s.tileH, joint: s.joint, edgeMode: s.edgeMode, minCutMm: s.minCutMm };
+}
+
+/**
+ * Zellenliste eines touch*-Aufrufs: Array oder anderes Iterable von Zellindizes. Alles andere (z. B. ein Klick-Ereignis,
+ * wenn die Funktion direkt als onClick übergeben wird) gilt als „keine Liste“.
+ */
+function cellList(v: unknown): Iterable<number> | null {
+  if (!v || typeof v !== 'object' || typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] !== 'function') return null;
+  return v as Iterable<number>;
+}
+
+/** Schlüssel der Abschnittseinstellungen (gleicher Schlüssel + gleiches Raster ⇒ gleiche Abschnitte). */
+export function sectionKeyOf(s: Pick<ProjectSettings, 'sectionMode' | 'sectionWmm' | 'sectionHmm' | 'sectionCols' | 'sectionRows'>): string {
+  return JSON.stringify([s.sectionMode ?? 'size', s.sectionWmm, s.sectionHmm, s.sectionCols ?? null, s.sectionRows ?? null]);
 }
 
 /**
@@ -92,6 +111,30 @@ export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'mate
     return fixed;
   }
   return undefined;
+}
+
+/**
+ * Pflichtfarben als Eingabe der Berechnung (reine Funktion, von describeComputeInputs verwendet): nur in den Modi
+ * „Automatisch aus dem Foto“ und „Meine Steine – begrenzte Farbanzahl“, mit dem Lab-Wert aus dem HEX-Wert. Ungültige
+ * HEX-Werte fallen weg, gleiche zählen einmal. undefined, wenn es keine gibt – die Worker-Anfrage (und damit ihr
+ * Fingerabdruck) älterer Projekte bleibt dann unverändert.
+ */
+export function pinnedFixedColors(s: Pick<ProjectSettings, 'paletteMode' | 'pinnedColors'>): FixedColor[] | undefined {
+  if (s.paletteMode !== 'auto' && s.paletteMode !== 'auto-snap') return undefined;
+  const out: FixedColor[] = [];
+  const seen = new Set<string>();
+  for (const p of s.pinnedColors ?? []) {
+    const raw = typeof p?.hex === 'string' ? p.hex.trim() : '';
+    if (!isValidHex(raw)) continue;
+    let h = raw.replace('#', '').toUpperCase();
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    const hex = `#${h}`;
+    if (seen.has(hex)) continue;
+    seen.add(hex);
+    const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : hex;
+    out.push({ lab: hexToLab(hex), hex, name });
+  }
+  return out.length ? out : undefined;
 }
 
 /** Kurzer Hash (53 Bit, cyrb53) eines Textes – für Fingerabdrücke, die im Projekt gespeichert werden. */
@@ -390,12 +433,24 @@ export function describeComputeInputs(r: ProjectRecord, env: ComputeEnv): Comput
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+  // Pflichtfarben (z. B. Schwarz für Pupillen) – nur gesetzt, wenn vorhanden (Fingerabdruck älterer Projekte gleich)
+  const pinned = pinnedFixedColors(s);
   const request: ComputeRequest = {
     type: 'compute',
     adjust: { ...r.adjust, crop: null },
     regions: r.regions,
     layoutParams: lp,
-    params: { shapes: s.shapes, paletteMode: s.paletteMode, colorCount: s.colorCount, dither: s.dither, deltaE: s.deltaE, fixedPalette: fixed, regions: r.regions, lang: env.lang },
+    params: {
+      shapes: s.shapes,
+      paletteMode: s.paletteMode,
+      colorCount: s.colorCount,
+      dither: s.dither,
+      deltaE: s.deltaE,
+      fixedPalette: fixed,
+      regions: r.regions,
+      lang: env.lang,
+      ...(pinned ? { pinnedColors: pinned } : {}),
+    },
   };
   const key = computeKey(r);
   const sig = JSON.stringify({ q: request, c: crop, ws, f: full, im: r.imageRev ?? null, sw: env.srcW, sh: env.srcH });
@@ -556,6 +611,11 @@ export interface ProjectHandler {
   latestPalette(): PaletteColor[] | null;
   groutHex(): string | null;
   workAtRisk(): boolean;
+  /**
+   * Angezeigter Stand (Raster mit den neuesten Markierungen „verlegt“, Palette, Revision) als Grundlage für die
+   * Übernahme des Fortschritts beim Festschreiben; null: keiner angezeigt.
+   */
+  carryBase(): CarryBase | null;
   hold(job: PendingCommit): void;
   applyCommitted(job: PendingCommit, committed: ProjectRecord | null, saveFailure: unknown): void;
   onError(code: string): void;
@@ -582,17 +642,82 @@ export async function settledHandler(id: string, maxWaitMs = 20_000): Promise<Pr
   return projectHandler<ProjectHandler>(id);
 }
 
+/** Stand, aus dem der Verlegefortschritt beim Neuberechnen übernommen wird (siehe core/progressCarry.ts). */
+export interface CarryBase extends CarrySide {
+  /** Revision des Rasters (mosaicRev) */
+  rev: string | undefined;
+}
+
+/** Ergebnis der Übernahme für ein neues Raster: Fortschritt, Felder für den Projektstand, Bericht. */
+export interface CarryOutcome {
+  progress: Uint16Array;
+  fields: Pick<ComputeFields, 'progressSummary' | 'carryOver'>;
+  report: CarryOverReport | null;
+}
+
+/**
+ * Fortschritt des alten Stands `base` für das neue Ergebnis `job` (reine Funktion): nur nachweislich gleiche Steine
+ * bleiben verlegt. `palette`: die Palette, die mit dem neuen Raster gespeichert wird. Dazu die exakten Zahlen für
+ * Projektlisten (progressSummary) und – wenn vorher etwas verlegt war – der Bericht für den Hinweis (carryOver).
+ * Kann der Vergleich nicht durchgeführt werden, bleibt nichts verlegt (nie geraten).
+ */
+export function carryFor(base: CarryBase | null, job: Pick<PendingCommit, 'lp' | 'data' | 'fields'>, palette: readonly PaletteColor[], now = Date.now()): CarryOutcome {
+  let res: { progress: Uint16Array; report: CarryOverReport | null };
+  try {
+    res = carryOverProgress(base, { lp: job.lp, data: job.data, palette });
+  } catch (e) {
+    console.warn('Fortschritt konnte nicht verglichen werden – nichts übernommen', e);
+    res = { progress: new Uint16Array(job.data.cols * job.data.rows), report: null };
+  }
+  const counts = countProgress({ ...job.data, progress: res.progress });
+  const rev = job.fields.mosaicRev;
+  return {
+    progress: res.progress,
+    report: res.report,
+    fields: {
+      progressSummary: { placed: counts.placed, total: counts.total, rev },
+      ...(res.report ? { carryOver: { ...res.report, rev, at: now } } : {}),
+    },
+  };
+}
+
+/** Gespeicherter Stand als Grundlage der Übernahme (nur, wenn Raster und Projekt nachweislich zusammengehören). */
+export function carryBaseFromStored(st: { rec: ProjectRecord; mosaic?: StoredMosaicNoProgress; progress?: Uint16Array }): CarryBase | null {
+  const res = restoreComputed(st.rec, st.mosaic, st.progress);
+  if (!res.computed) return null;
+  return { rev: st.rec.mosaicRev, lp: res.computed.layoutParams, data: res.computed.data, palette: st.rec.palette };
+}
+
+/** Ergebnis mit übernommenem Fortschritt (neues Fortschritts-Array; Raster und Palette unverändert). */
+function withCarry(job: PendingCommit, c: CarryOutcome): PendingCommit {
+  return { ...job, fields: { ...job.fields, ...c.fields }, data: { ...job.data, progress: c.progress }, pk: { ...job.pk, progress: c.progress } };
+}
+
 /**
  * Schreibt ein Ergebnis fest (Projekt, Raster, Fortschritt in EINER Transaktion, siehe commitComputed) – auch
  * wenn keine Ansicht des Projekts mehr offen ist – und übergibt es der angemeldeten Ansicht.
+ * Der Verlegefortschritt des ersetzten Rasters bleibt, wo es nachweislich derselbe Stein ist (carryFor): verglichen
+ * wird mit dem angezeigten Stand (neueste Markierungen), sonst – oder wenn inzwischen anderswo neu berechnet wurde –
+ * mit dem gespeicherten, in derselben Transaktion gelesenen Stand.
  * Wirft bei geänderter eigener Palette (PALETTE_CHANGED).
  */
 async function persistCommit(id: string, job: PendingCommit, fallbackSource: string): Promise<JobOutcome> {
   const h0 = projectHandler<ProjectHandler>(id);
+  const view = h0?.carryBase?.() ?? null;
+  // Ergebnis der Übernahme aus der Transaktion (bei einer Wiederholung der Transaktion gilt das letzte)
+  const box: { carried: CarryOutcome | null } = { carried: null };
+  const carry: CommitCarry = {
+    baseRev: view ? view.rev : null,
+    run: (palette, stored) => {
+      const c = carryFor(stored ? carryBaseFromStored(stored) : view, job, palette);
+      box.carried = c;
+      return { progress: c.progress, fields: c.fields };
+    },
+  };
   let committed: ProjectRecord | null = null;
   let saveFailure: unknown = null;
   try {
-    committed = await commitComputed(id, job.fields, job.pk.mosaic, job.pk.progress, h0?.instance ?? fallbackSource);
+    committed = await commitComputed(id, job.fields, job.pk.mosaic, job.pk.progress, h0?.instance ?? fallbackSource, carry);
   } catch (e) {
     if (isDeletedError(e)) {
       // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
@@ -603,10 +728,18 @@ async function persistCommit(id: string, job: PendingCommit, fallbackSource: str
     if (isPaletteChangedError(e)) throw e;
     saveFailure = e;
   }
+  // Nicht gespeichert (z. B. Speicher voll): im Arbeitsspeicher mit dem angezeigten Stand vergleichen; das Ergebnis
+  // wird später vollständig nachgespeichert
+  // Ebenso, wenn die Transaktion abbrach, nachdem sie verglichen hatte (dann wurde nichts geschrieben)
+  if (!box.carried || saveFailure) {
+    const latest = h0?.latestPalette() ?? job.fields.palette;
+    box.carried = carryFor(view, job, resolveComputedPalette(latest, job.fields)?.palette ?? job.fields.palette);
+  }
+  const done = withCarry(job, box.carried);
   // Eine gerade (wieder) geöffnete Ansicht übernimmt das Ergebnis erst nach ihrem Laden
   const h = await settledHandler(id);
   if (h) {
-    h.applyCommitted(job, committed, saveFailure);
+    h.applyCommitted(done, committed, saveFailure);
     return 'committed';
   }
   if (saveFailure) {
@@ -995,6 +1128,59 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     [flush],
   );
 
+  // ---------- Verlegefortschritt als Zähler (Paket w4-progress-engine, siehe core/progressIndex.ts)
+  // Ein Antippen ändert ein Bit: Die Zähler werden nur für die geänderten Zellen nachgeführt statt das ganze Raster
+  // (und jeden Abschnitt einzeln) neu zu zählen. Neu aufgebaut wird bei anderem Raster, anderen Abschnitten und
+  // Änderungen an Steinen ohne Zellenliste.
+  const pidxRef = useRef<{ index: ProgressIndex; data: MosaicData; layout: Layout; secKey: string; gen: number } | null>(null);
+  /** Erhöht bei Änderungen am Raster ohne Zellenliste – die Zähler werden beim nächsten Zugriff neu aufgebaut */
+  const structGenRef = useRef(0);
+  /** Zähler, falls sie zum angezeigten Raster und den Abschnitten passen (sonst null). */
+  const liveIndex = useCallback((): ProgressIndex | null => {
+    const c = computedRef.current;
+    const r = recRef.current;
+    const cur = pidxRef.current;
+    if (!c || !r || !cur) return null;
+    return cur.data === c.data && cur.layout === c.layout && cur.secKey === sectionKeyOf(r.settings) && cur.gen === structGenRef.current ? cur.index : null;
+  }, []);
+  /** Zähler des angezeigten Rasters – bei Bedarf in einem Durchgang neu aufgebaut. */
+  const syncIndex = useCallback((): ProgressIndex | null => {
+    const c = computedRef.current;
+    const r = recRef.current;
+    if (!c || !r) {
+      pidxRef.current = null;
+      return null;
+    }
+    const live = liveIndex();
+    if (live) return live;
+    const index = buildProgressIndex(c.layout, c.data, sectionsFor(c.layout, r.settings));
+    pidxRef.current = { index, data: c.data, layout: c.layout, secKey: sectionKeyOf(r.settings), gen: structGenRef.current };
+    return index;
+  }, [liveIndex]);
+
+  /**
+   * Schreibt den Verlegefortschritt für Projektlisten (meta.progressSummary) in den Projektstand, wenn er sich
+   * geändert hat; gespeichert wird er zusammen mit dem Fortschritt (eine Transaktion). `bump`: als Bearbeitung zählen
+   * (Änderungszeitpunkt), nicht beim bloßen Nachtragen nach dem Laden.
+   */
+  const syncSummary = useCallback(
+    (bump: boolean) => {
+      const r = recRef.current;
+      if (!r || !computedRef.current) return;
+      const index = syncIndex();
+      if (!index) return;
+      const next: ProgressSummary = { placed: index.placedAll, total: index.totalAll, ...(r.mosaicRev !== undefined ? { rev: r.mosaicRev } : {}) };
+      const cur = r.meta.progressSummary;
+      if (cur && cur.placed === next.placed && cur.total === next.total && (cur.rev ?? null) === (next.rev ?? null)) return;
+      setRecBoth({ ...r, meta: { ...r.meta, progressSummary: next, ...(bump ? { updatedAt: Date.now() } : {}) } });
+      markDirty('rec');
+    },
+    [syncIndex, setRecBoth, markDirty],
+  );
+
+  // ---------- Statistik-Aufträge (höchstens einer läuft; siehe unten)
+  const statsCtl = useRef({ running: false, again: false, scheduled: false, req: 0 });
+
   useEffect(() => {
     mounted.current = true;
     // Beim Verlassen/Neuladen/Schließen: sofort (ohne vorheriges Lesen) schreiben und festschreiben,
@@ -1027,6 +1213,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       if (inf && !inf.promoted) cancelChannel('preview');
       previewInflight.current = null;
       rawCache.current = null;
+      // Statistik gehört zu dieser Ansicht: ein laufender Auftrag ist überflüssig
+      if (statsCtl.current.running) cancelChannel('stats');
       // Ein Auftrag, der auf das Laden dieser Ansicht wartet, darf nicht hängen bleiben
       readyRef.current?.resolve();
     };
@@ -1118,12 +1306,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         setComputeError('integrity');
         if (st.mosaic) setRejected({ reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) });
       }
+      // Ältere Projekte (oder ein veralteter Wert): Fortschritt für „Meine Projekte“ nachtragen – ohne als Bearbeitung zu zählen
+      if (res.computed) syncSummary(false);
       finish();
     })();
     return () => {
       alive = false;
     };
-  }, [id, setRecBoth, setComputedBoth, markDirty, setError]);
+  }, [id, setRecBoth, setComputedBoth, markDirty, setError, syncSummary]);
 
   // Sperre der Palette, solange irgendwo eine Berechnung dieses Projekts läuft
   useEffect(() => {
@@ -1200,13 +1390,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     discardGrid();
     const res = restoreComputed(st.rec, st.mosaic, st.progress);
     setComputedBoth(res.computed);
+    if (res.computed) syncSummary(false);
     setIntegrityError(res.mismatch ? 'mismatch' : null);
     setRejected(res.mismatch && st.mosaic ? { reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) } : null);
     setComputeError((prev) => (res.mismatch ? 'integrity' : prev === 'integrity' ? null : prev));
     setVersion((v) => v + 1);
     setProgressVersion((v) => v + 1);
     s.staleKnown = false;
-  }, [id, discardGrid, setError, setRecBoth, setComputedBoth]);
+  }, [id, discardGrid, setError, setRecBoth, setComputedBoth, syncSummary]);
   adoptRef.current = adopt;
 
   useEffect(
@@ -1246,24 +1437,47 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   /**
    * Nach manuellen Änderungen am Raster aufrufen (Steinfarbe/-form, Farbe entfernt).
-   * `_dirtyCells`: geänderte Zellen (Vertrag für Welle 4 – wird noch nicht ausgewertet).
+   * `dirtyCells`: geänderte Zellen (Zellindizes). Mit Liste werden die Fortschrittszähler nur für diese Zellen
+   * nachgeführt (auch eine geänderte Teilezahl), ohne Liste beim nächsten Zugriff neu aufgebaut.
    */
   const touchMosaic = useCallback(
-    (_dirtyCells?: number[]) => {
+    (dirtyCells?: Iterable<number>) => {
+      const cells = cellList(dirtyCells);
+      const index = liveIndex();
+      const c = computedRef.current;
+      if (cells && index && c) applyDirty(index, c.data, cells);
+      else structGenRef.current++;
       noteEdit(id);
       setVersion((v) => v + 1);
       markDirty('mosaic');
       update((r) => ({ ...r, meta: { ...r.meta, manualEdits: (r.meta.manualEdits ?? 0) + 1 } }));
+      // Teilezahl (Form geändert) und damit die Zahlen für „Meine Projekte“ können sich geändert haben
+      syncSummary(false);
     },
-    [id, markDirty, update],
+    [id, markDirty, update, liveIndex, syncSummary],
   );
 
-  /** Nach Änderungen am Verlegefortschritt aufrufen. `_dirtyCells`: Vertrag für Welle 4 (noch nicht ausgewertet). */
-  const touchProgress = useCallback((_dirtyCells?: number[]) => {
-    noteEdit(id);
-    setProgressVersion((v) => v + 1);
-    markDirty('progress');
-  }, [id, markDirty]);
+  /**
+   * Nach Änderungen am Verlegefortschritt aufrufen (die Bits sind bereits gesetzt). `dirtyCells`: geänderte Zellen –
+   * dann werden nur deren Zähler nachgeführt (Mikrosekunden statt eines Durchgangs über das ganze Raster); ohne Liste
+   * werden alle Masken mit den gemerkten verglichen. Löst KEINE Neuberechnung der Statistik aus.
+   */
+  const touchProgress = useCallback(
+    (dirtyCells?: Iterable<number>) => {
+      const cells = cellList(dirtyCells);
+      const index = liveIndex();
+      const c = computedRef.current;
+      if (index && c) {
+        if (cells) applyDirty(index, c.data, cells);
+        else applyDiff(index, c.data);
+      }
+      noteEdit(id);
+      setProgressVersion((v) => v + 1);
+      markDirty('progress');
+      syncSummary(true);
+    },
+    [id, markDirty, liveIndex, syncSummary],
+  );
 
   // ---------- Foto
   /**
@@ -1374,15 +1588,39 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   /** Stein, der in der Vorschau (Schritt 8) geöffnet werden soll (z. B. aus dem Hinweis zu ungültigen Freiformsteinen) */
   const [stoneRequest, setStoneRequest] = useState<{ row: number; col: number; n: number } | null>(null);
   const requestStone = useCallback((row: number, col: number) => setStoneRequest((p) => ({ row, col, n: (p?.n ?? 0) + 1 })), []);
+  /**
+   * Erledigte Anforderung vergessen (beim Verlassen von Schritt 8, wenn die Vorschau nicht angezeigt wird) – sonst
+   * öffnete Schritt 8 den Stein bei jedem erneuten Öffnen wieder (z. B. nach dem nächsten Berechnen).
+   */
+  const clearStoneRequest = useCallback(() => setStoneRequest((p) => (p ? null : p)), []);
 
-  /** Schneller Verlegefortschritt (ohne Geometrie) – gesamt und je Abschnitt. */
+  /**
+   * Verlegefortschritt gesamt und je Abschnitt – aus den Zählern (siehe syncIndex/touchProgress), ohne das Raster neu
+   * zu zählen. Exakt dieselben Zahlen wie progressOf (tests/w4-progress-engine.test.ts).
+   */
   const progress = useMemo(() => {
     if (!computed || !sections) return null;
-    const total = progressOf(computed.layout, computed.data);
-    const perSection = new Map(sections.sections.map((s) => [s.id, progressOf(computed.layout, computed.data, s)]));
-    return { total, perSection };
+    const index = syncIndex();
+    return index ? progressFromIndex(index) : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, sections, version, progressVersion]);
+  }, [computed, sections, version, progressVersion, syncIndex]);
+
+  /**
+   * Übernahme des Verlegefortschritts bei der letzten Berechnung (gleiches Raster: nachweislich gleiche Steine bleiben
+   * verlegt; sonst nicht übertragbar) – nur, solange sie zum angezeigten Raster gehört und der Hinweis nicht
+   * geschlossen wurde.
+   */
+  const lastCarryOver: CarryOverInfo | null = rec?.lastCarryOver && computed && rec.lastCarryOver.rev === rec.mosaicRev ? rec.lastCarryOver : null;
+  const dismissCarryOver = useCallback(
+    () =>
+      update((r) => {
+        if (!r.lastCarryOver) return r;
+        const next = { ...r };
+        delete next.lastCarryOver;
+        return next;
+      }),
+    [update],
+  );
 
   /** Effektiver Zuschnitt (normiert) passend zum Seitenverhältnis der fertigen Mosaikfläche. */
   // Maße des Originals (nicht der evtl. verkleinerten Arbeitskopie): Zuschnitt und Arbeitsauflösung wie bei voller Dekodierung
@@ -1398,41 +1636,103 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, [adjustNow, bitmap, srcW, srcH, aspectNow]);
 
   // ---------- Statistik (im Worker)
-  const statsReq = useRef(0);
-  const lastStatsVersion = useRef(-1);
-  useEffect(() => {
-    if (!computed || !rec) {
-      setStats(null);
+  // Höchstens EIN Statistik-Auftrag läuft. Ändern sich die Eingaben, während einer läuft, ist er veraltet: Er wird
+  // abgebrochen (cancelChannel('stats')) und danach läuft genau einer mit den neuesten Eingaben. So stauen sich keine
+  // Aufträge im Worker, und eine echte Änderung wartet nie hinter veralteten mehrsekündigen Läufen. Der
+  // Verlegefortschritt löst keinen Auftrag aus (seine Zahlen kommen aus den Zählern, siehe progress).
+  const materialsRef = useRef(materials);
+  materialsRef.current = materials;
+  const startStatsRef = useRef<() => void>(() => {});
+  const startStats = useCallback(() => {
+    const ctl = statsCtl.current;
+    if (!mounted.current) return;
+    if (ctl.running) {
+      // laufender Auftrag ist veraltet: abbrechen, danach läuft genau einer mit den neuesten Eingaben
+      ctl.again = true;
+      cancelChannel('stats');
       return;
     }
-    const my = ++statsReq.current;
-    const timer = window.setTimeout(async () => {
-      setStatsBusy(true);
-      try {
-        const secs = sectionsFor(computed.layout, rec.settings);
-        const res = await runWorker<'stats'>('stats', {
-          type: 'stats',
-          layoutParams: computed.layoutParams,
-          mosaic: packMosaic(computed.data),
-          palette: rec.palette,
-          materials,
-          reservePct: rec.settings.reservePct,
-          groutDepthMm: rec.settings.groutDepthMm,
-          ranges: secs.sections.map((s) => ({ key: s.id, range: { r0: s.r0, r1: s.r1, c0: s.c0, c1: s.c1 } })),
-        });
-        if (my !== statsReq.current) return;
-        setStats(res.total);
-        setSectionStats(new Map(res.ranges.map((r) => [r.key, r.stats])));
-      } catch (e) {
-        console.error(e);
-      } finally {
-        if (my === statsReq.current) setStatsBusy(false);
-      }
-    }, lastStatsVersion.current === version ? 1500 : 250);
+    const c = computedRef.current;
+    const r = recRef.current;
+    if (!c || !r) {
+      setStatsBusy(false);
+      return;
+    }
+    ctl.running = true;
+    ctl.again = false;
+    const my = ctl.req;
+    setStatsBusy(true);
+    let req: Parameters<typeof runWorker<'stats'>>[1];
+    try {
+      const secs = sectionsFor(c.layout, r.settings);
+      req = {
+        type: 'stats',
+        layoutParams: c.layoutParams,
+        mosaic: packMosaic(c.data),
+        palette: r.palette,
+        materials: materialsRef.current,
+        reservePct: r.settings.reservePct,
+        groutDepthMm: r.settings.groutDepthMm,
+        ranges: secs.sections.map((x) => ({ key: x.id, range: { r0: x.r0, r1: x.r1, c0: x.c0, c1: x.c1 } })),
+      };
+    } catch (e) {
+      console.error(e);
+      ctl.running = false;
+      setStatsBusy(false);
+      return;
+    }
+    runWorker<'stats'>('stats', req)
+      .then(
+        (res) => {
+          // Nur das Ergebnis der neuesten Anforderung zeigen (sonst stünden veraltete Zahlen da)
+          if (!mounted.current || my !== ctl.req || ctl.scheduled) return;
+          setStats(res.total);
+          setSectionStats(new Map(res.ranges.map((x) => [x.key, x.stats])));
+        },
+        (e: unknown) => {
+          // abgebrochen (veraltet): kein Fehler
+          if (!(e instanceof Error && e.message === 'abgebrochen')) console.error(e);
+        },
+      )
+      .finally(() => {
+        ctl.running = false;
+        if (!mounted.current) return;
+        if (ctl.again || (my !== ctl.req && !ctl.scheduled)) {
+          ctl.again = false;
+          startStatsRef.current();
+        } else if (!ctl.scheduled) setStatsBusy(false);
+      });
+  }, []);
+  startStatsRef.current = startStats;
+
+  const lastStatsVersion = useRef(-1);
+  useEffect(() => {
+    const ctl = statsCtl.current;
+    if (!computed || !rec) {
+      // nichts berechnet: ein laufender Auftrag ist überflüssig
+      ctl.req++;
+      ctl.scheduled = false;
+      if (ctl.running) cancelChannel('stats');
+      setStats(null);
+      setStatsBusy(false);
+      return;
+    }
+    // Eingaben geändert: bis zum (entprellten) neuen Auftrag gelten die angezeigten Zahlen als „wird aktualisiert“
+    ctl.scheduled = true;
+    setStatsBusy(true);
+    const timer = window.setTimeout(
+      () => {
+        ctl.scheduled = false;
+        ctl.req++;
+        startStatsRef.current();
+      },
+      lastStatsVersion.current === version ? 1500 : 250,
+    );
     lastStatsVersion.current = version;
     return () => window.clearTimeout(timer);
+    // progressVersion bewusst NICHT: Antippen im Verlegemodus startet keinen Statistik-Durchlauf
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, version, progressVersion, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
+  }, [computed, version, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
 
   // ---------- Berechnung und Live-Vorschau (gemeinsamer Rechenweg, siehe describeComputeInputs)
   /** Eingaben einer Berechnung für den Projektstand `r` mit dem aktuellen Foto, den Materialien und der Sprache. */
@@ -1466,10 +1766,9 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
 
   /** Gibt es am angezeigten Mosaik jetzt etwas, das ein Übernehmen verwerfen würde (verlegt, manuell geändert)? */
   const displayedWorkAtRisk = useCallback((): boolean => {
-    const c = computedRef.current;
-    if (!c) return false;
-    return progressOf(c.layout, c.data).placed > 0 || (recRef.current?.meta.manualEdits ?? 0) > 0;
-  }, []);
+    if (!computedRef.current) return false;
+    return (syncIndex()?.placedAll ?? 0) > 0 || (recRef.current?.meta.manualEdits ?? 0) > 0;
+  }, [syncIndex]);
 
   /**
    * Übernimmt ein gespeichertes Ergebnis in diese Ansicht (wird vom Auftrag aufgerufen – auch, wenn er in einer
@@ -1547,6 +1846,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       latestPalette: () => recRef.current?.palette ?? null,
       groutHex: () => recRef.current?.settings.groutHex ?? null,
       workAtRisk: () => handlerImpl.current.displayedWorkAtRisk(),
+      carryBase: () => {
+        const c = computedRef.current;
+        const r = recRef.current;
+        if (!c || !r || !loadedRef.current) return null;
+        return { rev: r.mosaicRev, lp: c.layoutParams, data: c.data, palette: r.palette };
+      },
       hold: (job) => {
         pendingRef.current = job;
         setPendingResult({ at: Date.now() });
@@ -1834,7 +2139,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     stats,
     sectionStats,
     progress,
+    /** Statistik wird gerade (neu) berechnet – angezeigte Zahlen sind bis dahin die der letzten Berechnung */
     statsBusy,
+    /** Übernahme des Verlegefortschritts bei der letzten Berechnung (null: nichts zu melden) */
+    lastCarryOver,
+    dismissCarryOver,
     /** Fortschritt der Berechnung dieses Projekts (auch einer vor dem erneuten Öffnen gestarteten) */
     computing,
     /** laufende Berechnung eines anderen Projekts (app-weit nur eine) – „Berechnung für „X“ läuft noch“ */
@@ -1869,6 +2178,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     /** Stein, der in Schritt 8 geöffnet werden soll (Zähler n: jede Anforderung zählt) */
     stoneRequest,
     requestStone,
+    clearStoneRequest,
     dismissRepaired: () => setRepairedCells(0),
     /** Palette gesperrt, weil (irgendwo) eine Berechnung dieses Projekts läuft */
     paletteLocked,

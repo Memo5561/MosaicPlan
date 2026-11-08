@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useI18n, type Lang } from '../i18n';
-import { isNative, saveNative } from '../platform';
+import { isNative, saveNative, type SaveResult, type ShareMode } from '../platform';
 import { getModalHistory, type ModalHandle } from './modalHistory';
+import { announceSave } from './SaveResultNote';
 import { parseLocaleNum, parseLocaleNumInfo } from './numberParse';
 import './css/w1-touch-input-safety.css';
+
+// Für Aufrufer von downloadBlob, die das Ergebnis selbst anzeigen
+export { SaveResultNote } from './SaveResultNote';
+export type { SaveResult } from '../platform';
 
 // Dialog-Verlauf früh einrichten, damit ein nach dem Neuladen verwaister Dialog-Eintrag sofort bereinigt wird.
 getModalHistory();
@@ -217,10 +222,17 @@ export function Badge({ kind, children }: { kind: 'ok' | 'warn' | 'info' | 'inco
   return <span className={`badge badge-${kind}`}>{children}</span>;
 }
 
-export async function downloadBlob(blob: Blob, name: string): Promise<void> {
+/**
+ * Datei ausgeben. Im Browser als Download ({kind:'download'}); im APK über saveNative (Documents/MosaicPlan,
+ * sonst Teilen-Menü) mit dem echten Ergebnis. Wirft im APK nie – Fehler stehen im Ergebnis.
+ * Im APK erscheint das Ergebnis app-weit in der Meldungsleiste (SaveResultHost), außer mit
+ * `announce: false` – dann zeigt der Aufrufer selbst eine <SaveResultNote result={…} /> an.
+ */
+export async function downloadBlob(blob: Blob, name: string, opts: { announce?: boolean; share?: ShareMode } = {}): Promise<SaveResult> {
   if (isNative()) {
-    await saveNative(blob, name);
-    return;
+    const r = await saveNative(blob, name, { share: opts.share });
+    if (opts.announce !== false) announceSave(r);
+    return r;
   }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -230,6 +242,7 @@ export async function downloadBlob(blob: Blob, name: string): Promise<void> {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return { kind: 'download', name };
 }
 
 export function safeFileName(s: string) {

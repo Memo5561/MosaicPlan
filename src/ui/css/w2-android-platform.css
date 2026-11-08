@@ -1,0 +1,124 @@
+/* Speicher-Rückmeldung (SaveResultNote) und app-weite Meldungsleiste (SaveResultHost) */
+.w2ap-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line, #e2ddd3);
+  border-left-width: 5px;
+  background: var(--panel, #fff);
+  color: var(--ink, #1d2a3a);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  max-width: 100%;
+}
+.w2ap-note p {
+  margin: 0 0 2px;
+  line-height: 1.4;
+}
+.w2ap-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.w2ap-sub {
+  color: var(--ink-soft, #4a5566);
+  font-size: 0.85rem;
+}
+.w2ap-err {
+  color: var(--err, #c0262d);
+}
+.w2ap-path {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+  background: rgba(29, 42, 58, 0.06);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.w2ap-icon {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #fff;
+  background: var(--ink-soft, #4a5566);
+}
+.w2ap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.w2ap-actions .btn {
+  min-height: 40px;
+}
+.w2ap-close {
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 40px;
+}
+.w2ap-saved {
+  border-left-color: var(--ok, #1b8a3a);
+}
+.w2ap-saved .w2ap-icon {
+  background: var(--ok, #1b8a3a);
+}
+.w2ap-not-saved {
+  border-left-color: #8a5200;
+  background: #fff8ec;
+}
+.w2ap-not-saved .w2ap-icon {
+  background: #8a5200;
+}
+.w2ap-failed {
+  border-left-color: var(--err, #c0262d);
+  background: #fdf0ef;
+}
+.w2ap-failed .w2ap-icon {
+  background: var(--err, #c0262d);
+}
+.w2ap-download,
+.w2ap-info {
+  border-left-color: #3b6ea5;
+  background: #f1f6fb;
+}
+.w2ap-download .w2ap-icon,
+.w2ap-info .w2ap-icon {
+  background: #3b6ea5;
+}
+
+/* Meldungsleiste: unten mittig, über Dialogen (z-index 100) und der Schrittleiste, innerhalb der sicheren Zone */
+.w2ap-host {
+  position: fixed;
+  z-index: 300;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  width: min(560px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.w2ap-host > .w2ap-note {
+  pointer-events: auto;
+  box-shadow: 0 10px 30px rgba(15, 20, 30, 0.22);
+}
+
+/* Projektliste: Rückmeldung unter der Zeile */
+.w2ap-row-note {
+  flex-basis: 100%;
+  min-width: 0;
+}
+@media print {
+  .w2ap-host {
+    display: none;
+  }
+}

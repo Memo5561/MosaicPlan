@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#1d2a3a" />
+    <title>MosaicPlan</title>
+    <!--
+      Hinweisseite für zu alte Android-WebViews/Browser und für Ladefehler.
+      Capacitor lädt sie, wenn die WebView älter als android.minWebViewVersion ist (capacitor.config.ts,
+      server.errorPath) oder die Startseite nicht geladen werden konnte; index.html leitet im APK hierher
+      um, wenn der Funktionstest scheitert (?reason=…). Absichtlich nur ES5, eingebettetes CSS, keine Module.
+    -->
+    <style>
+      body {
+        margin: 0;
+        background: #f4f1ec;
+        color: #1d2a3a;
+        font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        line-height: 1.5;
+      }
+      .bar {
+        background: #1d2a3a;
+        color: #fff;
+        padding: 12px 16px;
+        padding-top: 12px;
+        padding-top: max(12px, env(safe-area-inset-top));
+        font-weight: 700;
+        font-size: 18px;
+      }
+      .card {
+        max-width: 640px;
+        margin: 16px auto;
+        margin: 16px max(12px, env(safe-area-inset-right)) 16px max(12px, env(safe-area-inset-left));
+        background: #fff;
+        border: 1px solid #e2ddd3;
+        border-radius: 12px;
+        padding: 16px 18px;
+      }
+      @media (min-width: 680px) {
+        .card {
+          margin: 24px auto;
+        }
+      }
+      h1 {
+        font-size: 1.3rem;
+        margin: 0 0 8px;
+      }
+      ol {
+        padding-left: 1.3em;
+      }
+      li {
+        margin: 4px 0;
+      }
+      a.btn,
+      button.btn {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 48px;
+        margin: 10px 0 0;
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid #1d2a3a;
+        background: #fff;
+        color: #1d2a3a;
+        font-size: 16px;
+        font-weight: 600;
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      a.btn.primary,
+      button.btn.primary {
+        background: #b6452b;
+        border-color: #b6452b;
+        color: #fff;
+      }
+      .muted {
+        color: #5f6675;
+        font-size: 0.88rem;
+      }
+      .langs {
+        margin-top: 14px;
+        font-size: 0.9rem;
+      }
+      .langs a {
+        color: #1d2a3a;
+        margin-right: 12px;
+      }
+      code {
+        font-size: 0.85rem;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">MosaicPlan</div>
+    <div class="card" id="msg" data-testid="webview-update" role="alert">
+      <h1>Android System WebView aktualisieren</h1>
+      <p>Bitte „Android System WebView“ bzw. „Google Chrome“ im Play Store aktualisieren und MosaicPlan neu starten.</p>
+    </div>
+    <script>
+      (function () {
+        var MIN = 111;
+        var T = {
+          de: {
+            oldTitle: 'Android System WebView ist zu alt',
+            oldText: 'MosaicPlan braucht die Android-Komponente „Android System WebView“ ab Version {min}. Auf diesem Gerät ist Version {ver} aktiv.',
+            featText: 'Auf diesem Gerät fehlt eine Funktion, die MosaicPlan braucht ({reason}). Meist hilft es, die WebView zu aktualisieren.',
+            steps: [
+              'Play Store öffnen (Knöpfe unten).',
+              'Android 10 und neuer: „Android System WebView“ aktualisieren. Android 7–9: „Google Chrome“ aktualisieren – dort stellt Chrome die WebView.',
+              'MosaicPlan ganz schließen (aus „Zuletzt verwendet“ entfernen) und neu starten.'
+            ],
+            webview: 'Android System WebView im Play Store',
+            chrome: 'Google Chrome im Play Store',
+            web: 'Play Store im Browser öffnen',
+            keep: 'Ihre Projekte bleiben auf dem Gerät gespeichert. Bitte die App nicht deinstallieren und keine App-Daten löschen – dabei gingen sie verloren.',
+            browserTitle: 'Dieser Browser ist zu alt für MosaicPlan',
+            browserText: 'MosaicPlan braucht Chrome oder Edge ab Version 111, Firefox ab 114 oder Safari ab 16.4. Bitte den Browser aktualisieren und die Seite neu laden.',
+            errTitle: 'MosaicPlan konnte nicht geladen werden',
+            errText: 'Die Oberfläche der App wurde nicht geladen. Bitte MosaicPlan ganz schließen (aus „Zuletzt verwendet“ entfernen) und neu starten.',
+            retry: 'Erneut versuchen',
+            tech: 'Technische Angaben'
+          },
+          en: {
+            oldTitle: 'Android System WebView is too old',
+            oldText: 'MosaicPlan needs the Android component “Android System WebView” version {min} or newer. This device uses version {ver}.',
+            featText: 'This device lacks a feature MosaicPlan needs ({reason}). Updating the WebView usually helps.',
+            steps: [
+              'Open the Play Store (buttons below).',
+              'Android 10 and newer: update “Android System WebView”. Android 7–9: update “Google Chrome” – there Chrome provides the WebView.',
+              'Close MosaicPlan completely (remove it from “Recents”) and start it again.'
+            ],
+            webview: 'Android System WebView in the Play Store',
+            chrome: 'Google Chrome in the Play Store',
+            web: 'Open the Play Store in the browser',
+            keep: 'Your projects stay stored on the device. Please do not uninstall the app or clear its data – that would delete them.',
+            browserTitle: 'This browser is too old for MosaicPlan',
+            browserText: 'MosaicPlan needs Chrome or Edge 111+, Firefox 114+ or Safari 16.4+. Please update the browser and reload the page.',
+            errTitle: 'MosaicPlan could not be loaded',
+            errText: 'The app interface did not load. Please close MosaicPlan completely (remove it from “Recents”) and start it again.',
+            retry: 'Try again',
+            tech: 'Technical details'
+          },
+          tr: {
+            oldTitle: 'Android System WebView çok eski',
+            oldText: 'MosaicPlan, “Android System WebView” bileşeninin {min} veya daha yeni sürümünü gerektirir. Bu cihazda {ver} sürümü kullanılıyor.',
+            featText: 'Bu cihazda MosaicPlan’ın ihtiyaç duyduğu bir özellik eksik ({reason}). Genellikle WebView’i güncellemek yardımcı olur.',
+            steps: [
+              'Play Store’u açın (aşağıdaki düğmeler).',
+              'Android 10 ve üzeri: “Android System WebView”i güncelleyin. Android 7–9: “Google Chrome”u güncelleyin – orada WebView’i Chrome sağlar.',
+              'MosaicPlan’ı tamamen kapatın (“Son kullanılanlar”dan kaldırın) ve yeniden başlatın.'
+            ],
+            webview: 'Play Store’da Android System WebView',
+            chrome: 'Play Store’da Google Chrome',
+            web: 'Play Store’u tarayıcıda aç',
+            keep: 'Projeleriniz cihazda kayıtlı kalır. Lütfen uygulamayı kaldırmayın ve verilerini silmeyin – aksi halde projeler silinir.',
+            browserTitle: 'Bu tarayıcı MosaicPlan için çok eski',
+            browserText: 'MosaicPlan; Chrome veya Edge 111+, Firefox 114+ ya da Safari 16.4+ gerektirir. Lütfen tarayıcıyı güncelleyip sayfayı yeniden yükleyin.',
+            errTitle: 'MosaicPlan yüklenemedi',
+            errText: 'Uygulama arayüzü yüklenmedi. Lütfen MosaicPlan’ı tamamen kapatın (“Son kullanılanlar”dan kaldırın) ve yeniden başlatın.',
+            retry: 'Tekrar dene',
+            tech: 'Teknik bilgiler'
+          }
+        };
+
+        function param(name) {
+          var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(location.search);
+          return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+        }
+        function pickLang() {
+          var l = param('lang') || (navigator.languages && navigator.languages[0]) || navigator.language || 'de';
+          l = String(l).toLowerCase();
+          if (l.indexOf('en') === 0) return 'en';
+          if (l.indexOf('tr') === 0) return 'tr';
+          return 'de';
+        }
+        function fill(s, v) {
+          return s.replace(/\{(\w+)\}/g, function (_, k) {
+            return v[k] !== undefined ? String(v[k]) : '';
+          });
+        }
+        function el(tag, attrs, text) {
+          var e = document.createElement(tag);
+          if (attrs) for (var k in attrs) if (attrs.hasOwnProperty(k)) e.setAttribute(k, attrs[k]);
+          if (text) e.appendChild(document.createTextNode(text));
+          return e;
+        }
+
+        var ua = navigator.userAgent || '';
+        var m = /Chrome\/(\d+)/.exec(ua);
+        var ver = m ? parseInt(m[1], 10) : 0;
+        var reason = param('reason');
+        var inApp = !!window.androidBridge || /; wv\)/.test(ua);
+        var outdated = !!reason || (ver > 0 && ver < MIN);
+        var lang = pickLang();
+        var t = T[lang];
+        document.documentElement.lang = lang;
+
+        var box = document.getElementById('msg');
+        while (box.firstChild) box.removeChild(box.firstChild);
+        box.setAttribute('data-kind', outdated ? (inApp ? 'update' : 'browser') : 'error');
+
+        if (outdated && inApp) {
+          box.appendChild(el('h1', null, t.oldTitle));
+          box.appendChild(el('p', null, reason ? t.featText.replace('{reason}', reason) : fill(t.oldText, { min: MIN, ver: ver })));
+          var ol = el('ol');
+          for (var i = 0; i < t.steps.length; i++) ol.appendChild(el('li', null, t.steps[i]));
+          box.appendChild(ol);
+          box.appendChild(el('a', { 'class': 'btn primary', href: 'market://details?id=com.google.android.webview', 'data-testid': 'market-webview' }, t.webview));
+          box.appendChild(el('a', { 'class': 'btn', href: 'market://details?id=com.android.chrome', 'data-testid': 'market-chrome' }, t.chrome));
+          box.appendChild(el('a', { 'class': 'btn', href: 'https://play.google.com/store/apps/details?id=com.google.android.webview', 'data-testid': 'play-web' }, t.web));
+          box.appendChild(el('p', { 'class': 'muted' }, t.keep));
+        } else if (outdated) {
+          box.appendChild(el('h1', null, t.browserTitle));
+          box.appendChild(el('p', null, t.browserText));
+        } else {
+          box.appendChild(el('h1', null, t.errTitle));
+          box.appendChild(el('p', null, t.errText));
+          var b = el('button', { 'class': 'btn primary', type: 'button', 'data-testid': 'retry' }, t.retry);
+          b.onclick = function () {
+            location.href = './';
+          };
+          box.appendChild(b);
+          box.appendChild(el('p', { 'class': 'muted' }, t.keep));
+        }
+        box.appendChild(el('p', { 'class': 'muted' }, t.tech + ': ' + (ver ? 'Chrome/WebView ' + ver : '?') + (reason ? ' · ' + reason : '')));
+
+        var langs = el('div', { 'class': 'langs' });
+        var names = { de: 'Deutsch', en: 'English', tr: 'Türkçe' };
+        for (var k in names) {
+          if (!names.hasOwnProperty(k)) continue;
+          var q = '?lang=' + k + (reason ? '&reason=' + encodeURIComponent(reason) : '');
+          langs.appendChild(el('a', { href: q, lang: k }, names[k]));
+        }
+        box.appendChild(langs);
+      })();
+    </script>
+  </body>
+</html>

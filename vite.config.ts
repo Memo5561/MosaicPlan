@@ -31,6 +31,10 @@ export default defineConfig({
       },
     }),
   ],
+  // Ausdrücklich festgelegt (entspricht Vite 8 „baseline-widely-available“), damit ein Vite-Update die
+  // Mindestversion nicht still verschiebt. Muss zu android.minWebViewVersion (capacitor.config.ts) und
+  // zum Funktionstest in index.html passen.
+  build: { target: ['chrome111', 'edge111', 'firefox114', 'safari16.4'] },
   worker: { format: 'es' },
   test: {
     include: ['tests/**/*.test.ts'],

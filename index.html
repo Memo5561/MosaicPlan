@@ -11,6 +11,79 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Funktionstest vor dem App-Bundle (absichtlich ES5, kein Modul): Das Bundle ist für Chrome/Edge 111,
+      // Firefox 114 und Safari 16.4 gebaut (vite.config.ts). Fehlt hier etwas, erscheint statt einer leeren
+      // Seite eine Erklärung; main.tsx startet die App dann nicht (window.__mpUnsupported).
+      (function () {
+        var reason = '';
+        try {
+          new Function('var o={};o.a??=1;o.b||=2;o.c&&=3;class X{f=1;#p=2;static s=3;static{X.s=4}m(){return #p in this}}return o?.a');
+        } catch (e) {
+          reason = 'syntax';
+        }
+        if (!reason && typeof structuredClone !== 'function') reason = 'structuredClone';
+        if (!reason && typeof Worker === 'undefined') reason = 'Worker';
+        if (!reason) {
+          // Modul-Worker: das Optionsobjekt wird nur gelesen, wenn der Browser „type“ kennt (vor dem
+          // Prüfen der Adresse); die unlesbare Adresse wirft sofort, es startet nie ein Worker.
+          var moduleWorker = false;
+          try {
+            new Worker('http://[', {
+              get type() {
+                moduleWorker = true;
+                return 'module';
+              }
+            });
+          } catch (e) {}
+          if (!moduleWorker) reason = 'module worker';
+        }
+        if (!reason) return;
+        window.__mpUnsupported = reason;
+        // Im APK (Capacitor) die ausführliche Hinweisseite mit Play-Store-Links zeigen
+        if (window.androidBridge) {
+          location.replace('webview-update.html?reason=' + encodeURIComponent(reason));
+          return;
+        }
+        var l = String((navigator.languages && navigator.languages[0]) || navigator.language || 'de').toLowerCase();
+        var T = {
+          de: [
+            'Dieser Browser ist zu alt für MosaicPlan',
+            'MosaicPlan braucht Chrome oder Edge ab Version 111, Firefox ab 114 oder Safari ab 16.4. Bitte den Browser aktualisieren (auf Android: „Google Chrome“ bzw. „Android System WebView“ im Play Store) und die Seite neu laden. Ihre Projekte bleiben im Browser gespeichert.',
+            'Neu laden',
+            'Fehlende Funktion'
+          ],
+          en: [
+            'This browser is too old for MosaicPlan',
+            'MosaicPlan needs Chrome or Edge 111+, Firefox 114+ or Safari 16.4+. Please update the browser (on Android: “Google Chrome” or “Android System WebView” in the Play Store) and reload the page. Your projects stay stored in the browser.',
+            'Reload',
+            'Missing feature'
+          ],
+          tr: [
+            'Bu tarayıcı MosaicPlan için çok eski',
+            'MosaicPlan; Chrome veya Edge 111+, Firefox 114+ ya da Safari 16.4+ gerektirir. Lütfen tarayıcıyı güncelleyin (Android’de Play Store’dan “Google Chrome” veya “Android System WebView”) ve sayfayı yeniden yükleyin. Projeleriniz tarayıcıda kayıtlı kalır.',
+            'Yeniden yükle',
+            'Eksik özellik'
+          ]
+        };
+        var t = l.indexOf('en') === 0 ? T.en : l.indexOf('tr') === 0 ? T.tr : T.de;
+        var root = document.getElementById('root');
+        root.innerHTML =
+          '<div style="padding:24px 12px"><div role="alert" data-testid="unsupported-browser" style="max-width:640px;margin:0 auto;padding:16px 18px;background:#fff;border:1px solid #e2ddd3;border-radius:12px;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#1d2a3a;line-height:1.5">' +
+          '<h1 style="font-size:1.3rem;margin:0 0 8px"></h1><p></p>' +
+          '<button type="button" style="min-height:44px;padding:10px 16px;border-radius:10px;border:1px solid #1d2a3a;background:#fff;font-size:16px;cursor:pointer"></button>' +
+          '<p style="color:#5f6675;font-size:0.88rem"></p></div></div>';
+        var box = root.firstChild.firstChild;
+        box.getElementsByTagName('h1')[0].appendChild(document.createTextNode(t[0]));
+        box.getElementsByTagName('p')[0].appendChild(document.createTextNode(t[1]));
+        var b = box.getElementsByTagName('button')[0];
+        b.appendChild(document.createTextNode(t[2]));
+        b.onclick = function () {
+          location.reload();
+        };
+        box.getElementsByTagName('p')[1].appendChild(document.createTextNode(t[3] + ': ' + reason));
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

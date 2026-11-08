@@ -11,8 +11,10 @@ import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
 import type { ComputeDiagnostics } from '../../core/mosaic';
 import { isCommitting } from '../../workers/jobs';
+import { AccentsPanel } from './AccentColors';
 import '../css/w2-workspace-shell.css';
 import '../css/w3-live-preview.css';
+import '../css/w4-cut-placement-accents.css';
 
 /** „Verwendete Farben: M von N“ – nur wenn die Berechnung beide Zahlen geliefert hat (ältere Ergebnisse nicht). */
 function ColorsUsedRow({ d }: { d: ComputeDiagnostics }) {
@@ -50,12 +52,39 @@ function DiagRows({ d, formula, testPrefix }: { d: ComputeDiagnostics; formula: 
       <ColorsUsedRow d={d} />
       <tr>
         <th>{t('compute.splitCells')}</th>
-        <td>{n(d.splitCells)}</td>
+        <td data-testid={`${testPrefix}split-cells`}>
+          {n(d.splitCells)}
+          {d.splitCellsInRegions !== undefined && <span className="muted"> {t('w4cpa.inRegions', { n: n(d.splitCellsInRegions) })}</span>}
+        </td>
       </tr>
       <tr>
         <th>{t('compute.subCells')}</th>
-        <td>{n(d.subCells)}</td>
+        <td data-testid={`${testPrefix}sub-cells`}>
+          {n(d.subCells)}
+          {d.subCellsInRegions !== undefined && <span className="muted"> {t('w4cpa.inRegions', { n: n(d.subCellsInRegions) })}</span>}
+        </td>
       </tr>
+      {d.regionCells !== undefined && (
+        <tr>
+          <th>{t('w4cpa.regionCells')}</th>
+          <td data-testid={`${testPrefix}region-cells`}>{n(d.regionCells)}</td>
+        </tr>
+      )}
+      {d.bgCutFactor !== undefined && (
+        <tr>
+          <th>{t('w4cpa.bgUsed')}</th>
+          <td data-testid={`${testPrefix}bg-factor`}>{t('w4cpa.bgUsedVal', { f: n(d.bgCutFactor, 1) })}</td>
+        </tr>
+      )}
+      {d.contourPairs && d.contourPairs.facing > 0 && (
+        <tr title={t('w4cpa.contourTitle')}>
+          <th>{t('w4cpa.contour')}</th>
+          <td data-testid={`${testPrefix}contour`}>
+            {t('w4cpa.contourVal', { a: n(d.contourPairs.aligned), f: n(d.contourPairs.facing), pct: n((d.contourPairs.aligned / d.contourPairs.facing) * 100, 0) })}
+            {d.contourContinuity && <span className="muted"> · {t('w4cpa.contourOn')}</span>}
+          </td>
+        </tr>
+      )}
       <tr>
         <th>{t('compute.recCells')}</th>
         <td data-testid={`${testPrefix}rec-cells`}>{n(d.recommendCells)}</td>
@@ -338,6 +367,12 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
               <DiagRows d={pvd} formula={previewDE} testPrefix="preview-" />
             </table>
           </>
+        )}
+        {/* Fehlende Akzentfarben des Ergebnisses, das „Übernehmen“ speichern würde (Vorschau) bzw. des gespeicherten */}
+        {pvd ? (
+          <AccentsPanel api={api} d={pvd} formula={previewDE} stale={false} fromPreview testId="compute-accents" />
+        ) : (
+          d && api.computed && <AccentsPanel api={api} d={d} formula={resultDE} stale={api.stale} testId="compute-accents" />
         )}
       </div>
     </div>

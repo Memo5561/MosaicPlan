@@ -5,14 +5,14 @@
  *
  * Die Berechnung läuft kachelweise (64×64 Zellen) und meldet Fortschritt.
  */
-import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
+import { deltaE2000, deltaE76, hexToLab, isValidHex, labToHex, NearestColorMatcher, rgbToLabInto, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
 import { nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
 import { regionMask, detailMap, type RGBAImage } from './imageOps';
-import { kmeansLab } from './kmeans';
-import type { Layout } from './layout';
+import { kmeansLab, kmeansLabFixed } from './kmeans';
+import { pieceId, type Layout } from './layout';
 import type { Pt } from './geometry';
 import { cellRect, diagA, diagB, lineSplit, pieceCuttable, subRects } from './pieces';
-import { CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type Region, type ShapeOptions } from './types';
+import { bgCutFactorOf, CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type Region, type ShapeOptions } from './types';
 
 export interface FixedColor {
   lab: Lab;
@@ -53,8 +53,11 @@ export interface ComputeParams {
   lang?: ColorNameLang;
   seed?: number;
   /**
-   * Vom Benutzer bestätigte Akzentfarben, die in die Palette sollen. Vertrag für Welle 4 – die Berechnung nutzt sie
-   * noch nicht.
+   * Pflichtfarben (vom Benutzer bestätigte Akzentfarben, z. B. Schwarz für Pupillen) – nur in den Modi 'auto' und
+   * 'auto-snap': K-Means bestimmt nur die übrigen Farben (die Pflichtfarben nehmen als feste Zentren teil und werden nie
+   * verschoben). 'auto': die Farbe kommt mit genau ihrem HEX-Wert in die Palette. 'auto-snap': das nächste Material
+   * (Formel der Berechnung) ist fest gewählt. Wie jede Farbe entfällt sie, wenn kein Stein sie erhält
+   * (diagnostics.pinnedColors sagt, was mit jeder geschehen ist). Gleiche HEX-Werte zählen einmal.
    */
   pinnedColors?: FixedColor[];
   /**
@@ -111,12 +114,76 @@ export interface SnapSelectionInfo {
   costSelected?: number;
 }
 
+/**
+ * Akzentfarbe, die der Palette fehlt (z. B. Pupillen, Glanzlichter): Steine, deren eigene Bildfarbe mehr als
+ * ACCENT_MIN_DE von der erhaltenen Farbe abweicht, gierig zu Gruppen ähnlicher Bildfarben zusammengefasst
+ * (ΔE76 < ACCENT_GROUP_DE zum Startstein). Der Vorschlag ist der gemessene Mittelwert dieser Bildfarben – nichts
+ * erfunden. Alle Zahlen sind exakt gezählt.
+ */
+export interface MissingAccent {
+  /** Vorschlag: Mittelwert der Bildfarben der Steine (L*a*b*, auf 0,01 gerundet) */
+  lab: Lab;
+  /** derselbe Vorschlag als HEX (sRGB, ggf. in den Farbraum geklemmt) */
+  hex: string;
+  /** Anzahl der Steine (Teilstücke) dieser Gruppe */
+  stones: number;
+  /** mittleres ΔE (Formel der Berechnung) dieser Steine zu der Farbe, die sie erhalten haben */
+  meanDE: number;
+  /** ΔE (Formel der Berechnung) zwischen Vorschlag und nächster Palettenfarbe */
+  nearestDE: number;
+  /** Steine dieser Gruppe in Leserichtung (Bezeichnungen wie A001-2), höchstens ACCENT_MAX_IDS */
+  cellIds: string[];
+  /** davon in Gesichtsbereichen (exakt) */
+  inFace: number;
+  /** nur „Automatisch → eigene Materialien“: Material, auf das der Vorschlag als Pflichtfarbe fiele */
+  snapMaterialId?: string;
+  snapHex?: string;
+  snapName?: string;
+  /** ΔE (Formel der Berechnung) zwischen Vorschlag und diesem Material */
+  snapDE?: number;
+}
+
+/** Was eine Pflichtfarbe in dieser Berechnung bewirkt hat (exakt aus der Zuordnung). */
+export interface PinnedColorResult {
+  /** HEX der Pflichtfarbe, wie übergeben (Großbuchstaben) */
+  hex: string;
+  /** Palettenfarbe, die sie geworden ist ('auto': derselbe HEX; 'auto-snap': das nächste Material); fehlt = entfallen */
+  paletteHex?: string;
+  /** 'auto-snap': gewähltes Material */
+  materialId?: string;
+  /** ΔE (Formel der Berechnung) zwischen Pflichtfarbe und Palettenfarbe ('auto' immer 0) */
+  snapDE?: number;
+  /** Steine, die diese Palettenfarbe erhalten haben (0 = nicht benötigt, aus der Palette entfernt) */
+  stones: number;
+}
+
 export interface ComputeDiagnostics {
   meanDeltaE: number;
   maxDeltaE: number;
   p95DeltaE: number;
   splitCells: number;
   subCells: number;
+  /**
+   * Nur mit Gesichts-/Detailbereichen: davon Zellen, deren Mitte in einem Bereich liegt (exakt aus data.kind gezählt,
+   * dieselbe Regel wie die Formwahl).
+   */
+  splitCellsInRegions?: number;
+  subCellsInRegions?: number;
+  /** Nur mit Bereichen: Rasterzellen, deren Mitte in einem Gesichts-/Detailbereich liegt */
+  regionCells?: number;
+  /** Nur mit Bereichen und Faktor > 1: verwendeter Faktor für Schnitte außerhalb der Bereiche (ShapeOptions.bgCutFactor) */
+  bgCutFactor?: number;
+  /**
+   * Kantenschnitte benachbarter Steine, die beide zur gemeinsamen Fuge zeigen (`facing`), und davon die, deren Linien sich
+   * auf der Fugenmitte bis auf CONTOUR_ALIGN_MM treffen (`aligned`) – exakt aus der Geometrie (contourAlignment).
+   */
+  contourPairs?: { facing: number; aligned: number };
+  /** „Konturen durchgehend schneiden“ war bei dieser Berechnung eingeschaltet */
+  contourContinuity?: boolean;
+  /** Modi 'auto', 'auto-snap', 'custom': fehlende Akzentfarben (höchstens ACCENT_MAX, wichtigste zuerst; leer = keine) */
+  missingAccents?: MissingAccent[];
+  /** Pflichtfarben dieser Berechnung und was aus ihnen wurde ('auto'/'auto-snap') */
+  pinnedColors?: PinnedColorResult[];
   recommendCells: number;
   timeMs: number;
   samplesPerCell: number;
@@ -231,6 +298,13 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const dmap = shapes.autoDetail ? detailMap(img) : null;
   const faceMask = params.regions.some((r) => r.type === 'face') ? regionMask(W, H, params.regions, ['face']) : null;
   const detMask = params.regions.some((r) => r.type === 'detail') ? regionMask(W, H, params.regions, ['detail']) : null;
+  // Schnitte außerhalb markierter Bereiche: nur wenn es überhaupt einen Bereich gibt (sonst bitgleich zu Faktor 1)
+  const anyRegion = !!(faceMask || detMask);
+  const bgFactor = anyRegion ? bgCutFactorOf(shapes) : 1;
+  /** je Zelle: 0 = außerhalb, 1 = Detailbereich, 2 = Gesichtsbereich (nur mit Bereichen) */
+  const regionOf = anyRegion ? new Uint8Array(N) : null;
+  // Konturen durchgehend schneiden (nur sinnvoll, wenn Kantenschnitte erlaubt sind)
+  const continuity = !!shapes.contourContinuity && shapes.line;
   onProgress?.('lab', 1);
 
   const anyShape = shapes.diagonal || shapes.line || shapes.subdivide;
@@ -353,7 +427,13 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
           let lambda = baseLambda;
           if (inFace) lambda *= 0.4;
           else if (inDetail) lambda *= 0.5;
-          if (dmap) lambda *= 1.25 - 0.5 * det;
+          const detMul = dmap ? 1.25 - 0.5 * det : 1;
+          if (dmap) lambda *= detMul;
+          // Außerhalb aller markierten Bereiche (nur mit Faktor > 1; Faktor 1 = unverändert, keine Multiplikation):
+          // Schnitte um den Faktor teurer, und Kantendichte (Textur, Spiegelungen) macht sie dort nicht mehr billiger.
+          const outside = anyRegion && !inFace && !inDetail;
+          if (regionOf) regionOf[idx] = inFace ? 2 : inDetail ? 1 : 0;
+          if (outside && bgFactor > 1) lambda *= detMul < 1 ? bgFactor / detMul : bgFactor;
           weight[idx] = (inFace ? 3 : 1) * (skin ? 1.5 : 1);
 
           let bestKind: number = CellKind.FULL;
@@ -423,6 +503,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
               const theta = 0.5 * Math.atan2(2 * mxy, mxx - myy);
               let ai = Math.round(((theta < 0 ? theta + Math.PI : theta) * 180) / Math.PI / 15) % 12;
               const tryAngles = [ai, (ai + 1) % 12, (ai + 11) % 12];
+              // Konturen durchgehend: Ankerpunkte = Kantenschnitte des linken/oberen Nachbarn (in Zeilenfolge bereits
+              // entschieden), verlängert bis zur Fugenmitte, relativ zur Zellmitte. Kandidaten auf dem üblichen
+              // 0,5-mm-Raster, die einen Anker auf CONTOUR_ANCHOR_MM treffen, erhalten einen Bonus (im Gesicht halb).
+              const anchors = continuity ? contourAnchors(layout, data, row, col, r) : NO_ANCHORS;
+              const nAnch = anchors.length / 2;
+              const bonusEach = nAnch ? CONTOUR_BONUS * lambda * NS * (inFace ? CONTOUR_FACE : 1) : 0;
               for (ai of tryAngles) {
                 const nx = Math.cos(ANGLES[ai]);
                 const ny = Math.sin(ANGLES[ai]);
@@ -460,7 +546,8 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
                     sb: pre[tot + 3] - gA.sb,
                     sq: pre[tot + 4] - gA.sq,
                   };
-                  const score = sse(gA) + sse(gB) + lambda * NS * 1.4;
+                  let score = sse(gA) + sse(gB) + lambda * NS * 1.4;
+                  if (nAnch) for (let q = 0; q < nAnch; q++) if (Math.abs(nx * anchors[q * 2] + ny * anchors[q * 2 + 1] - dq) < CONTOUR_ANCHOR_MM) score -= bonusEach;
                   if (score >= bestScore) continue;
                   const [pa, pb] = lineSplit(r, nx, ny, dq, g);
                   if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) continue;
@@ -477,7 +564,9 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
             }
 
             // ---- Feinere Steine (k×k)
-            const subAllowed = shapes.subdivide && (inFace || inDetail || !shapes.autoDetail || det > 0.5);
+            // Mit „wenige Schnitte außerhalb markierter Bereiche“ (Faktor > 1) dort keine feineren Steine – höchstens als
+            // Empfehlung (Rec.FINER, nicht berechnet)
+            const subAllowed = shapes.subdivide && (inFace || inDetail || !shapes.autoDetail || det > 0.5) && !(outside && bgFactor > 1);
             const k = shapes.subdivide ? shapes.subdivK : recK;
             if (S % k === 0) {
               const per = S / k;
@@ -530,6 +619,96 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     }
   }
 
+  // ---------------- Konturen durchgehend: zweiter Durchgang über die Kantenschnitte
+  // Beim ersten Durchgang kennt eine Zelle nur ihren linken/oberen Nachbarn. Jetzt sind alle Kantenschnitte bekannt:
+  // Jeder Kantenschnitt, an den ein Nachbarschnitt heranführt, darf seine Lage noch einmal wählen – mit Ankern aller vier
+  // Nachbarn, unter allen 15°-Stufen, auf demselben 0,5-mm-Raster und mit derselben Mindestbreite. So kann auch die
+  // frühere Zelle der späteren entgegenkommen, oder eine etwas andere Richtung trifft den Nachbarn, wo die eigene zu
+  // schmale Teile ergäbe. Die Zellart bleibt (keine zusätzlichen oder entfallenden Schnitte); nur Lage und Farben der
+  // beiden Teile ändern sich, und nur, wenn die Bewertung (Bildtreue + Schnittaufwand − Bonus) echt besser wird.
+  if (continuity) {
+    const pre = new Float64Array((NS + 1) * 5);
+    for (let row = 0; row < rows; row++)
+      for (let col = 0; col < cols; col++) {
+        const idx = row * cols + col;
+        if (data.kind[idx] !== CellKind.LINE) continue;
+        const cur = data.line.get(idx);
+        if (!cur) continue;
+        const r = cellRect(layout, row, col);
+        const anchors = contourAnchors(layout, data, row, col, r, true);
+        const nAnch = anchors.length / 2;
+        if (!nAnch) continue;
+        sampleCell(row, col);
+        // λ der Zelle wie im ersten Durchgang
+        const cxp = Math.min(W - 1, Math.max(0, Math.floor((layout.colX[col] + layout.colW[col] / 2) * sx)));
+        const cyp = Math.min(H - 1, Math.max(0, Math.floor((layout.rowY[row] + layout.rowH[row] / 2) * sy)));
+        const pix = cyp * W + cxp;
+        const inFace = faceMask ? faceMask[pix] > 0 : false;
+        const inDetail = detMask ? detMask[pix] > 0 : false;
+        const det = dmap ? dmap[pix] : 0;
+        let lambda = baseLambda;
+        if (inFace) lambda *= 0.4;
+        else if (inDetail) lambda *= 0.5;
+        const detMul = dmap ? 1.25 - 0.5 * det : 1;
+        if (dmap) lambda *= detMul;
+        if (anyRegion && !inFace && !inDetail && bgFactor > 1) lambda *= detMul < 1 ? bgFactor / detMul : bgFactor;
+        const bonusEach = CONTOUR_BONUS * lambda * NS * (inFace ? CONTOUR_FACE : 1);
+        let bestScore = Infinity;
+        let curScore = Infinity;
+        let bestLine: Float32Array | null = null;
+        let bestA: Lab = [0, 0, 0];
+        let bestB: Lab = [0, 0, 0];
+        for (let ai = 0; ai < 12; ai++) {
+          const nx = Math.cos(ANGLES[ai]);
+          const ny = Math.sin(ANGLES[ai]);
+          for (let k = 0; k < NS; k++) {
+            T[k] = nx * PX[k] + ny * PY[k];
+            order[k] = k;
+          }
+          const ord = Array.from(order).sort((p, q) => T[p] - T[q]);
+          for (let q = 0; q < NS; q++) {
+            const k = ord[q];
+            const o = q * 5;
+            pre[o + 5] = pre[o] + 1;
+            pre[o + 6] = pre[o + 1] + SL[k];
+            pre[o + 7] = pre[o + 2] + SA[k];
+            pre[o + 8] = pre[o + 3] + SB[k];
+            pre[o + 9] = pre[o + 4] + SL[k] * SL[k] + SA[k] * SA[k] + SB[k] * SB[k];
+          }
+          const tot = NS * 5;
+          const isCurAngle = Math.abs(cur[0] - nx) < 1e-6 && Math.abs(cur[1] - ny) < 1e-6;
+          const ext = Math.abs(nx) * (r.w / 2) + Math.abs(ny) * (r.h / 2);
+          let cnt = 0;
+          for (let d = -ext + 0.5; d <= ext - 0.5 + 1e-9; d += 0.5) {
+            const dq = Math.round(d * 2) / 2;
+            while (cnt < NS && T[ord[cnt]] < dq) cnt++;
+            if (cnt < NS * 0.12 || cnt > NS * 0.88) continue;
+            const gA: SSEGroup = { n: cnt, sl: pre[cnt * 5 + 1], sa: pre[cnt * 5 + 2], sb: pre[cnt * 5 + 3], sq: pre[cnt * 5 + 4] };
+            const gB: SSEGroup = { n: NS - cnt, sl: pre[tot + 1] - gA.sl, sa: pre[tot + 2] - gA.sa, sb: pre[tot + 3] - gA.sb, sq: pre[tot + 4] - gA.sq };
+            let score = sse(gA) + sse(gB) + lambda * NS * 1.4;
+            for (let q = 0; q < nAnch; q++) if (Math.abs(nx * anchors[q * 2] + ny * anchors[q * 2 + 1] - dq) < CONTOUR_ANCHOR_MM) score -= bonusEach;
+            if (isCurAngle && Math.abs(cur[2] - dq) < 1e-6) curScore = score;
+            if (score >= bestScore) continue;
+            const [pa, pb] = lineSplit(r, nx, ny, dq, g);
+            if (!pieceCuttable(pa, shapes.minPieceMm) || !pieceCuttable(pb, shapes.minPieceMm)) continue;
+            bestScore = score;
+            bestLine = new Float32Array([nx, ny, dq]);
+            bestA = meanOf(gA);
+            bestB = meanOf(gB);
+          }
+        }
+        // nur bei echter Verbesserung gegenüber der bisherigen Lage (gleich bewertet, mit allen vier Nachbarn)
+        if (!bestLine || !(bestScore < curScore - 1e-9)) continue;
+        data.line.set(idx, bestLine);
+        c1Lab[idx * 3] = qL(bestA[0]);
+        c1Lab[idx * 3 + 1] = qAB(bestA[1]);
+        c1Lab[idx * 3 + 2] = qAB(bestA[2]);
+        c2Lab[idx * 3] = qL(bestB[0]);
+        c2Lab[idx * 3 + 1] = qAB(bestB[1]);
+        c2Lab[idx * 3 + 2] = qAB(bestB[2]);
+      }
+  }
+
   // ---------------- Palette
   onProgress?.('palette', 0);
   const fromQ = (arr: Uint8Array, i: number): Lab => [arr[i * 3] / 2.55, arr[i * 3 + 1] - 128, arr[i * 3 + 2] - 128];
@@ -575,17 +754,45 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     return { pts: new Float32Array(pts), ws: new Float32Array(ws) };
   };
 
+  // Pflichtfarben (nur Automatik-Modi): HEX eindeutig, L*a*b* aus dem HEX-Wert
+  const pinned = params.paletteMode === 'auto' || params.paletteMode === 'auto-snap' ? normalizePinned(params.pinnedColors) : [];
+  /** 'auto': Index der Pflichtfarbe j in paletteLab · 'auto-snap': gewähltes Material und dessen ΔE zur Pflichtfarbe */
+  const pinnedAt: number[] = [];
+  const pinnedSnap: { m: number; d: number }[] = [];
   if (params.paletteMode === 'auto' || params.paletteMode === 'auto-snap') {
     const { pts, ws } = buildSamples();
-    const km = kmeansLab(pts, ws, Math.max(1, params.colorCount), 30, params.seed ?? 7);
-    imageColors = km.centers.length;
-    if (params.paletteMode === 'auto') {
+    const k = Math.max(1, params.colorCount);
+    if (params.paletteMode === 'auto' && pinned.length) {
+      // K-Means nur für die übrigen Farben: dieselbe Lösung wie ohne Pflichtfarben, davon die k − Pflichtfarben
+      // wichtigsten Zentren, dann Lloyd mit den Pflichtfarben als festen Zentren (nie verschoben). Die Pflichtfarben
+      // kommen mit genau ihrem HEX-Wert in die Palette; die übrige Palette ändert sich so wenig wie möglich.
+      const km0 = kmeansLab(pts, ws, k, 30, params.seed ?? 7);
+      const km = kmeansLabFixed(pts, ws, km0.centers, pinned.map((p) => p.lab), Math.max(0, km0.centers.length + pinned.length - k));
+      imageColors = km.centers.length + pinned.length;
+      paletteLab = [...km.centers];
+      paletteMeta = km.centers.map(() => ({}));
+      for (const p of pinned) {
+        pinnedAt.push(paletteLab.length);
+        paletteLab.push(p.lab);
+        paletteMeta.push({ hex: p.hex });
+      }
+    } else if (params.paletteMode === 'auto') {
+      const km = kmeansLab(pts, ws, k, 30, params.seed ?? 7);
+      imageColors = km.centers.length;
       paletteLab = km.centers;
       paletteMeta = km.centers.map(() => ({}));
     } else {
       if (!fixed.length) throw new Error('Keine Materialfarben vorhanden.');
+      // Bildfarben wie ohne Pflichtfarben (auch für „Fehlende Farben“); Pflichtfarben → nächstes Material, fest gewählt
+      const km = kmeansLab(pts, ws, k, 30, params.seed ?? 7);
+      imageColors = km.centers.length;
       imageCentres = km.centers;
-      const k = Math.max(1, params.colorCount);
+      const locked: number[] = [];
+      for (const p of pinned) {
+        const nf = nearestFixed(fixed, p.lab, dE);
+        pinnedSnap.push({ m: nf.index, d: nf.d });
+        if (!locked.includes(nf.index)) locked.push(nf.index);
+      }
       // Startmenge (früheres Verfahren): jede Bildfarbe → nächstes Material (exakt über alle Materialien, Formel der
       // Projekteinstellung); mehrere Bildfarben können auf dasselbe Material fallen.
       const snapSet: number[] = [];
@@ -595,11 +802,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       }
       let chosen = snapSet;
       if (params.snapMethod === 'nearest') {
-        snapSelection = { method: 'nearest', snapColors: snapSet.length, selected: snapSet.length, swaps: 0, filled: 0, stockSwaps: 0, budgetHit: false };
+        if (locked.length) chosen = [...locked, ...snapSet.filter((m) => !locked.includes(m))];
+        snapSelection = { method: 'nearest', snapColors: snapSet.length, selected: chosen.length, swaps: 0, filled: 0, stockSwaps: 0, budgetHit: false };
       } else {
         // Direkte Auswahl aus dem Bestand auf einer Zusammenfassung der Steinfarben (bis 256 gewichtete Zentren)
         const sum = kmeansLab(pts, ws, Math.min(Math.max(SNAP_SUMMARY_K, 2 * k), ws.length), SNAP_SUMMARY_ITER, (params.seed ?? 7) + 1);
-        const sel = selectMaterials(sum.centers, sum.weights, fixed, k, formula, snapSet, { pts, ws });
+        const sel = selectMaterials(sum.centers, sum.weights, fixed, k, formula, snapSet, { pts, ws }, locked);
         chosen = sel.chosen;
         snapSelection = {
           method: 'select',
@@ -640,6 +848,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         paletteLab.push(fixed[m].lab);
         paletteMeta.push({ hex: fixed[m].hex, name: fixed[m].name, materialId: fixed[m].materialId, ...(from ? { mergedFrom: from[q] } : {}) });
       });
+      for (const ps of pinnedSnap) pinnedAt.push(chosen.indexOf(ps.m));
     }
   } else {
     if (!fixed.length) throw new Error('Die Palette ist leer.');
@@ -689,8 +898,30 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   // gemessen gegen die Palettenfarbe, wie sie gespeichert wird (Lab auf 0,01 gerundet) – so ergibt eine erneute
   // Berechnung mit der gespeicherten Palette dieselben Werte
   const storedLab: Lab[] = paletteLab.map((l) => [round2(l[0]), round2(l[1]), round2(l[2])]);
+  // Fehlende Akzentfarben: Steine, deren Bildfarbe mehr als ACCENT_MIN_DE von der erhaltenen Farbe abweicht, je
+  // gespeichertem Lab-Rasterwert gesammelt (exakte Anzahl, Summen und Beispiel-Steine). Nicht bei „Nur eigene
+  // Materialien“ – dort zeigt „Fehlende Farben“ dasselbe als Farbton zum Nachkaufen.
+  const accentBins = params.paletteMode !== 'materials' ? new Map<number, AccentBin>() : null;
+  const noteAccent = (l: Lab, d: number, idx: number, piece: number, pieces: number) => {
+    const key = (qL(l[0]) << 16) | (qAB(l[1]) << 8) | qAB(l[2]);
+    let b = accentBins!.get(key);
+    if (!b) {
+      b = { key, n: 0, sl: 0, sa: 0, sb: 0, sd: 0, sx: 0, maxWd: 0, face: 0, refs: [] };
+      accentBins!.set(key, b);
+    }
+    const wd = weight[idx] * d;
+    b.n++;
+    b.sl += l[0];
+    b.sa += l[1];
+    b.sb += l[2];
+    b.sd += d;
+    b.sx += weight[idx] * (d - ACCENT_MIN_DE);
+    if (wd > b.maxWd) b.maxWd = wd;
+    if (regionOf && regionOf[idx] === 2) b.face++;
+    if (b.refs.length < ACCENT_MAX_IDS * 3) b.refs.push(idx, piece, pieces);
+  };
   /** `onGrid`: Farbe liegt auf dem gespeicherten Raster (ganze Steine, Zweiteiler) – dann ist der Zwischenspeicher exakt */
-  const track = (l: Lab, pi: number, onGrid: boolean) => {
+  const track = (l: Lab, pi: number, onGrid: boolean): number => {
     const p = storedLab[pi];
     const d = dE(l[0], l[1], l[2], p[0], p[1], p[2]);
     sumDE += d;
@@ -707,6 +938,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       icCnt[ci]++;
       icSum[ci] += d;
     }
+    return d;
   };
   const matchOf = (pi: number): MatchDeltaE => ({
     pieces: pcCnt[pi],
@@ -770,7 +1002,8 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
           errNext[oR + 2] += eb * (1 / 16);
         } else pi = matcher.nearest(l[0], l[1], l[2]);
         data.c1[idx] = pi;
-        track(l, pi, true);
+        const d = track(l, pi, true);
+        if (accentBins && d > ACCENT_MIN_DE) noteAccent(l, d, idx, 0, 1);
       } else if (kind === CellKind.SUB) {
         const s = subLab.get(idx)!;
         const k2 = s.length / 3;
@@ -778,7 +1011,8 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         for (let q = 0; q < k2; q++) {
           const l: Lab = [s[q * 3], s[q * 3 + 1], s[q * 3 + 2]];
           out[q] = matcher.nearest(l[0], l[1], l[2]);
-          track(l, out[q], false);
+          const d = track(l, out[q], false);
+          if (accentBins && d > ACCENT_MIN_DE) noteAccent(l, d, idx, q, k2);
         }
         data.sub.set(idx, out);
         data.c1[idx] = out[0];
@@ -787,8 +1021,10 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         const l2 = fromQ(c2Lab, idx);
         data.c1[idx] = matcher.nearest(l1[0], l1[1], l1[2]);
         data.c2[idx] = matcher.nearest(l2[0], l2[1], l2[2]);
-        track(l1, data.c1[idx], true);
-        track(l2, data.c2[idx], true);
+        const d1 = track(l1, data.c1[idx], true);
+        const d2 = track(l2, data.c2[idx], true);
+        if (accentBins && d1 > ACCENT_MIN_DE) noteAccent(l1, d1, idx, 0, 2);
+        if (accentBins && d2 > ACCENT_MIN_DE) noteAccent(l2, d2, idx, 1, 2);
       }
     }
     const tmp = errCur;
@@ -892,6 +1128,75 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     palette = uniqueAutoNames(palette, lang);
   }
 
+  // ---------------- Wo liegen die Schnitte? (exakt aus data.kind, nur mit markierten Bereichen)
+  let regionDiag: Pick<ComputeDiagnostics, 'splitCellsInRegions' | 'subCellsInRegions' | 'regionCells' | 'bgCutFactor'> = {};
+  if (regionOf) {
+    let splitIn = 0;
+    let subIn = 0;
+    let inside = 0;
+    for (let i = 0; i < N; i++) {
+      if (!regionOf[i]) continue;
+      inside++;
+      const kd = data.kind[i];
+      if (kd === CellKind.SUB) subIn++;
+      else if (kd === CellKind.DIAG_A || kd === CellKind.DIAG_B || kd === CellKind.LINE) splitIn++;
+    }
+    regionDiag = { splitCellsInRegions: splitIn, subCellsInRegions: subIn, regionCells: inside, ...(bgFactor > 1 ? { bgCutFactor: bgFactor } : {}) };
+  }
+
+  // ---------------- Pflichtfarben: was aus jeder geworden ist (Steine exakt aus der Zuordnung)
+  let pinnedResults: PinnedColorResult[] | undefined;
+  if (pinned.length) {
+    pinnedResults = pinned.map((p, j) => {
+      const at = pinnedAt[j] ?? -1;
+      const stones = at >= 0 ? pcCnt[at] : 0;
+      if (params.paletteMode === 'auto') return { hex: p.hex, stones, snapDE: 0, ...(stones > 0 ? { paletteHex: p.hex } : {}) };
+      const ps = pinnedSnap[j];
+      const f = fixed[ps.m];
+      return { hex: p.hex, stones, snapDE: round2(ps.d), ...(f.materialId !== undefined ? { materialId: f.materialId } : {}), ...(stones > 0 ? { paletteHex: f.hex } : {}) };
+    });
+  }
+
+  // ---------------- Fehlende Akzentfarben
+  let missingAccents: MissingAccent[] | undefined;
+  if (accentBins) {
+    const out: (MissingAccent & { sx: number })[] = [];
+    for (const g of groupAccents(accentBins.values())) {
+      const mean: Lab = [g.sl / g.n, g.sa / g.n, g.sb / g.n];
+      // Abstand des Vorschlags zur nächsten Palettenfarbe: liegt er nahe an einer, hilft er nicht
+      let nearestDE = Infinity;
+      for (const pc of palette) nearestDE = Math.min(nearestDE, dE(mean[0], mean[1], mean[2], pc.lab[0], pc.lab[1], pc.lab[2]));
+      if (!(nearestDE > ACCENT_MIN_DE / 2)) continue;
+      let snap: Pick<MissingAccent, 'snapMaterialId' | 'snapHex' | 'snapName' | 'snapDE'> = {};
+      if (params.paletteMode === 'auto-snap') {
+        // Als Pflichtfarbe fiele der Vorschlag auf das nächste Material – ist das schon in der Palette oder selbst
+        // weiter als ACCENT_MIN_DE entfernt, hilft er nicht (dann zeigt „Fehlende Farben“ den Farbton zum Nachkaufen)
+        const nf = nearestFixed(fixed, mean, dE);
+        const f = fixed[nf.index];
+        if (nf.d > ACCENT_MIN_DE || palette.some((pc) => pc.hex === f.hex && pc.materialId === f.materialId)) continue;
+        snap = { ...(f.materialId !== undefined ? { snapMaterialId: f.materialId } : {}), snapHex: f.hex, snapName: f.name, snapDE: round2(nf.d) };
+      }
+      const ids: string[] = [];
+      for (let q = 0; q < g.refs.length; q += 3) {
+        const idx = g.refs[q];
+        ids.push(pieceId(layout, Math.floor(idx / cols), idx % cols, g.refs[q + 1], g.refs[q + 2]));
+      }
+      out.push({
+        lab: [round2(mean[0]), round2(mean[1]), round2(mean[2])],
+        hex: labToHex(mean[0], mean[1], mean[2]),
+        stones: g.n,
+        meanDE: round2(g.sd / g.n),
+        nearestDE: round2(nearestDE),
+        cellIds: ids,
+        inFace: g.face,
+        ...snap,
+        sx: g.sx,
+      });
+    }
+    out.sort((a, b) => b.sx - a.sx || b.stones - a.stones);
+    missingAccents = out.slice(0, ACCENT_MAX).map(({ sx: _sx, ...m }) => m);
+  }
+
   let acc = 0;
   let p95 = 0;
   for (let i = 0; i <= 100; i++) {
@@ -923,12 +1228,238 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       ...(snapSelection ? { snapSelection } : {}),
       ...(missingColors ? { missingColors, missingThreshold: MISSING_DELTA_E, missingChecked: imageCentres.length } : {}),
       ...(dither > 0 ? { ditherExcessMax: round2(ditherExcessMax), ditherExcessOver5 } : {}),
+      ...regionDiag,
+      ...(shapes.line ? { contourPairs: contourAlignment(layout, data) } : {}),
+      ...(continuity ? { contourContinuity: true } : {}),
+      ...(missingAccents ? { missingAccents } : {}),
+      ...(pinnedResults ? { pinnedColors: pinnedResults } : {}),
     },
   };
 }
 
+// ---------------------------------------------------------------- Akzentfarben und Pflichtfarben
+
+/** Steine gelten als „ohne passende Farbe“, wenn ihre Bildfarbe mehr als dieses ΔE (Formel der Berechnung) abweicht */
+export const ACCENT_MIN_DE = 10;
+/** Gruppenradius: Steine mit ΔE76 unter diesem Wert zur Bildfarbe des Startsteins gehören zur Gruppe */
+export const ACCENT_GROUP_DE = 6;
+/** höchstens so viele Vorschläge */
+export const ACCENT_MAX = 3;
+/** höchstens so viele Gruppen werden gebildet (Startsteine in absteigender Wichtigkeit) */
+export const ACCENT_MAX_GROUPS = 64;
+/** höchstens so viele Steinbezeichnungen je Vorschlag (die Anzahl `stones` ist immer vollständig) */
+export const ACCENT_MAX_IDS = 40;
+
+interface AccentBin {
+  /** gespeicherter Lab-Rasterwert (qL, qAB, qAB) */
+  key: number;
+  n: number;
+  sl: number;
+  sa: number;
+  sb: number;
+  /** Σ ΔE zur erhaltenen Farbe */
+  sd: number;
+  /**
+   * Σ Gewicht · (ΔE − ACCENT_MIN_DE): wie weit die Palette diese Steine über die Grenze hinaus verfehlt (Gewicht:
+   * Gesicht ×3, Hautton ×1,5 – wie bei der Palette). Rangfolge der Vorschläge: wenige, aber stark verfehlte Steine im
+   * Gesicht (Pupillen) vor vielen knapp verfehlten.
+   */
+  sx: number;
+  /** größtes Gewicht · ΔE eines Steins (Startstein der Gruppierung) */
+  maxWd: number;
+  /** davon in Gesichtsbereichen */
+  face: number;
+  /** Beispiel-Steine als Tripel [Zellindex, Teilstück, Teilstücke der Zelle] in Leserichtung */
+  refs: number[];
+}
+
+/**
+ * Gierige Gruppierung der Ausreißer-Steine: Start beim Rasterwert mit dem größten Gewicht·ΔE, dazu alle noch freien
+ * Rasterwerte mit ΔE76 < ACCENT_GROUP_DE (auf dem gespeicherten Lab-Raster gemessen), dann der nächste Start. Höchstens
+ * ACCENT_MAX_GROUPS Gruppen; nur Gruppen mit mindestens 2 Steinen. Deterministisch.
+ */
+function groupAccents(bins: Iterable<AccentBin>): AccentBin[] {
+  const list = [...bins].sort((a, b) => b.maxWd - a.maxWd || a.key - b.key);
+  const n = list.length;
+  const rep = new Float64Array(n * 3);
+  list.forEach((b, i) => {
+    rep[i * 3] = ((b.key >>> 16) & 255) / 2.55;
+    rep[i * 3 + 1] = ((b.key >>> 8) & 255) - 128;
+    rep[i * 3 + 2] = (b.key & 255) - 128;
+  });
+  const used = new Uint8Array(n);
+  const out: AccentBin[] = [];
+  let start = 0;
+  for (let gi = 0; gi < ACCENT_MAX_GROUPS; gi++) {
+    while (start < n && used[start]) start++;
+    if (start >= n) break;
+    const L0 = rep[start * 3];
+    const a0 = rep[start * 3 + 1];
+    const b0 = rep[start * 3 + 2];
+    const g: AccentBin = { key: list[start].key, n: 0, sl: 0, sa: 0, sb: 0, sd: 0, sx: 0, maxWd: 0, face: 0, refs: [] };
+    const refs: number[] = [];
+    for (let i = start; i < n; i++) {
+      if (used[i]) continue;
+      if (deltaE76(L0, a0, b0, rep[i * 3], rep[i * 3 + 1], rep[i * 3 + 2]) >= ACCENT_GROUP_DE) continue;
+      used[i] = 1;
+      const b = list[i];
+      g.n += b.n;
+      g.sl += b.sl;
+      g.sa += b.sa;
+      g.sb += b.sb;
+      g.sd += b.sd;
+      g.sx += b.sx;
+      g.face += b.face;
+      if (b.maxWd > g.maxWd) g.maxWd = b.maxWd;
+      for (const r of b.refs) refs.push(r);
+    }
+    if (g.n < 2) continue;
+    // Beispiel-Steine in Leserichtung (Zelle, dann Teilstück)
+    const order: number[] = [];
+    for (let q = 0; q < refs.length; q += 3) order.push(q);
+    order.sort((p, q) => refs[p] - refs[q] || refs[p + 1] - refs[q + 1]);
+    for (const q of order.slice(0, ACCENT_MAX_IDS)) g.refs.push(refs[q], refs[q + 1], refs[q + 2]);
+    out.push(g);
+  }
+  return out;
+}
+
+/** Pflichtfarben: gültige HEX-Werte (Großbuchstaben, #RRGGBB), jede nur einmal, L*a*b* aus dem HEX-Wert. */
+export function normalizePinned(list: readonly Pick<FixedColor, 'hex' | 'lab'>[] | undefined): { hex: string; lab: Lab }[] {
+  const out: { hex: string; lab: Lab }[] = [];
+  const seen = new Set<string>();
+  for (const f of list ?? []) {
+    let hex: string | undefined;
+    if (f && typeof f.hex === 'string' && isValidHex(f.hex)) hex = normalizeHexStr(f.hex);
+    else if (f && Array.isArray(f.lab) && f.lab.length === 3 && f.lab.every((v) => Number.isFinite(v))) hex = labToHex(f.lab[0], f.lab[1], f.lab[2]);
+    if (!hex || seen.has(hex)) continue;
+    seen.add(hex);
+    out.push({ hex, lab: hexToLab(hex) });
+  }
+  return out;
+}
+
+/** „#abc“ / „aabbcc“ → „#AABBCC“ (nur für gültige HEX-Werte) */
+function normalizeHexStr(hex: string): string {
+  let h = hex.trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  return `#${h.toUpperCase()}`;
+}
+
 function round2(v: number): number {
   return Math.round(v * 100) / 100;
+}
+
+// ---------------------------------------------------------------- Konturen durchgehend schneiden
+
+/** Bonus je getroffenem Anker in Einheiten von λ·Stichproben (im Gesicht die Hälfte) */
+export const CONTOUR_BONUS = 0.6;
+/** Anteil des Bonus in Gesichtsbereichen (dort zählt die Bildtreue mehr als durchgehende Linien) */
+export const CONTOUR_FACE = 0.5;
+/** Ein Kandidat trifft einen Anker, wenn seine Gerade näher als dieses Maß (mm) am Anker vorbeigeht */
+export const CONTOUR_ANCHOR_MM = 0.5;
+/** Zwei Kantenschnitte gelten als durchgehend, wenn sie sich auf der Fugenmitte bis auf dieses Maß (mm) treffen */
+export const CONTOUR_ALIGN_MM = 1;
+const NO_ANCHORS: number[] = [];
+
+/** y der Kantenschnitt-Geraden der Zelle (row, col) bei x = xm (Projektkoordinaten); null, wenn kein Kantenschnitt oder parallel. */
+function lineYAtX(layout: Layout, data: MosaicData, row: number, col: number, xm: number): number | null {
+  const prm = data.line.get(row * layout.cols + col);
+  if (!prm) return null;
+  const [nx, ny, d] = prm;
+  if (Math.abs(ny) < 1e-9) return null;
+  const cx = layout.colX[col] + layout.colW[col] / 2;
+  const cy = layout.rowY[row] + layout.rowH[row] / 2;
+  return cy + (d - nx * (xm - cx)) / ny;
+}
+
+/** x der Kantenschnitt-Geraden der Zelle (row, col) bei y = ym (Projektkoordinaten); null, wenn kein Kantenschnitt oder parallel. */
+function lineXAtY(layout: Layout, data: MosaicData, row: number, col: number, ym: number): number | null {
+  const prm = data.line.get(row * layout.cols + col);
+  if (!prm) return null;
+  const [nx, ny, d] = prm;
+  if (Math.abs(nx) < 1e-9) return null;
+  const cx = layout.colX[col] + layout.colW[col] / 2;
+  const cy = layout.rowY[row] + layout.rowH[row] / 2;
+  return cx + (d - ny * (ym - cy)) / nx;
+}
+
+/**
+ * Ankerpunkte einer Zelle für „Konturen durchgehend schneiden“: Der Kantenschnitt des linken bzw. oberen Nachbarn
+ * (mit `all4` auch des rechten/unteren), verlängert bis zur Mitte der gemeinsamen Fuge – nur wenn dieser Punkt neben
+ * der gemeinsamen Kante liegt (der Nachbarschnitt zeigt dann zu dieser Zelle). Flach [ax, ay, …] in mm relativ zur
+ * Zellmitte.
+ */
+function contourAnchors(layout: Layout, data: MosaicData, row: number, col: number, r: { x: number; y: number; w: number; h: number }, all4 = false): number[] {
+  const { cols, rows } = layout;
+  const idx = row * cols + col;
+  const g = layout.joint;
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  let out: number[] | null = null;
+  const side = (nr: number, nc: number, vertical: boolean, m: number) => {
+    if (vertical) {
+      const y = lineYAtX(layout, data, nr, nc, m);
+      if (y !== null && y > r.y && y < r.y + r.h) (out ??= []).push(m - cx, y - cy);
+    } else {
+      const x = lineXAtY(layout, data, nr, nc, m);
+      if (x !== null && x > r.x && x < r.x + r.w) (out ??= []).push(x - cx, m - cy);
+    }
+  };
+  if (col > 0 && data.kind[idx - 1] === CellKind.LINE) side(row, col - 1, true, r.x - g / 2);
+  if (row > 0 && data.kind[idx - cols] === CellKind.LINE) side(row - 1, col, false, r.y - g / 2);
+  if (all4 && col + 1 < cols && data.kind[idx + 1] === CellKind.LINE) side(row, col + 1, true, r.x + r.w + g / 2);
+  if (all4 && row + 1 < rows && data.kind[idx + cols] === CellKind.LINE) side(row + 1, col, false, r.y + r.h + g / 2);
+  return out ?? NO_ANCHORS;
+}
+
+/**
+ * Wie gut laufen Konturen über die Fugen weiter? Gezählt werden Paare benachbarter Kantenschnitt-Zellen (links/rechts,
+ * oben/unten), deren Schnittlinien BEIDE die gemeinsame Kante kreuzen (`facing`), und davon die, deren Linien sich auf
+ * der Fugenmitte bis auf `tol` mm treffen (`aligned`). Rein geometrisch aus data.kind/data.line – exakt, nichts geschätzt.
+ */
+export function contourAlignment(layout: Layout, data: MosaicData, tol = CONTOUR_ALIGN_MM): { facing: number; aligned: number } {
+  const { cols, rows } = layout;
+  const eps = 1e-9;
+  let facing = 0;
+  let aligned = 0;
+  for (let row = 0; row < rows; row++) {
+    const y0 = layout.rowY[row];
+    const y1 = y0 + layout.rowH[row];
+    for (let col = 0; col < cols; col++) {
+      const idx = row * cols + col;
+      if (data.kind[idx] !== CellKind.LINE || !data.line.has(idx)) continue;
+      const x0 = layout.colX[col];
+      const x1 = x0 + layout.colW[col];
+      // rechter Nachbar
+      if (col + 1 < cols && data.kind[idx + 1] === CellKind.LINE) {
+        const bx0 = layout.colX[col + 1];
+        const ya = lineYAtX(layout, data, row, col, x1);
+        const yb = lineYAtX(layout, data, row, col + 1, bx0);
+        if (ya !== null && yb !== null && ya >= y0 - eps && ya <= y1 + eps && yb >= y0 - eps && yb <= y1 + eps) {
+          facing++;
+          const xm = (x1 + bx0) / 2;
+          const pa = lineYAtX(layout, data, row, col, xm)!;
+          const pb = lineYAtX(layout, data, row, col + 1, xm)!;
+          if (Math.abs(pa - pb) <= tol) aligned++;
+        }
+      }
+      // unterer Nachbar
+      if (row + 1 < rows && data.kind[idx + cols] === CellKind.LINE) {
+        const by0 = layout.rowY[row + 1];
+        const xa = lineXAtY(layout, data, row, col, y1);
+        const xb = lineXAtY(layout, data, row + 1, col, by0);
+        if (xa !== null && xb !== null && xa >= x0 - eps && xa <= x1 + eps && xb >= x0 - eps && xb <= x1 + eps) {
+          facing++;
+          const ym = (y1 + by0) / 2;
+          const pa = lineXAtY(layout, data, row, col, ym)!;
+          const pb = lineXAtY(layout, data, row + 1, col, ym)!;
+          if (Math.abs(pa - pb) <= tol) aligned++;
+        }
+      }
+    }
+  }
+  return { facing, aligned };
 }
 
 // ---------------------------------------------------------------- Materialauswahl („Automatisch → eigene Materialien“)
@@ -1010,6 +1541,7 @@ export function selectMaterials(
   formula: DeltaEFormula,
   seed: readonly number[],
   samples?: { pts: Float32Array; ws: Float32Array },
+  locked: readonly number[] = [],
 ): MaterialSelection {
   const J = X.length;
   const M = materials.length;
@@ -1025,8 +1557,12 @@ export function selectMaterials(
     }
   }
   const eps = 1e-9 * Math.max(W, 1e-12);
-  const target = Math.min(Math.max(1, k), M);
-  const seedSet = [...new Set(seed)].filter((m) => m >= 0 && m < M).slice(0, target);
+  // Fest gewählte Materialien (Pflichtfarben): immer in der Wahl, nie getauscht oder ersetzt; sie zählen zu k
+  const lockedSet = [...new Set(locked)].filter((m) => m >= 0 && m < M);
+  const isLocked = new Uint8Array(M);
+  for (const m of lockedSet) isLocked[m] = 1;
+  const target = Math.max(Math.min(Math.max(1, k), M), lockedSet.length);
+  const seedSet = [...new Set([...lockedSet, ...seed])].filter((m) => m >= 0 && m < M).slice(0, target);
 
   // ---- 1. gierig ergänzen (Zusammenfassung)
   const greedy = (start: readonly number[]): number[] => {
@@ -1109,8 +1645,10 @@ export function selectMaterials(
             else loss[n1[j]] += w[j] * (Math.min(dm, d2[j]) - dj);
           }
           ops += J + S.length;
-          let bi = 0;
-          for (let q = 1; q < S.length; q++) if (loss[q] < loss[bi]) bi = q;
+          // günstigster Tausch – nie ein fest gewähltes Material (ohne solche: wie bisher, Start bei Platz 0)
+          let bi = -1;
+          for (let q = 0; q < S.length; q++) if (!isLocked[S[q]] && (bi < 0 || loss[q] < loss[bi])) bi = q;
+          if (bi < 0) break;
           if (shared + loss[bi] < -eps) {
             inS[S[bi]] = 0;
             S[bi] = m;
@@ -1183,7 +1721,7 @@ export function selectMaterials(
       if (S.length < target) S.push(bestM);
       else {
         // voll: nur ein Material ersetzen, das keiner Steinfarbe am nächsten liegt (es bekäme keine Steine)
-        const q = S.findIndex((m) => served[m] === 0);
+        const q = S.findIndex((m) => served[m] === 0 && !isLocked[m]);
         if (q < 0) break;
         inS[S[q]] = 0;
         S[q] = bestM;
@@ -1222,7 +1760,7 @@ export function selectMaterials(
     const inS = new Uint8Array(M);
     for (const m of S) inS[m] = 1;
     for (let q = 0; q < S.length; q++) {
-      if (stocked(S[q])) continue;
+      if (stocked(S[q]) || isLocked[S[q]]) continue;
       nearestTwo(S);
       let served = 0;
       let base = 0;

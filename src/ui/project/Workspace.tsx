@@ -7,6 +7,8 @@ import { SaveResultNote } from '../SaveResultNote';
 import { timestampedName, type SaveResult } from '../../platform';
 import { modalDepth } from '../modalHistory';
 import { EmptyState } from './EmptyState';
+import { PREVIEW_STEPS, PreviewLayout } from './LivePreview';
+import { computeOverall } from './previewPolicy';
 import { useGuardedCompute } from './RecomputeGuard';
 import { SaveErrorBanner, saveErrorText, SaveStatus } from './SaveStatus';
 import { staleReasonLabels, staleReasons } from './staleReasons';
@@ -22,8 +24,7 @@ import { StepShapes } from './StepShapes';
 import { computeKey, useProject } from './useProject';
 import '../css/w1-review-fixes.css';
 import '../css/w2-workspace-shell.css';
-
-const COMPUTE_PHASES = ['prepare', 'adjust', 'lab', 'analyze', 'palette', 'assign'];
+import '../css/w3-live-preview.css';
 
 /** Wartet, bis ein gerade geschlossener Dialog seinen Verlaufseintrag abgebaut hat (sonst würde ein neuer Schritt-Eintrag dahinter landen). */
 async function modalHistorySettled(maxMs = 1000) {
@@ -117,7 +118,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
     if (api.computing) setDoneNotice(false);
   }, [api.computing]);
   const onComputed = useCallback(async () => {
-    if (!mounted.current) return;
+    if (!mounted.current || stepRef.current === 'preview') return;
     if (stepRef.current !== 'compute') {
       setDoneNotice(true);
       return;
@@ -125,7 +126,28 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
     await modalHistorySettled();
     if (mounted.current && stepRef.current === 'compute') goStep('preview');
   }, [goStep]);
-  const guard = useGuardedCompute(api, () => void onComputed());
+  // Ein Ergebnis wurde in diese Ansicht übernommen – auch eines, dessen Berechnung vor dem erneuten Öffnen des
+  // Projekts gestartet wurde (sie lief als Auftrag weiter). Ergebnisse aus anderen Tabs zählen nicht.
+  const lastCommit = useRef(api.committedAt);
+  useEffect(() => {
+    if (api.committedAt === lastCommit.current) return;
+    lastCommit.current = api.committedAt;
+    if (api.committedAt) void onComputed();
+  }, [api.committedAt, onComputed]);
+  const guard = useGuardedCompute(api, () => {});
+
+  // Schritt 8 ohne gespeichertes Mosaik: passt eine fertige Vorschau zu den Einstellungen, wird sie übernommen
+  // (nichts kann verloren gehen). Nie über ein vorhandenes oder ein nicht lesbares gespeichertes Mosaik.
+  const autoCommitFor = useRef<string | null>(null);
+  const canAutoCommit = step === 'preview' && api.loaded && !!api.rec && !api.computed && !api.rec.computedWith && !api.integrityError && !api.computing && api.previewCommittable;
+  useEffect(() => {
+    if (!canAutoCommit || !api.preview.result) return;
+    const k = api.preview.result.sig;
+    if (autoCommitFor.current === k) return;
+    autoCommitFor.current = k;
+    void api.compute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canAutoCommit]);
 
   // ---------- Verlassen, solange Speichern fehlschlägt: nicht still verlieren
   const apiRef = useRef(api);
@@ -221,13 +243,23 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
     const bar = document.querySelector<HTMLElement>('.topbar');
     const root = rootRef.current;
     if (!bar || !root) return;
+    const sticky = (el: Element | null) => {
+      if (!el) return false;
+      const pos = getComputedStyle(el).position;
+      return pos === 'sticky' || pos === 'fixed';
+    };
     const set = () => {
-      const pos = getComputedStyle(bar).position;
-      root.style.setProperty('--w2ws-top', `${pos === 'sticky' || pos === 'fixed' ? Math.round(bar.getBoundingClientRect().height) : 0}px`);
+      const top = sticky(bar) ? Math.round(bar.getBoundingClientRect().height) : 0;
+      root.style.setProperty('--w2ws-top', `${top}px`);
+      // Live-Vorschau klebt unter Kopfzeile und (falls klebend) Schrittleiste
+      const stepper = stepperRef.current;
+      const st = stepper && sticky(stepper) ? Math.round(stepper.getBoundingClientRect().height) : 0;
+      root.style.setProperty('--w3lp-top', `${top + st}px`);
     };
     set();
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(set) : null;
     ro?.observe(bar);
+    if (stepperRef.current) ro?.observe(stepperRef.current);
     window.addEventListener('resize', set);
     return () => {
       ro?.disconnect();
@@ -254,7 +286,10 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   const states = stepStates({ hasPhoto: !!api.bitmap, computed: !!api.computed, stale: api.stale });
   const canCompute = !!api.bitmap && !!api.layout;
   const computeAsNext = step === 'compute' && canCompute && (!api.computed || api.stale);
-  const pct = api.computing ? Math.round(((Math.max(0, COMPUTE_PHASES.indexOf(api.computing.phase)) + api.computing.fraction) / COMPUTE_PHASES.length) * 100) : 0;
+  const pct = api.computing ? Math.round(computeOverall(api.computing) * 100) : 0;
+  const committing = api.computing?.phase === 'commit';
+  /** Berechnung eines anderen Projekts blockiert „Berechnen“ (das Übernehmen einer fertigen Vorschau nicht) */
+  const blockedByOther = !!api.otherJob && !api.previewCommittable;
 
   // Leerer Zustand statt eines Schritts ohne Grundlage
   const photoMissing = !api.bitmap;
@@ -282,7 +317,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
       <EmptyState
         icon="🧮"
         testId="empty-state"
-        title={api.computing ? t('w2ws.computing', { pct }) : t('w2ws.empty.noResult.title')}
+        title={committing ? t('w3lp.committing') : api.computing ? t('w2ws.computing', { pct }) : t('w2ws.empty.noResult.title')}
         text={t('w2ws.empty.noResult.text')}
         actions={[{ label: t('w2ws.empty.goCompute'), onClick: () => goStep('compute'), primary: true, testId: 'empty-go-compute' }]}
       />
@@ -304,7 +339,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
               {t('project.stale')}
             </button>
           )}
-          {api.computing && step !== 'compute' && (
+          {api.computing && step !== 'compute' && !committing && (
             <button className="badge badge-info as-btn" onClick={() => goStep('compute')} data-testid="computing-badge">
               {t('w2ws.computing', { pct })}
             </button>
@@ -395,26 +430,31 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           <p className="muted step-intro">{t(`step.${step}.intro`)}</p>
         </div>
         {step === 'photo' && <StepPhoto api={api} />}
-        {step === 'size' && <StepSize api={api} />}
-        {step === 'tiles' && <StepTiles api={api} />}
-        {step === 'joint' && <StepJoint api={api} />}
-        {step === 'colors' && <StepColors api={api} materials={materials} />}
-        {step === 'shapes' && (
-          <>
-            {photoMissing && (
-              <EmptyState
-                compact
-                icon="🖼"
-                testId="shapes-no-photo"
-                title={photoUnreadable ? t('w2ws.empty.photoUnreadable.title') : t('w2ws.empty.noPhoto.title')}
-                text={t('w2ws.empty.shapesNoPhoto')}
-                actions={[{ label: t('w2ws.empty.goPhoto'), onClick: () => goStep('photo'), testId: 'empty-go-photo' }]}
-              />
+        {PREVIEW_STEPS.includes(step) && (
+          // Schritte 2–7 mit Live-Vorschau (nie gespeichert; „Vorschau übernehmen“ in Schritt 7)
+          <PreviewLayout api={api} step={step}>
+            {step === 'size' && <StepSize api={api} />}
+            {step === 'tiles' && <StepTiles api={api} />}
+            {step === 'joint' && <StepJoint api={api} />}
+            {step === 'colors' && <StepColors api={api} materials={materials} />}
+            {step === 'shapes' && (
+              <>
+                {photoMissing && (
+                  <EmptyState
+                    compact
+                    icon="🖼"
+                    testId="shapes-no-photo"
+                    title={photoUnreadable ? t('w2ws.empty.photoUnreadable.title') : t('w2ws.empty.noPhoto.title')}
+                    text={t('w2ws.empty.shapesNoPhoto')}
+                    actions={[{ label: t('w2ws.empty.goPhoto'), onClick: () => goStep('photo'), testId: 'empty-go-photo' }]}
+                  />
+                )}
+                <StepShapes api={api} />
+              </>
             )}
-            <StepShapes api={api} />
-          </>
+            {step === 'compute' && <StepCompute api={api} onCompute={guard.request} onGo={goStep} reasons={reasons} />}
+          </PreviewLayout>
         )}
-        {step === 'compute' && <StepCompute api={api} onCompute={guard.request} onGo={goStep} reasons={reasons} />}
         {step === 'preview' && (emptyResult ?? <StepPreview api={api} materials={materials} />)}
         {step === 'plan' && (emptyResult ?? <StepPlan api={api} materials={materials} />)}
         {step === 'pdf' && (emptyResult ?? <StepPdf api={api} materials={materials} />)}
@@ -434,8 +474,16 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           )}
         </div>
         {computeAsNext ? (
-          <button className="btn primary" disabled={!!api.computing} onClick={guard.request} data-testid="next-step" data-action="compute">
-            {api.computing ? t('w2ws.nav.computing') : api.computed ? t('w2ws.nav.recompute') : t('w2ws.nav.compute')}
+          <button
+            className="btn primary"
+            disabled={!!api.computing || blockedByOther}
+            onClick={guard.request}
+            data-testid="next-step"
+            data-action="compute"
+            data-mode={api.previewCommittable ? 'commit' : 'compute'}
+            title={blockedByOther && api.otherJob ? t('w3lp.otherJob', { name: api.otherJob.projectName, pct: Math.round(computeOverall(api.otherJob.progress) * 100) }) : undefined}
+          >
+            {committing ? t('w3lp.committing') : api.computing ? t('w2ws.nav.computing') : api.previewCommittable ? t('w3lp.nav.commit') : api.computed ? t('w2ws.nav.recompute') : t('w2ws.nav.compute')}
           </button>
         ) : (
           <button className="btn primary" disabled={idx === STEPS.length - 1} onClick={() => goStep(STEPS[idx + 1])} data-testid="next-step">

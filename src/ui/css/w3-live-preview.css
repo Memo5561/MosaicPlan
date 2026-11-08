@@ -1,0 +1,309 @@
+/* Live-Vorschau der Schritte 2–7 (Paket w3-live-preview) */
+
+/* ---------- Rahmen: Einstellungen links, Vorschau rechts (Desktop) */
+.w3lp-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(300px, 32%, 440px);
+  grid-template-areas: 'main side';
+  gap: 22px;
+  align-items: start;
+}
+.w3lp-main {
+  grid-area: main;
+  min-width: 0;
+  container-type: inline-size;
+}
+/* Zweispaltige Schritte werden im schmaleren Inhaltsbereich einspaltig, statt zu quetschen */
+@container (max-width: 760px) {
+  .w3lp-main .two-col {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+}
+.w3lp-layout.w3lp-is-collapsed {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+/* ---------- Vorschau */
+.w3lp {
+  grid-area: side;
+  position: sticky;
+  top: calc(var(--w3lp-top, 0px) + 10px);
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px 12px;
+  box-shadow: var(--shadow);
+}
+.w3lp-is-empty .w3lp {
+  position: static;
+}
+.w3lp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.w3lp-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.w3lp-toggle {
+  margin-left: auto;
+  gap: 6px;
+}
+.w3lp-stats-old {
+  opacity: 0.55;
+}
+.w3lp-swatches {
+  margin-top: 8px;
+}
+.w3lp-swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+}
+.w3lp-sw {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(29, 42, 58, 0.18);
+}
+.w3lp-badge {
+  display: inline-block;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.3;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #fdf0dc;
+  color: var(--warn);
+  border: 1px solid #e7c58c;
+}
+.w3lp-badge-ok {
+  background: #e3f2e7;
+  color: var(--ok);
+  border-color: #b7dcc1;
+}
+.w3lp-badge-old {
+  background: #eef0f3;
+  color: var(--ink-soft);
+  border-color: #d5d9e0;
+}
+.w3lp-body {
+  margin-top: 8px;
+}
+
+/* Bildfläche: Seitenverhältnis des Mosaiks; Bild immer vollständig sichtbar */
+.w3lp-stage {
+  position: relative;
+  width: 100%;
+  max-height: min(62vh, 560px);
+  background: var(--viewer-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.w3lp-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+/* Veraltetes Bild nie wie ein aktuelles aussehen lassen */
+.w3lp-dim .w3lp-canvas {
+  opacity: 0.42;
+  filter: grayscale(0.45);
+}
+.w3lp-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+.w3lp-busy > span:last-child {
+  background: rgba(255, 255, 255, 0.88);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.w3lp-spinner {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid rgba(29, 42, 58, 0.18);
+  border-top-color: var(--accent);
+  animation: w3lp-spin 0.8s linear infinite;
+}
+@keyframes w3lp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w3lp-spinner {
+    animation: none;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+  }
+  .w3lp-canvas {
+    transition: none;
+  }
+}
+.w3lp-outdated {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.w3lp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.w3lp-note {
+  margin: 6px 0 0;
+  line-height: 1.35;
+}
+.w3lp-manual {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.w3lp-manual p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+/* Exakte Rastermaße (keine Stückzahlen je Farbe) */
+.w3lp-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+}
+.w3lp-stats div {
+  display: flex;
+  flex-direction: column;
+}
+.w3lp-stats dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.w3lp-stats dd {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Schritt 7: Übernehmen / andere Berechnung */
+.w3lp-other {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  background: #e6eef8;
+  color: #1f4b7f;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+.w3lp-other span {
+  flex: 1 1 260px;
+}
+.w3lp-commit-hint {
+  margin: 6px 0 0;
+}
+.w3lp-diag-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.w3lp-diag-head h3 {
+  margin: 0;
+}
+
+/* ---------- Tablet und Handy: Vorschau klebt kompakt über den Einstellungen */
+@media (max-width: 980px) {
+  .w3lp-layout,
+  .w3lp-layout.w3lp-is-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'side'
+      'main';
+    gap: 12px;
+  }
+  .w3lp {
+    top: var(--w3lp-top, 0px);
+    z-index: 12;
+    padding: 6px 10px 8px;
+    box-shadow: 0 6px 14px -8px rgba(29, 42, 58, 0.35);
+  }
+  .w3lp-body {
+    margin-top: 4px;
+  }
+  .w3lp-stage {
+    max-height: 24vh;
+  }
+  .w3lp-tools {
+    margin-top: 4px;
+  }
+  /* Platz sparen: Maße und Erklärung stehen in den Einstellungen bzw. in Schritt 7 */
+  .w3lp-stats,
+  .w3lp-note {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .w3lp {
+    margin: 0 -6px;
+  }
+  .w3lp-title {
+    font-size: 0.88rem;
+  }
+  /* Kopfzeile einzeilig: nur ▾ (Beschriftung als aria-label); eingeklappt ist Platz für „Einblenden“ */
+  .w3lp-toggle-text {
+    display: none;
+  }
+  .w3lp-collapsed .w3lp-toggle-text {
+    display: inline;
+  }
+  .w3lp-swatches {
+    display: none;
+  }
+  .w3lp-badge {
+    font-size: 0.7rem;
+    padding: 2px 7px;
+  }
+}
+/* Beim Tippen in ein Feld (Handy-Tastatur verkleinert die Ansicht) klebt die Vorschau nicht, damit das Feld sichtbar bleibt */
+@media (max-width: 980px) {
+  .w3lp-layout:has(input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='file']):focus, textarea:focus, select:focus) .w3lp {
+    position: static;
+  }
+}

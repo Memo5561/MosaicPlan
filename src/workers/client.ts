@@ -1,6 +1,11 @@
 import type { WorkerRequest, WorkerResponse } from './protocol';
 
-type Channel = 'compute' | 'stats' | 'pdf';
+/**
+ * Je Kanal ein eigener Worker. 'preview' rechnet die Live-Vorschau der Schritte 2–7 (nie gespeichert):
+ * cancelChannel('preview') beendet nur diesen Worker – eine laufende Berechnung ('compute') oder ein
+ * PDF ('pdf') laufen ungestört weiter (und umgekehrt).
+ */
+export type Channel = 'compute' | 'stats' | 'pdf' | 'preview';
 
 const workers = new Map<Channel, Worker>();
 const pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void; progress?: (phase: string, f: number) => void; channel: Channel }>();
@@ -51,7 +56,13 @@ export function runWorker<T extends WorkerResponse['type']>(
   });
 }
 
-/** Bricht laufende Aufträge eines Kanals ab (Worker wird beendet). */
+/** Laufen auf diesem Kanal gerade Aufträge? */
+export function channelBusy(channel: Channel): boolean {
+  for (const p of pending.values()) if (p.channel === channel) return true;
+  return false;
+}
+
+/** Bricht laufende Aufträge eines Kanals ab (nur dieser Worker wird beendet; andere Kanäle bleiben unberührt). */
 export function cancelChannel(channel: Channel): void {
   const w = workers.get(channel);
   if (w) {

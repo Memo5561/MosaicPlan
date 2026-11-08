@@ -5,10 +5,25 @@ import { Badge, downloadBlob, ProgressBar, safeFileName } from '../components';
 import { EmptyState } from './EmptyState';
 import { lossList, lossOf } from './RecomputeGuard';
 import { computedDeltaE, deltaERating, restoreComputedSettings, splitRestorable, staleReasonLabels, type StaleReason } from './staleReasons';
+import { computeOverall } from './previewPolicy';
 import { LayoutSummary } from './StepGeometry';
 import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
+import type { ComputeDiagnostics } from '../../core/mosaic';
 import '../css/w2-workspace-shell.css';
+import '../css/w3-live-preview.css';
+
+/** „Verwendete Farben: M von N“ – nur wenn die Berechnung beide Zahlen geliefert hat (ältere Ergebnisse nicht). */
+function ColorsUsedRow({ d }: { d: ComputeDiagnostics }) {
+  const { t, n } = useI18n();
+  if (d.usedColors === undefined || d.requestedColors === undefined) return null;
+  return (
+    <tr>
+      <th>{t('w3lp.colorsUsed')}</th>
+      <td data-testid="colors-used">{t('w3lp.colorsUsedVal', { used: n(d.usedColors), req: n(d.requestedColors) })}</td>
+    </tr>
+  );
+}
 
 export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi; onCompute: () => void; onGo: (s: Step) => void; reasons: StaleReason[] }) {
   const { t, n } = useI18n();
@@ -16,9 +31,11 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
   const d = api.rec!.diagnostics;
   const cells = api.layout ? api.layout.cols * api.layout.rows : 0;
   const phaseLabel = api.computing ? t(`compute.phase.${api.computing.phase}`) : '';
-  const phases = ['prepare', 'adjust', 'lab', 'analyze', 'palette', 'assign'];
-  const pIdx = api.computing ? Math.max(0, phases.indexOf(api.computing.phase)) : 0;
-  const overall = api.computing ? (pIdx + api.computing.fraction) / phases.length : 0;
+  const overall = computeOverall(api.computing);
+  const other = api.otherJob;
+  // Fertige Vorschau der aktuellen Einstellungen: „Vorschau übernehmen“ speichert sie ohne zweite Berechnung
+  const commitPreview = api.previewCommittable;
+  const pvd = commitPreview ? api.preview.result?.diagnostics : undefined;
   const [backupMsg, setBackupMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [discarded, setDiscarded] = useState(false);
   // Hinweis „wiederhergestellt“ gilt nur, bis wieder etwas geändert oder neu berechnet wird
@@ -55,6 +72,7 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
             actions={[{ label: t('w2ws.empty.goPhoto'), onClick: () => onGo('photo'), primary: true, testId: 'empty-go-photo' }]}
           />
         )}
+        {api.bitmap && <p className="muted small">{t('w3lp.computeIntro')}</p>}
         <h3>{t('compute.summary')}</h3>
         <table className="kv">
           <tbody>
@@ -127,17 +145,42 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
           </p>
         )}
         {api.bitmap && (
-          <div className="btn-row" style={{ marginTop: 12 }}>
-            {!api.computing ? (
-              <button className="btn primary big" data-testid="compute-btn" disabled={!api.layout} onClick={onCompute}>
-                {api.computed ? t('compute.recompute') : t('compute.start')}
-              </button>
+          <>
+            {other && !commitPreview && !api.computing ? (
+              // App-weit läuft nur eine Berechnung: hier nicht still warten, sondern sagen, welche läuft
+              <div className="w3lp-other" role="status" data-testid="other-job">
+                <span>{t('w3lp.otherJob', { name: other.projectName, pct: Math.round(computeOverall(other.progress) * 100) })}</span>
+                <a className="btn small" href={`#/project/${other.projectId}/compute`} data-testid="other-job-open">
+                  {t('w3lp.otherJob.open')}
+                </a>
+                <button className="btn small danger" onClick={api.cancelOtherJob} data-testid="other-job-cancel">
+                  {t('common.cancel')}
+                </button>
+              </div>
             ) : (
-              <button className="btn danger" onClick={api.cancelCompute}>
-                {t('common.cancel')}
-              </button>
+              <div className="btn-row" style={{ marginTop: 12 }}>
+                {!api.computing ? (
+                  <button className="btn primary big" data-testid="compute-btn" data-mode={commitPreview ? 'commit' : 'compute'} disabled={!api.layout} onClick={onCompute}>
+                    {commitPreview ? t('w3lp.commit') : api.computed ? t('compute.recompute') : t('compute.start')}
+                  </button>
+                ) : (
+                  <button className="btn danger" onClick={api.cancelCompute} data-testid="compute-cancel" disabled={api.computing.phase === 'commit'}>
+                    {t('common.cancel')}
+                  </button>
+                )}
+              </div>
             )}
-          </div>
+            {!api.computing && commitPreview && (
+              <p className="muted small w3lp-commit-hint" data-testid="commit-hint">
+                {t('w3lp.commitHint')}
+              </p>
+            )}
+            {!api.computing && !commitPreview && api.preview.runningCurrent && (
+              <p className="muted small w3lp-commit-hint" data-testid="reuse-hint">
+                {t('w3lp.reuseHint')}
+              </p>
+            )}
+          </>
         )}
         {api.computed && !api.computing && api.stale && reasons.length === 0 && <p className="warn small">{t('compute.staleWarn')}</p>}
         {api.computed &&
@@ -193,13 +236,26 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
             {backupMsg.text}
           </p>
         )}
-        {api.computing && <ProgressBar value={overall} label={`${phaseLabel} ${Math.round(api.computing.fraction * 100)} %`} />}
+        {api.computing && (
+          <div data-testid="compute-progress">
+            <ProgressBar value={overall} label={`${phaseLabel} ${Math.round(api.computing.fraction * 100)} %`} />
+            {api.computing.phase !== 'commit' && <p className="muted small">{t('w3lp.runningElsewhere')}</p>}
+          </div>
+        )}
         {api.computeError && <p className="error">{t(`compute.err.${api.computeError}`) === `compute.err.${api.computeError}` ? api.computeError : t(`compute.err.${api.computeError}`)}</p>}
       </div>
       <div>
         {d && api.computed && (
           <>
-            <h3>{t('compute.result')}</h3>
+            {pvd ? (
+              // Neben einer neuen Vorschau klar sagen, welches Ergebnis gespeichert ist
+              <div className="w3lp-diag-head">
+                <h3>{t('compute.result')}</h3>
+                <span className="w3lp-badge w3lp-badge-ok">{t('w3lp.badge.committed')}</span>
+              </div>
+            ) : (
+              <h3>{t('compute.result')}</h3>
+            )}
             <table className="kv" data-testid="diagnostics">
               <tbody>
                 <tr>
@@ -213,6 +269,7 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
                   <th>{t('compute.p95DE')}</th>
                   <td>≤ {n(d.p95DeltaE, 0)}</td>
                 </tr>
+                <ColorsUsedRow d={d} />
                 <tr>
                   <th>{t('compute.splitCells')}</th>
                   <td>{n(d.splitCells)}</td>
@@ -232,6 +289,36 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
               </tbody>
             </table>
             <p className="muted small">{t('compute.deHint')}</p>
+          </>
+        )}
+        {pvd && (
+          // Ergebnis der Vorschau, die „Vorschau übernehmen“ speichern würde (gemessene Werte dieser Berechnung)
+          <>
+            <div className="w3lp-diag-head">
+              <h3>{t('compute.result')}</h3>
+              <span className="w3lp-badge">{t('w3lp.previewResult')}</span>
+            </div>
+            <table className="kv" data-testid="preview-diagnostics">
+              <tbody>
+                <tr>
+                  <th>{t('compute.meanDE')}</th>
+                  <td>{n(pvd.meanDeltaE, 2)}</td>
+                </tr>
+                <ColorsUsedRow d={pvd} />
+                <tr>
+                  <th>{t('compute.splitCells')}</th>
+                  <td>{n(pvd.splitCells)}</td>
+                </tr>
+                <tr>
+                  <th>{t('compute.subCells')}</th>
+                  <td>{n(pvd.subCells)}</td>
+                </tr>
+                <tr>
+                  <th>{t('compute.time')}</th>
+                  <td>{n(pvd.timeMs / 1000, 1)} s</td>
+                </tr>
+              </tbody>
+            </table>
           </>
         )}
       </div>

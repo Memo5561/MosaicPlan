@@ -21,13 +21,13 @@ export const de: Record<string, string> = {
   'colors.rm.notComputed': 'Noch nicht berechnet – die Farbe wird nur aus der Palette entfernt.',
   'colors.rm.note': 'Die Nummern der übrigen Farben bleiben unverändert – auch beim Neuberechnen. Für eine optimale Farbzuordnung können Sie anschließend neu berechnen.',
   'colors.rm.noteAuto':
-    'Die Entfernung gilt nur für das aktuelle Ergebnis: „Neu berechnen“ erstellt die Palette wieder automatisch – Farbe {code} kann dann zurückkehren, die Nummern werden neu vergeben. Für dauerhafte Änderungen „Eigene Palette“ wählen.',
+    'Die Entfernung gilt nur für das aktuelle Ergebnis: „Neu berechnen“ erstellt die Palette wieder automatisch – Farbe {code} kann dann zurückkehren, die Nummern werden neu vergeben. Für dauerhafte Änderungen „Eigene Farbauswahl“ wählen.',
   'colors.rm.noteMaterials':
-    'Die Entfernung gilt nur für das aktuelle Ergebnis: „Neu berechnen“ wählt wieder aus allen ausgewählten Materialien – Farbe {code} kann dann zurückkehren. Damit sie wegbleibt, das Material oben in der Materialauswahl abwählen (oder „Eigene Palette“ wählen).',
+    'Die Entfernung gilt nur für das aktuelle Ergebnis: „Neu berechnen“ wählt wieder aus allen ausgewählten Materialien – Farbe {code} kann dann zurückkehren. Damit sie wegbleibt, das Material oben in der Materialauswahl abwählen (oder „Eigene Farbauswahl“ wählen).',
   'colors.removeHintAuto':
-    'Bei dieser Farbquelle erstellt „Neu berechnen“ die Palette neu: Entfernte Farben können zurückkehren, die Nummern werden neu vergeben. Für dauerhafte Änderungen „Eigene Palette“ wählen.',
+    'Bei dieser Farbquelle erstellt „Neu berechnen“ die Palette neu: Entfernte Farben können zurückkehren, die Nummern werden neu vergeben. Für dauerhafte Änderungen „Eigene Farbauswahl“ wählen.',
   'colors.removeHintMaterials':
-    'Bei dieser Farbquelle wählt „Neu berechnen“ wieder aus allen ausgewählten Materialien: Entfernte Farben können zurückkehren. Dauerhaft: das Material in der Materialauswahl abwählen oder „Eigene Palette“ wählen.',
+    'Bei dieser Farbquelle wählt „Neu berechnen“ wieder aus allen ausgewählten Materialien: Entfernte Farben können zurückkehren. Dauerhaft: das Material in der Materialauswahl abwählen oder „Eigene Farbauswahl“ wählen.',
   'colors.locked':
     'Eine Berechnung dieses Projekts läuft (hier, in einer zuvor geöffneten Ansicht oder in einem anderen Tab). Farbquelle und Palette sind bis zum Ende gesperrt, damit das Ergebnis zur Palette passt.',
   'colors.rm.confirm': 'Farbe entfernen',
@@ -78,13 +78,13 @@ export const en: Record<string, string> = {
   'colors.rm.notComputed': 'Not calculated yet – the colour is only removed from the palette.',
   'colors.rm.note': 'The numbers of the other colours stay unchanged – also when recalculating. For an optimal colour assignment you can recalculate afterwards.',
   'colors.rm.noteAuto':
-    'The removal only applies to the current result: “Recompute” builds the palette automatically again – colour {code} may come back and the numbers are assigned anew. For permanent changes choose “Custom palette”.',
+    'The removal only applies to the current result: “Recompute” builds the palette automatically again – colour {code} may come back and the numbers are assigned anew. For permanent changes choose “My own colour selection”.',
   'colors.rm.noteMaterials':
-    'The removal only applies to the current result: “Recompute” picks from all selected materials again – colour {code} may come back. To keep it out, deselect the material in the material selection above (or choose “Custom palette”).',
+    'The removal only applies to the current result: “Recompute” picks from all selected materials again – colour {code} may come back. To keep it out, deselect the material in the material selection above (or choose “My own colour selection”).',
   'colors.removeHintAuto':
-    'With this colour source “Recompute” builds the palette anew: removed colours may come back and the numbers are assigned anew. For permanent changes choose “Custom palette”.',
+    'With this colour source “Recompute” builds the palette anew: removed colours may come back and the numbers are assigned anew. For permanent changes choose “My own colour selection”.',
   'colors.removeHintMaterials':
-    'With this colour source “Recompute” picks from all selected materials again: removed colours may come back. Permanently: deselect the material in the material selection or choose “Custom palette”.',
+    'With this colour source “Recompute” picks from all selected materials again: removed colours may come back. Permanently: deselect the material in the material selection or choose “My own colour selection”.',
   'colors.locked':
     'A calculation of this project is running (here, in a previously opened view or in another tab). Colour source and palette are locked until it ends, so that the result matches the palette.',
   'colors.rm.confirm': 'Remove colour',
@@ -135,13 +135,13 @@ export const tr: Record<string, string> = {
   'colors.rm.notComputed': 'Henüz hesaplanmadı – renk yalnızca paletten kaldırılır.',
   'colors.rm.note': 'Diğer renklerin numaraları değişmez – yeniden hesaplamada da. En iyi renk eşleşmesi için ardından yeniden hesaplayabilirsiniz.',
   'colors.rm.noteAuto':
-    'Kaldırma yalnızca mevcut sonuç için geçerlidir: “Yeniden hesapla” paleti yeniden otomatik oluşturur – {code} rengi geri gelebilir, numaralar yeniden verilir. Kalıcı değişiklikler için “Özel palet” seçin.',
+    'Kaldırma yalnızca mevcut sonuç için geçerlidir: “Yeniden hesapla” paleti yeniden otomatik oluşturur – {code} rengi geri gelebilir, numaralar yeniden verilir. Kalıcı değişiklikler için “Kendi renk seçimim” seçin.',
   'colors.rm.noteMaterials':
-    'Kaldırma yalnızca mevcut sonuç için geçerlidir: “Yeniden hesapla” yine seçili tüm malzemeler arasından seçer – {code} rengi geri gelebilir. Dışarıda kalması için malzemeyi yukarıdaki malzeme seçiminden kaldırın (veya “Özel palet” seçin).',
+    'Kaldırma yalnızca mevcut sonuç için geçerlidir: “Yeniden hesapla” yine seçili tüm malzemeler arasından seçer – {code} rengi geri gelebilir. Dışarıda kalması için malzemeyi yukarıdaki malzeme seçiminden kaldırın (veya “Kendi renk seçimim” seçin).',
   'colors.removeHintAuto':
-    'Bu renk kaynağında “Yeniden hesapla” paleti yeniden oluşturur: kaldırılan renkler geri gelebilir, numaralar yeniden verilir. Kalıcı değişiklikler için “Özel palet” seçin.',
+    'Bu renk kaynağında “Yeniden hesapla” paleti yeniden oluşturur: kaldırılan renkler geri gelebilir, numaralar yeniden verilir. Kalıcı değişiklikler için “Kendi renk seçimim” seçin.',
   'colors.removeHintMaterials':
-    'Bu renk kaynağında “Yeniden hesapla” yine seçili tüm malzemeler arasından seçer: kaldırılan renkler geri gelebilir. Kalıcı olarak: malzemeyi malzeme seçiminden kaldırın veya “Özel palet” seçin.',
+    'Bu renk kaynağında “Yeniden hesapla” yine seçili tüm malzemeler arasından seçer: kaldırılan renkler geri gelebilir. Kalıcı olarak: malzemeyi malzeme seçiminden kaldırın veya “Kendi renk seçimim” seçin.',
   'colors.locked':
     'Bu projenin bir hesaplaması sürüyor (burada, daha önce açılmış bir görünümde veya başka bir sekmede). Sonucun paletle uyuşması için renk kaynağı ve palet bitene kadar kilitlidir.',
   'colors.rm.confirm': 'Rengi kaldır',

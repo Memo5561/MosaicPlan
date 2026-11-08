@@ -51,6 +51,12 @@ describe('Farbe (CIELAB / ΔE)', () => {
     expect(describeColor(hexToLab('#FFFFFF'))).toBe('Weiß');
     expect(describeColor(hexToLab('#000000'))).toBe('Schwarz');
     expect(describeColor(hexToLab('#9fc5f8'))).toBe('Hellblau');
+    // nächste Referenzfarbe (w2-colour-honesty): reines Rot hieß früher „Orange“, Blau „Dunkelviolett“
+    expect(describeColor(hexToLab('#FF0000'))).toBe('Rot');
+    expect(describeColor(hexToLab('#0000FF'))).toBe('Blau');
+    expect(describeColor(hexToLab('#FFFF00'))).toBe('Gelb');
+    expect(describeColor(hexToLab('#FF0000'), 'en')).toBe('Red');
+    expect(describeColor(hexToLab('#FF0000'), 'tr')).toBe('Kırmızı');
   });
 });
 

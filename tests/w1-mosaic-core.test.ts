@@ -173,7 +173,9 @@ describe('Eigene Palette: Farben, Reihenfolge und Nummern bleiben erhalten', () 
     const more = addPaletteColor(first.palette, '#C87A5A', 'Terrakotta');
     const res = computeMosaic(su.img, baseParams(su, { paletteMode: 'custom', fixedPalette: fixedOf(more) }));
     expect(res.palette.map((p) => p.code)).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
-    expect(res.palette.slice(0, 8)).toEqual(first.palette);
+    // matchDeltaE (w2-colour-honesty) ist eine Messung der jeweiligen Berechnung – die 9. Farbe übernimmt Steine
+    const def = ({ matchDeltaE: _m, ...p }: PaletteColor) => p;
+    expect(res.palette.slice(0, 8).map(def)).toEqual(first.palette.map(def));
   });
 
   it('Modus „Nur eigene Materialien“ listet weiterhin nur verwendete Materialien (nach Helligkeit, 1…n)', () => {

@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
-import { addPaletteColor, removePaletteColor, updatePaletteColor } from '../../core/edits';
+import { paletteDisplayName } from '../../core/colorNames';
+import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, removePaletteColor, resetAutoName, updatePaletteColor } from '../../core/edits';
+import type { ComputeDiagnostics } from '../../core/mosaic';
 import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
 import type { Material, MosaicData, PaletteColor, PaletteMode } from '../../core/types';
-import { tCount, useI18n } from '../../i18n';
+import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import type { ProjectApi } from './useProject';
 import '../css/w1-mosaic-core.css';
+import '../css/w2-colour-honesty.css';
 
 export const COLOR_COUNTS = [8, 12, 16, 24, 32, 48, 64, 100, 150, 200];
 
@@ -21,11 +24,60 @@ function nearestMaterial(p: PaletteColor, mats: Material[]): { m: Material; d: n
   return best;
 }
 
+/**
+ * Hält die automatischen Farbnamen der Palette auf dem Stand der UI-Sprache (und erkennt die automatischen
+ * Namen älterer Projekte). Läuft beim Öffnen, bei Sprachwechsel und nach einer Berechnung – nicht bei jeder
+ * Tastatureingabe im Namensfeld. Nie während einer Berechnung (Palette gesperrt).
+ */
+export function useLocalizedPaletteNames(api: ProjectApi): void {
+  const { lang } = useI18n();
+  const palette = api.rec?.palette;
+  const ref = useRef(palette);
+  ref.current = palette;
+  useEffect(() => {
+    const cur = ref.current;
+    if (api.paletteLocked || !cur || !cur.length) return;
+    const next = normalizePaletteNames(cur, lang);
+    if (next !== cur) api.setPalette(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang, api.paletteLocked, api.computed?.data]);
+}
+
+/** „Angefordert N – verwendet M …“ aus den Kennzahlen der letzten Berechnung (null bei älteren Ergebnissen). */
+export function colorCountNotice(d: ComputeDiagnostics | undefined, t: TFunc): { text: string; warn: boolean } | null {
+  if (!d || d.requestedColors === undefined || d.usedColors === undefined || !d.paletteMode) return null;
+  const req = d.requestedColors;
+  const used = d.usedColors;
+  const parts: string[] = [];
+  let warn = false;
+  if (d.paletteMode === 'auto') {
+    parts.push(t('w2ch.count.auto', { req, used }));
+    if (d.imageColors !== undefined && d.imageColors < req) parts.push(t('w2ch.count.fewerImage', { n: d.imageColors }));
+    const noStones = (d.imageColors ?? req) - used;
+    if (noStones > 0) parts.push(tCount(t, 'w2ch.count.noStones', noStones, { n: noStones }));
+  } else if (d.paletteMode === 'auto-snap') {
+    const merged = d.mergedColors ?? 0;
+    parts.push(t('w2ch.count.snap', { req, used, merged }));
+    const noStones = (d.imageColors ?? req) - merged - used;
+    if (noStones > 0) parts.push(tCount(t, 'w2ch.count.noStones', noStones, { n: noStones }));
+    if (used < req) {
+      parts.push(t('w2ch.count.snapMore'));
+      warn = true;
+    }
+  } else if (d.paletteMode === 'materials') parts.push(t('w2ch.count.materials', { req, used }));
+  else parts.push(t('w2ch.count.custom', { req, used }));
+  return { text: parts.join(' '), warn };
+}
+
 export function StepColors({ api, materials }: { api: ProjectApi; materials: Material[] }) {
   const { t } = useI18n();
   const s = api.rec!.settings;
   const usesMaterials = s.paletteMode === 'materials' || s.paletteMode === 'auto-snap';
   const locked = api.paletteLocked;
+  const nonDefault = s.deltaE !== '2000' || s.dither > 0;
+  // „Erweitert“ ist geöffnet, wenn dort etwas vom Standard abweicht – danach entscheidet der Benutzer
+  const [advOpen, setAdvOpen] = useState(nonDefault);
+  useLocalizedPaletteNames(api);
   return (
     <div>
       {locked && (
@@ -91,17 +143,26 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
           )}
         </Field>
       )}
-      <div className="two-col">
-        <div>
-          <Field label={t('colors.deltaE')}>
-            <Segmented value={s.deltaE} options={[{ value: '2000', label: 'CIEDE2000' }, { value: '76', label: 'CIE76' }]} onChange={(v) => api.setSettings({ deltaE: v })} />
-          </Field>
+      <details className="advanced w2ch-advanced" open={advOpen} onToggle={(e) => setAdvOpen((e.currentTarget as HTMLDetailsElement).open)} data-testid="colors-advanced">
+        <summary>
+          <span className="w2ch-adv-title">{t('w2ch.advanced')}</span>
+          <span className="w2ch-adv-values" data-testid="colors-advanced-summary">
+            {t('colors.deltaE')}: {s.deltaE === '76' ? 'CIE76' : 'CIEDE2000'} · {t('colors.dither')}: {Math.round(s.dither * 100)} %
+          </span>
+          {nonDefault && <Badge kind="warn">{t('w2ch.advancedChanged')}</Badge>}
+        </summary>
+        <div className="two-col">
+          <div>
+            <Field label={t('colors.deltaE')} hint={t('w2ch.deltaEHint')}>
+              <Segmented value={s.deltaE} testId="deltae-mode" options={[{ value: '2000', label: 'CIEDE2000' }, { value: '76', label: 'CIE76' }]} onChange={(v) => api.setSettings({ deltaE: v })} />
+            </Field>
+          </div>
+          <div>
+            <Slider label={t('colors.dither')} value={Math.round(s.dither * 100)} min={0} max={100} onChange={(v) => api.setSettings({ dither: v / 100 })} format={(v) => `${v} %`} />
+            <small className="muted">{t('colors.ditherHint')}</small>
+          </div>
         </div>
-        <div>
-          <Slider label={t('colors.dither')} value={Math.round(s.dither * 100)} min={0} max={100} onChange={(v) => api.setSettings({ dither: v / 100 })} format={(v) => `${v} %`} />
-          <small className="muted">{t('colors.ditherHint')}</small>
-        </div>
-      </div>
+      </details>
       <fieldset className="w1fx-fieldset" disabled={locked} data-testid="palette-fieldset">
         <PaletteEditor api={api} materials={materials} />
       </fieldset>
@@ -136,6 +197,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
   const rec = api.rec!;
   const palette = rec.palette;
   const formula = rec.settings.deltaE;
+  const mode = rec.settings.paletteMode;
   const [newHex, setNewHex] = useState('#3366CC');
   const [removing, setRemoving] = useState<{ plan: RemovalPlan; target: number; snap: Snapshot } | null>(null);
   const [merging, setMerging] = useState<MergeDialog | null>(null);
@@ -144,9 +206,12 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
   // Statistik passt nur zur Palette, wenn sie für genau diese Farben berechnet wurde
   const statsOk = !!stats && stats.perColor.length === palette.length;
   const usedCount = statsOk ? stats.perColor.filter((c) => c.pieces > 0).length : null;
-  const custom = rec.settings.paletteMode === 'custom';
+  const custom = mode === 'custom';
+  const snapMode = mode === 'auto-snap' || mode === 'materials';
   const editable = custom || !!api.computed;
   const matById = new Map(materials.map((m) => [m.id, m]));
+  const dn = (p: PaletteColor) => paletteDisplayName(p, lang);
+  const counts = api.computed ? colorCountNotice(rec.diagnostics, t) : null;
 
   const snapNow = (): Snapshot => ({ palette, data: api.computed?.data ?? null, version: api.version });
   const unchangedSince = (s: Snapshot) => s.palette === palette && s.data === (api.computed?.data ?? null) && s.version === api.version;
@@ -191,15 +256,15 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
       setNotice(t('colors.rm.changed'));
       return;
     }
-    if (api.computed) {
-      const next = removePaletteColor(palette, api.computed.data, plan.index, target, formula);
-      api.setPalette(next);
-      api.touchMosaic();
-    } else api.setPalette(palette.filter((_, k) => k !== plan.index));
+    // Namen der verbleibenden Farben wieder eindeutig und so kurz wie möglich (z. B. „Rot (hell)“ → „Rot“)
+    const next = normalizePaletteNames(api.computed ? removePaletteColor(palette, api.computed.data, plan.index, target, formula) : palette.filter((_, k) => k !== plan.index), lang);
+    api.setPalette(next);
+    if (api.computed) api.touchMosaic();
+    const tpNow = next[target > plan.index ? target - 1 : target] ?? tp;
     setNotice(
       (api.computed && plan.pieces > 0
-        ? tCount(t, 'colors.rm.done', plan.pieces, { code: codeStr(p.code), n: n(plan.pieces), target: `${codeStr(tp.code)} ${tp.name}` })
-        : t('colors.rm.doneNoStones', { code: codeStr(p.code) })) + (api.computed && !custom ? ` ${t(rec.settings.paletteMode === 'materials' ? 'colors.rm.noteMaterials' : 'colors.rm.noteAuto', { code: codeStr(p.code) })}` : ''),
+        ? tCount(t, 'colors.rm.done', plan.pieces, { code: codeStr(p.code), n: n(plan.pieces), target: `${codeStr(tpNow.code)} ${dn(tpNow)}` })
+        : t('colors.rm.doneNoStones', { code: codeStr(p.code) })) + (api.computed && !custom ? ` ${t(mode === 'materials' ? 'colors.rm.noteMaterials' : 'colors.rm.noteAuto', { code: codeStr(p.code) })}` : ''),
     );
     setRemoving(null);
   };
@@ -238,7 +303,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
     } else if (api.computed && !merging.plan.unchanged && !merging.plan.noValidMaterials) {
       const plan = merging.plan;
       const next = applyMaterialMerge(plan, api.computed.data, formula);
-      api.setPalette(next);
+      api.setPalette(normalizePaletteNames(next, lang));
       api.touchMosaic();
       setNotice(t('colors.merge.done', { added: plan.added.length, removed: plan.removed.length, n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }));
     }
@@ -249,10 +314,13 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
     let next = palette;
     palette.forEach((p, i) => {
       const nm = nearestMaterial(p, materials);
-      if (nm) next = updatePaletteColor(next, i, { materialId: nm.m.id, ...(adoptColor ? { hex: nm.m.hex, name: nm.m.colorName || p.name } : {}) });
+      // Farbe übernehmen: Name des Materials, falls vorhanden – sonst bleibt ein automatischer Name automatisch
+      if (nm) next = updatePaletteColor(next, i, { materialId: nm.m.id, ...(adoptColor ? { hex: nm.m.hex, ...(nm.m.colorName ? { name: nm.m.colorName } : {}) } : {}) }, lang);
     });
     api.setPalette(next);
   };
+
+  const anyMatch = palette.some((p) => !!p.matchDeltaE);
 
   return (
     <div className="palette-editor">
@@ -283,6 +351,11 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           )}
         </div>
       </div>
+      {counts && (
+        <p className={`w2ch-counts ${counts.warn ? 'warn-box' : ''}`} data-testid="palette-counts">
+          {counts.text}
+        </p>
+      )}
       {notice && (
         <div className="w1mc-notice" role="status" data-testid="palette-notice">
           <span>{notice}</span>
@@ -295,17 +368,15 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
       {editable && (
         <>
           <div className="table-wrap">
-            <table className="data" data-testid="palette-table">
+            <table className="data w2ch-palette" data-testid="palette-table">
               <thead>
                 <tr>
-                  <th>{t('colors.code')}</th>
-                  <th>{t('colors.swatch')}</th>
+                  <th className="w2ch-sticky">{t('colors.code')}</th>
                   <th>{t('colors.name')}</th>
-                  <th>HEX</th>
-                  <th>CIELAB</th>
                   <th className="num">{t('colors.stones')}</th>
                   <th className="num">{t('colors.need')}</th>
                   <th>{t('colors.material')}</th>
+                  <th>{t('w2ch.hexLab')}</th>
                   <th />
                 </tr>
               </thead>
@@ -314,41 +385,103 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
                   const cs = statsOk ? stats.perColor[i] : undefined;
                   const unused = !!cs && cs.pieces === 0;
                   const m = p.materialId ? matById.get(p.materialId) : undefined;
+                  const missing = !!p.materialId && !m;
                   const dm = m && isValidHex(m.hex) ? (() => {
                     const l = hexToLab(m.hex);
                     return deltaE2000(p.lab[0], p.lab[1], p.lab[2], l[0], l[1], l[2]);
                   })() : null;
+                  const match = matchDeltaEValid(p, cs?.pieces, api.manualEdits);
+                  const name = dn(p);
                   return (
-                    <tr key={`${p.code}-${i}`} className={unused ? 'w1mc-unused' : undefined} data-unused={unused ? 'true' : undefined}>
-                      <td>
-                        <b>{codeStr(p.code)}</b>
+                    <tr key={`${p.code}-${i}`} className={unused ? 'w1mc-unused' : undefined} data-unused={unused ? 'true' : undefined} data-code={codeStr(p.code)}>
+                      <td className="w2ch-sticky" data-col="code">
+                        <span className="w2ch-code">
+                          <b>{codeStr(p.code)}</b>
+                          <input type="color" value={p.hex.length === 7 ? p.hex.toLowerCase() : '#000000'} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { hex: e.target.value }, lang))} aria-label={`${t('colors.swatch')} ${codeStr(p.code)}`} />
+                        </span>
                       </td>
-                      <td>
-                        <input type="color" value={p.hex.length === 7 ? p.hex.toLowerCase() : '#000000'} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { hex: e.target.value }))} aria-label={t('colors.swatch')} />
+                      <td data-col="name">
+                        <input
+                          className="text"
+                          value={name}
+                          placeholder={t('w2ch.namePlaceholder')}
+                          title={p.nameKey ? t('w2ch.autoName') : undefined}
+                          data-testid="palette-name"
+                          data-auto={p.nameKey ? 'true' : undefined}
+                          aria-label={`${t('colors.name')} ${codeStr(p.code)}`}
+                          onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { name: e.target.value }, lang))}
+                          onBlur={(e) => {
+                            if (!e.target.value.trim()) api.setPalette(resetAutoName(palette, i, lang));
+                          }}
+                        />
                       </td>
-                      <td>
-                        <input className="text" value={p.name} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { name: e.target.value }))} />
-                      </td>
-                      <td className="mono">{p.hex}</td>
-                      <td className="mono small">
-                        {n(p.lab[0], 1)} / {n(p.lab[1], 1)} / {n(p.lab[2], 1)}
-                      </td>
-                      <td className="num">
+                      <td className="num" data-col="stones">
                         {cs ? n(cs.pieces) : '–'}
                         {unused && <span className="w1mc-tag">{t('colors.unused')}</span>}
+                        {/* Abweichung vom Foto: nur solange sie zu den aktuellen Steinen passt, sonst ehrlich „ΔE –“ */}
+                        {cs && cs.pieces > 0 && anyMatch && (
+                          match ? (
+                            <span
+                              className={`w2ch-de ${match.mean > 5 ? 'bad' : ''}`}
+                              data-testid="palette-match"
+                              title={t('w2ch.matchTitle', { n: n(match.pieces), mean: n(match.mean, 1), max: n(match.max, 1), over5: n(match.over5), over10: n(match.over10) })}
+                            >
+                              {t('w2ch.match', { mean: n(match.mean, 1) })}
+                              <span className="w2ch-max"> · {t('w2ch.matchMax', { max: n(match.max, 0) })}</span>
+                              {match.over5 > 0 && <span className="w2ch-over"> · {t('w2ch.over5', { n: n(match.over5) })}</span>}
+                            </span>
+                          ) : (
+                            <span className="w2ch-de stale" data-testid="palette-match-stale" title={t('w2ch.matchStaleTitle')}>
+                              {t('w2ch.matchStale')}
+                            </span>
+                          )
+                        )}
                       </td>
                       {/* Math.max: computeStats liefert für Farben ohne Steine ceil(−1e−9) = −0 */}
-                      <td className="num small">{cs ? `${n(Math.max(0, cs.rawWithReserve))} ${t('colors.rawShort')}` : '–'}</td>
-                      <td>
-                        <select value={p.materialId ?? ''} onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { materialId: e.target.value || undefined }))}>
+                      <td className="num small" data-col="need">
+                        {cs ? (
+                          <>
+                            {n(Math.max(0, cs.rawWithReserve))} <span className="w2ch-unit">{t('colors.rawShort')}</span>
+                          </>
+                        ) : (
+                          '–'
+                        )}
+                      </td>
+                      <td data-col="material" className="w2ch-mat">
+                        <select
+                          value={p.materialId ?? ''}
+                          onChange={(e) => api.setPalette(updatePaletteColor(palette, i, { materialId: e.target.value || undefined }, lang))}
+                          aria-label={`${t('colors.material')} ${codeStr(p.code)}`}
+                          className={missing ? 'w2ch-missing' : undefined}
+                        >
                           <option value="">–</option>
+                          {/* Verknüpftes Material nicht mehr vorhanden: sichtbar machen statt still „–“ anzuzeigen */}
+                          {missing && (
+                            <option value={p.materialId} disabled>
+                              {t('w2ch.materialMissing')}
+                            </option>
+                          )}
                           {materials.map((mm) => (
                             <option key={mm.id} value={mm.id}>
                               {mm.manufacturer} {mm.colorNumber} {mm.colorName}
                             </option>
                           ))}
                         </select>
-                        {dm !== null && <small className={dm > 5 ? 'warn' : 'muted'}> ΔE {n(dm, 1)}</small>}
+                        {missing && (
+                          <span className="badge badge-warn w2ch-missing-badge" data-testid="palette-material-missing" title={t('w2ch.materialMissingTitle')}>
+                            {t('w2ch.materialMissing')}
+                          </span>
+                        )}
+                        {/* In den Materialmodi ist die Palettenfarbe die Materialfarbe (ΔE 0) – nur eine echte Abweichung zeigen */}
+                        {dm !== null && (!snapMode || dm >= 0.5) && <small className={`w2ch-mat-de ${dm > 5 ? 'warn' : 'muted'}`}>{snapMode ? t('w2ch.materialDE', { de: n(dm, 1) }) : `ΔE ${n(dm, 1)}`}</small>}
+                        {p.mergedFrom !== undefined && p.mergedFrom > 1 && (
+                          <small className="w2ch-mat-de muted" data-testid="palette-merged" title={t('w2ch.mergedFromTitle', { n: p.mergedFrom })}>
+                            {t('w2ch.mergedFrom', { n: p.mergedFrom })}
+                          </small>
+                        )}
+                      </td>
+                      <td className="mono small w2ch-hexlab" data-col="hexlab">
+                        {p.hex} · L {n(p.lab[0], 1)} a {n(p.lab[1], 1)} b {n(p.lab[2], 1)}
                       </td>
                       <td>
                         <button className="icon-btn" title={t('common.remove')} aria-label={`${t('common.remove')} ${codeStr(p.code)}`} onClick={() => askRemove(i)} disabled={palette.length <= 1} data-testid="palette-remove">
@@ -361,6 +494,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
               </tbody>
             </table>
           </div>
+          {anyMatch && <p className="muted small" data-testid="palette-match-hint">{t('w2ch.matchHint')}</p>}
           <div className="btn-row">
             <input type="color" value={newHex} onChange={(e) => setNewHex(e.target.value)} aria-label={t('colors.newColor')} />
             <button className="btn" onClick={() => api.setPalette(addPaletteColor(palette, newHex, undefined, lang))}>
@@ -371,7 +505,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           {api.computed && <p className="muted small">{t('colors.removeHint')}</p>}
           {api.computed && !custom && (
             <p className="muted small" data-testid="palette-recompute-caveat">
-              {t(rec.settings.paletteMode === 'materials' ? 'colors.removeHintMaterials' : 'colors.removeHintAuto')}
+              {t(mode === 'materials' ? 'colors.removeHintMaterials' : 'colors.removeHintAuto')}
             </p>
           )}
         </>
@@ -384,7 +518,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           plan={removing.plan}
           target={removing.target}
           computed={!!api.computed}
-          mode={rec.settings.paletteMode}
+          mode={mode}
           onTarget={(target) => setRemoving({ ...removing, target })}
           onCancel={() => setRemoving(null)}
           onConfirm={doRemove}
@@ -405,8 +539,9 @@ function RemoveDialog(props: {
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const { t, n } = useI18n();
+  const { t, n, lang } = useI18n();
   const { palette, plan, target } = props;
+  const dn = (c: PaletteColor) => paletteDisplayName(c, lang);
   const p = palette[plan.index];
   const tp = palette[target];
   // Schutz: passt der Plan nicht mehr zur Palette, nichts zeichnen (der Aufrufer schließt den Dialog)
@@ -417,7 +552,7 @@ function RemoveDialog(props: {
   const noteKey = props.mode === 'custom' ? 'colors.rm.note' : props.mode === 'materials' ? 'colors.rm.noteMaterials' : 'colors.rm.noteAuto';
   return (
     <Modal
-      title={t('colors.rm.title', { code: codeStr(p.code), name: p.name })}
+      title={t('colors.rm.title', { code: codeStr(p.code), name: dn(p) })}
       onClose={props.onCancel}
       footer={
         <>
@@ -437,11 +572,11 @@ function RemoveDialog(props: {
           <>
             <p data-testid="palette-remove-stones">{tCount(t, 'colors.rm.stones', plan.pieces, { n: n(plan.pieces) })}</p>
             <div className="w1mc-swap" data-testid="palette-remove-swap">
-              <ColorChip code={p.code} hex={p.hex} name={p.name} />
+              <ColorChip code={p.code} hex={p.hex} name={dn(p)} />
               <span className="w1mc-arrow" aria-hidden="true">
                 →
               </span>
-              <ColorChip code={tp.code} hex={tp.hex} name={tp.name} />
+              <ColorChip code={tp.code} hex={tp.hex} name={dn(tp)} />
               {opt && <span className="w1mc-de">ΔE {n(opt.deltaE, 1)}</span>}
             </div>
             <label className="w1mc-select">
@@ -449,7 +584,7 @@ function RemoveDialog(props: {
               <select value={target} onChange={(e) => props.onTarget(Number(e.target.value))} data-testid="palette-remove-target">
                 {plan.options.map((o, k) => (
                   <option key={o.index} value={o.index}>
-                    {codeStr(palette[o.index].code)} {palette[o.index].name} – ΔE {n(o.deltaE, 1)}
+                    {codeStr(palette[o.index].code)} {dn(palette[o.index])} – ΔE {n(o.deltaE, 1)}
                     {k === 0 ? ` (${t('colors.rm.nearest')})` : ''}
                   </option>
                 ))}

@@ -2,6 +2,8 @@
  * Farbraum-Umrechnungen (sRGB ⇄ CIE XYZ (D65) ⇄ CIELAB) und Farbabstände
  * (CIE76 und CIEDE2000).
  */
+// Zirkulärer Import: colorNames.ts nutzt hexToLab/deltaE2000 erst beim ersten Aufruf (keine Arbeit beim Laden).
+import { autoColorName } from './colorNames';
 
 export type Lab = [number, number, number];
 export type RGB = [number, number, number];
@@ -178,41 +180,77 @@ export function deltaE(formula: DeltaEFormula, p: Lab, q: Lab): number {
     : deltaE2000(p[0], p[1], p[2], q[0], q[1], q[2]);
 }
 
+/** Bis zu dieser Anzahl erlaubter Farben vergleicht nearestExact einfach jede Farbe per CIEDE2000. */
+export const MATCHER_BRUTE_FORCE_MAX = 16;
+/** Kandidaten aus der CIE94-artigen Vorauswahl bei größeren Paletten. */
+export const MATCHER_PREFILTER_K = 12;
 /**
- * Schneller Zuordner „Lab → nächste Palettenfarbe“.
- * – Vorauswahl der Kandidaten per CIE76 (die 6 nächsten), Feinentscheidung per CIEDE2000.
- * – Ergebnisse werden für auf 0,5 Lab-Einheiten gerundete Werte zwischengespeichert.
+ * Faktor der unteren Schranke für den Buntheitsteil von CIEDE2000 (siehe nearestExact):
+ * 1 − max|R_T|/2 = 1 − sin(60°) ≈ 0,134, mit Sicherheitsabstand abgerundet.
+ */
+const LB_CHROMA = 0.13;
+
+/**
+ * Zuordner „Lab → nächste Palettenfarbe“.
+ *
+ * nearestExact ist exakt, d. h. liefert immer dieselbe Farbe wie ein Vergleich mit jeder erlaubten Farbe
+ * (kleinster Abstand, bei Gleichstand die niedrigere Position):
+ * - Formel '76': euklidischer Abstand über alle erlaubten Farben.
+ * - Formel '2000', höchstens 16 erlaubte Farben: CIEDE2000 gegen jede Farbe.
+ * - Formel '2000', mehr Farben: Vorauswahl der 12 nächsten Farben nach einem symmetrischen CIE94-artigen
+ *   Abstand, CIEDE2000 unter diesen ergibt d*. Danach wird jede weitere Farbe geprüft, deren garantierte
+ *   untere Schranke von CIEDE2000 unter d* liegt:
+ *     ΔE00² ≥ (ΔL/S_L)² + 0,134·(Δa² + Δb²)/(1 + 0,0675·C̄)²
+ *   (S_L exakt; ΔC'² + ΔH'² = |Δ(a′, b)|² ≥ Δa² + Δb² wegen a′ = (1+G)·a mit G ≥ 0; S_H < S_C ≤ 1 + 0,045·1,5·C̄
+ *   wegen G ≤ 0,5 und T < 3; der Drehterm R_T·(ΔC'/S_C)(ΔH'/S_H) mit |R_T| ≤ 2·sin 60° kann höchstens
+ *   86,6 % des Buntheitsteils abziehen). Bei realen Paletten liegt d* klein, die Prüfung kostet dann fast nichts.
+ *
+ * nearest() speichert Ergebnisse je gerundetem Lab-Wert zwischen: L auf dem Raster der gespeicherten
+ * Steinfarben (L·2,55, wie qL in mosaic.ts), a/b auf 0,5. Ganze Steine und Zweiteiler (deren Farben genau auf
+ * diesem Raster liegen) erhalten so dasselbe Ergebnis wie nearestExact. Nur ungerundete Werte – die Teilsteine
+ * feinerer Unterteilungen (2×2/3×3) – teilen sich einen Eintrag mit Nachbarwerten (< 0,5 Lab-Einheiten entfernt).
  */
 export class NearestColorMatcher {
   private readonly L: Float64Array;
   private readonly A: Float64Array;
   private readonly B: Float64Array;
-  private readonly n: number;
+  /** C* je Palettenfarbe (für Vorauswahl und Schranke) */
+  private readonly C: Float64Array;
   private readonly cache = new Map<number, number>();
-  private readonly allowed: Uint8Array;
+  /** Indizes der erlaubten Farben */
+  private readonly idx: Int32Array;
+  // Arbeitsspeicher je Abfrage (nicht reentrant – JS ist einfädig)
+  private readonly lb2: Float64Array;
+  private readonly stamp: Int32Array;
+  private query = 0;
 
   constructor(
     palette: Lab[],
     private readonly formula: DeltaEFormula,
     allowedMask?: ArrayLike<boolean>,
   ) {
-    this.n = palette.length;
-    this.L = new Float64Array(this.n);
-    this.A = new Float64Array(this.n);
-    this.B = new Float64Array(this.n);
-    this.allowed = new Uint8Array(this.n);
-    for (let i = 0; i < this.n; i++) {
+    const n = palette.length;
+    this.L = new Float64Array(n);
+    this.A = new Float64Array(n);
+    this.B = new Float64Array(n);
+    this.C = new Float64Array(n);
+    const allowed: number[] = [];
+    for (let i = 0; i < n; i++) {
       this.L[i] = palette[i][0];
       this.A[i] = palette[i][1];
       this.B[i] = palette[i][2];
-      this.allowed[i] = allowedMask ? (allowedMask[i] ? 1 : 0) : 1;
+      this.C[i] = Math.sqrt(palette[i][1] * palette[i][1] + palette[i][2] * palette[i][2]);
+      if (!allowedMask || allowedMask[i]) allowed.push(i);
     }
-    if (!this.allowed.some((v) => v === 1)) throw new Error('Palette ist leer.');
+    if (!allowed.length) throw new Error('Palette ist leer.');
+    this.idx = Int32Array.from(allowed);
+    this.lb2 = new Float64Array(allowed.length);
+    this.stamp = new Int32Array(n);
   }
 
-  /** Index der nächsten (erlaubten) Palettenfarbe. */
+  /** Index der nächsten (erlaubten) Palettenfarbe, mit Zwischenspeicher (siehe Klassenbeschreibung). */
   nearest(l: number, a: number, b: number): number {
-    const kl = Math.round(l * 2);
+    const kl = Math.round(l * 2.55);
     const ka = Math.round(a * 2) + 512;
     const kb = Math.round(b * 2) + 512;
     const key = (kl * 1024 + ka) * 1024 + kb;
@@ -224,41 +262,100 @@ export class NearestColorMatcher {
     return res;
   }
 
+  /** Index der nächsten (erlaubten) Palettenfarbe ohne Zwischenspeicher – exakt (siehe Klassenbeschreibung). */
   nearestExact(l: number, a: number, b: number): number {
-    const K = 6;
-    const candIdx: number[] = [];
-    const candD: number[] = [];
-    for (let i = 0; i < this.n; i++) {
-      if (!this.allowed[i]) continue;
+    const idx = this.idx;
+    const m = idx.length;
+    if (this.formula === '76') {
+      let best = idx[0];
+      let bd = Infinity;
+      for (let k = 0; k < m; k++) {
+        const i = idx[k];
+        const dl = l - this.L[i];
+        const da = a - this.A[i];
+        const db = b - this.B[i];
+        const d = dl * dl + da * da + db * db;
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      return best;
+    }
+    if (m <= MATCHER_BRUTE_FORCE_MAX) {
+      let best = idx[0];
+      let bd = Infinity;
+      for (let k = 0; k < m; k++) {
+        const i = idx[k];
+        const d = deltaE2000(l, a, b, this.L[i], this.A[i], this.B[i]);
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      return best;
+    }
+    // 1. Vorauswahl (symmetrischer CIE94-artiger Abstand) und untere Schranke von CIEDE2000 je Farbe
+    const K = MATCHER_PREFILTER_K;
+    const cq = Math.sqrt(a * a + b * b);
+    const candIdx = new Int32Array(K).fill(-1);
+    const candD = new Float64Array(K).fill(Infinity);
+    const lb2 = this.lb2;
+    let worst = 0;
+    for (let k = 0; k < m; k++) {
+      const i = idx[k];
       const dl = l - this.L[i];
       const da = a - this.A[i];
       const db = b - this.B[i];
-      const d = dl * dl + da * da + db * db;
-      if (candIdx.length < K) {
-        candIdx.push(i);
-        candD.push(d);
-      } else {
-        let worst = 0;
-        for (let k = 1; k < K; k++) if (candD[k] > candD[worst]) worst = k;
-        if (d < candD[worst]) {
-          candIdx[worst] = i;
-          candD[worst] = d;
-        }
+      const dab2 = da * da + db * db;
+      const dc = cq - this.C[i];
+      const dh2 = Math.max(0, dab2 - dc * dc);
+      const cbar = (cq + this.C[i]) / 2;
+      const sc = 1 + 0.045 * cbar;
+      const sh = 1 + 0.015 * cbar;
+      const d = dl * dl + (dc * dc) / (sc * sc) + dh2 / (sh * sh);
+      const lm = ((l + this.L[i]) / 2 - 50) ** 2;
+      const sl = 1 + (0.015 * lm) / Math.sqrt(20 + lm);
+      const scMax = 1 + 0.0675 * cbar;
+      lb2[k] = (dl * dl) / (sl * sl) + (LB_CHROMA * dab2) / (scMax * scMax);
+      if (d < candD[worst]) {
+        candD[worst] = d;
+        candIdx[worst] = i;
+        worst = 0;
+        for (let q = 1; q < K; q++) if (candD[q] > candD[worst]) worst = q;
       }
     }
-    if (this.formula === '76') {
-      let best = 0;
-      for (let k = 1; k < candIdx.length; k++) if (candD[k] < candD[best]) best = k;
-      return candIdx[best];
-    }
-    let bestI = candIdx[0];
+    // 2. CIEDE2000 unter den Kandidaten
+    const stamp = this.stamp;
+    const qid = ++this.query;
+    let bestI = -1;
     let bestD = Infinity;
-    for (const i of candIdx) {
+    for (let q = 0; q < K; q++) {
+      const i = candIdx[q];
+      if (i < 0) continue;
+      stamp[i] = qid;
       const d = deltaE2000(l, a, b, this.L[i], this.A[i], this.B[i]);
-      if (d < bestD) {
+      if (d < bestD || (d === bestD && i < bestI)) {
         bestD = d;
         bestI = i;
       }
+    }
+    // 3. Jede andere Farbe, die nach der Schranke noch näher sein könnte, exakt prüfen
+    let bd2 = bestD * bestD * (1 + 1e-9) + 1e-12;
+    for (let k = 0; k < m; k++) {
+      if (lb2[k] > bd2) continue;
+      const i = idx[k];
+      if (stamp[i] === qid) continue;
+      const d = deltaE2000(l, a, b, this.L[i], this.A[i], this.B[i]);
+      if (d < bestD || (d === bestD && i < bestI)) {
+        bestD = d;
+        bestI = i;
+        bd2 = bestD * bestD * (1 + 1e-9) + 1e-12;
+      }
+    }
+    if (this.query > 2_000_000_000) {
+      this.query = 0;
+      stamp.fill(0);
     }
     return bestI;
   }
@@ -272,65 +369,10 @@ export function textColorFor(hex: string): string {
 
 export type ColorNameLang = 'de' | 'en' | 'tr';
 
-const NAMES: Record<ColorNameLang, Record<string, string>> = {
-  de: {
-    white: 'Weiß', cream: 'Creme', lightgray: 'Hellgrau', gray: 'Grau', darkgray: 'Dunkelgrau', black: 'Schwarz',
-    red: 'Rot', orange: 'Orange', yellow: 'Gelb', lime: 'Gelbgrün', green: 'Grün', teal: 'Türkis', cyan: 'Cyan',
-    blue: 'Blau', violet: 'Violett', magenta: 'Magenta', pink: 'Rosa', brown: 'Braun', beige: 'Beige', skin: 'Hautton',
-    olive: 'Oliv', light: 'Hell', dark: 'Dunkel', pale: 'Blass',
-  },
-  en: {
-    white: 'White', cream: 'Cream', lightgray: 'Light grey', gray: 'Grey', darkgray: 'Dark grey', black: 'Black',
-    red: 'Red', orange: 'Orange', yellow: 'Yellow', lime: 'Lime', green: 'Green', teal: 'Teal', cyan: 'Cyan',
-    blue: 'Blue', violet: 'Violet', magenta: 'Magenta', pink: 'Pink', brown: 'Brown', beige: 'Beige', skin: 'Skin tone',
-    olive: 'Olive', light: 'Light', dark: 'Dark', pale: 'Pale',
-  },
-  tr: {
-    white: 'Beyaz', cream: 'Krem', lightgray: 'Açık gri', gray: 'Gri', darkgray: 'Koyu gri', black: 'Siyah',
-    red: 'Kırmızı', orange: 'Turuncu', yellow: 'Sarı', lime: 'Fıstık yeşili', green: 'Yeşil', teal: 'Turkuaz', cyan: 'Camgöbeği',
-    blue: 'Mavi', violet: 'Mor', magenta: 'Macenta', pink: 'Pembe', brown: 'Kahverengi', beige: 'Bej', skin: 'Ten rengi',
-    olive: 'Zeytin', light: 'Açık', dark: 'Koyu', pale: 'Soluk',
-  },
-};
-
-/** Erzeugt einen beschreibenden Farbnamen aus einem Lab-Wert. */
+/**
+ * Beschreibender Farbname eines Lab-Werts in der Sprache `lang` (nächste Referenzfarbe, siehe colorNames.ts).
+ * Für Paletten besser nameKeyFor + uniqueAutoNames verwenden, damit gleichnamige Farben unterscheidbar sind.
+ */
 export function describeColor(lab: Lab, lang: ColorNameLang = 'de'): string {
-  const N = NAMES[lang];
-  const [L, a, b] = lab;
-  const C = Math.sqrt(a * a + b * b);
-  let h = Math.atan2(b, a) / DEG;
-  if (h < 0) h += 360;
-  if (C < 8) {
-    if (L > 92) return N.white;
-    if (L > 82 && b > 3) return N.cream;
-    if (L > 70) return N.lightgray;
-    if (L > 45) return N.gray;
-    if (L > 20) return N.darkgray;
-    return N.black;
-  }
-  let base: string;
-  if (h < 20 || h >= 345) base = L > 70 ? N.pink : N.red;
-  else if (h < 50) {
-    if (L < 55 && C < 50) base = N.brown;
-    else if (L >= 55 && C < 40) base = N.skin;
-    else base = N.orange;
-  } else if (h < 75) {
-    if (L < 50) base = N.brown;
-    else if (C < 30) base = N.beige;
-    else base = N.orange;
-  } else if (h < 100) base = L < 50 ? N.olive : C < 25 ? N.beige : N.yellow;
-  else if (h < 130) base = L < 45 ? N.olive : N.lime;
-  else if (h < 170) base = N.green;
-  else if (h < 210) base = N.teal;
-  else if (h < 240) base = N.cyan;
-  else if (h < 290) base = N.blue;
-  else if (h < 320) base = N.violet;
-  else base = L > 70 ? N.pink : N.magenta;
-  let prefix = '';
-  if (L > 75) prefix = N.light;
-  else if (L < 35) prefix = N.dark;
-  else if (C < 18) prefix = N.pale;
-  if (!prefix) return base;
-  if (lang === 'de') return prefix + base.toLowerCase();
-  return `${prefix} ${base.toLowerCase()}`;
+  return autoColorName(lab, lang);
 }

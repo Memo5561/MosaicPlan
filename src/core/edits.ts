@@ -1,12 +1,13 @@
 /**
  * Manuelle Änderungen am Mosaik (einzelne Steine, Formen, Palette, Fortschritt).
  */
-import { hexToLab, describeColor, NearestColorMatcher, type ColorNameLang } from './color';
+import { deltaE, hexToLab, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
+import { autoColorName, inferAutoName, nameKeyFor, uniqueAutoNames } from './colorNames';
 import { area, cleanPoly, isSimple, polygonsOverlap, type Pt } from './geometry';
 import type { Layout } from './layout';
 import type { Range } from './stats';
 import { cellPieceCount, cellPieces, cellRect, diagA, diagB, isDegeneratePiece, lineSplit, pieceCuttable, subdivisionCuttable, subRects, worstWidth, type WidthCheck } from './pieces';
-import { CellKind, type CellKindValue, type FreePiece, type MosaicData, type PaletteColor } from './types';
+import { CellKind, type CellKindValue, type FreePiece, type MatchDeltaE, type MosaicData, type PaletteColor } from './types';
 
 export function setPieceColor(data: MosaicData, idx: number, piece: number, color: number): void {
   const kind = data.kind[idx];
@@ -269,19 +270,38 @@ export function nextCode(palette: PaletteColor[]): number {
   return palette.reduce((m, p) => Math.max(m, p.code), 0) + 1;
 }
 
+const r2 = (v: number) => Math.round(v * 100) / 100;
+/** Lab wie in der Palette gespeichert (auf 0,01 gerundet) – Namen werden immer aus diesem Wert gebildet. */
+const storedLab = (hex: string): Lab => {
+  const l = hexToLab(hex);
+  return [r2(l[0]), r2(l[1]), r2(l[2])];
+};
+const upperHex = (hex: string) => (hex.toUpperCase().startsWith('#') ? hex.toUpperCase() : `#${hex.toUpperCase()}`);
+
+/**
+ * Ist der Name dieser Palettenfarbe automatisch erzeugt (und darf daher neu gebildet/übersetzt werden)?
+ * Ja bei gesetztem nameKey. Ohne nameKey (ältere Projekte) nur, wenn der Name genau dem automatischen Namen
+ * dieser Farbe entspricht – nach der heutigen oder der früheren Benennung (legacyDescribeColor) in DE, EN oder TR –
+ * und keine Material-Verknüpfung besteht. Material- und Benutzernamen gelten nie als automatisch.
+ */
+export function isAutoNamed(p: PaletteColor): boolean {
+  if (p.nameKey) return true;
+  if (p.materialId) return false;
+  return inferAutoName(p.name, p.lab, { legacy: true }) !== null;
+}
+
+/**
+ * Fügt eine Farbe an (neue, noch nie vergebene Nummer). Ohne `name` wird der Name automatisch erzeugt
+ * (nameKey) und mit den übrigen automatischen Namen eindeutig gemacht – dabei können gleichnamige
+ * automatische Farben einen Zusatz (hell/dunkel, Nummer) erhalten. Ein übergebener Name bleibt genau so.
+ */
 export function addPaletteColor(palette: PaletteColor[], hex: string, name?: string, lang: ColorNameLang = 'de', materialId?: string): PaletteColor[] {
-  const lab = hexToLab(hex);
-  const r2 = (v: number) => Math.round(v * 100) / 100;
-  return [
-    ...palette,
-    {
-      code: nextCode(palette),
-      hex: hex.toUpperCase().startsWith('#') ? hex.toUpperCase() : `#${hex.toUpperCase()}`,
-      lab: [r2(lab[0]), r2(lab[1]), r2(lab[2])],
-      name: name || describeColor(lab, lang),
-      materialId,
-    },
-  ];
+  const lab = storedLab(hex);
+  const entry: PaletteColor = { code: nextCode(palette), hex: upperHex(hex), lab, name: name || '', materialId };
+  if (name) return [...palette, entry];
+  entry.nameKey = nameKeyFor(lab);
+  entry.name = autoColorName(lab, lang);
+  return uniqueAutoNames([...palette, entry], lang);
 }
 
 function remapAll(data: MosaicData, map: (c: number) => number): void {
@@ -294,22 +314,34 @@ function remapAll(data: MosaicData, map: (c: number) => number): void {
 }
 
 /**
- * Entfernt eine Palettenfarbe. Alle Steine dieser Farbe erhalten `replacement`
- * oder – wenn nicht angegeben – die nächstgelegene verbleibende Farbe (ΔE).
+ * Exakt nächste verbleibende Farbe zu palette[index] (ΔE mit der Formel des Projekts, Vergleich mit jeder
+ * Farbe; bei Gleichstand die niedrigere Position). -1, wenn es keine andere Farbe gibt.
  */
-export function removePaletteColor(palette: PaletteColor[], data: MosaicData, index: number, replacement?: number, formula: '2000' | '76' = '2000'): PaletteColor[] {
+export function nearestOtherColor(palette: PaletteColor[], index: number, formula: DeltaEFormula = '2000'): number {
+  const l = palette[index].lab;
+  let best = -1;
+  let bd = Infinity;
+  for (let j = 0; j < palette.length; j++) {
+    if (j === index) continue;
+    const d = deltaE(formula, l, palette[j].lab);
+    if (d < bd) {
+      bd = d;
+      best = j;
+    }
+  }
+  return best;
+}
+
+/**
+ * Entfernt eine Palettenfarbe. Alle Steine dieser Farbe erhalten `replacement`
+ * oder – wenn nicht angegeben – die exakt nächstgelegene verbleibende Farbe (ΔE, siehe nearestOtherColor).
+ * Die Palette selbst bleibt sonst unverändert (auch matchDeltaE: der Wert beschreibt die Berechnung; die
+ * Anzeige prüft mit matchDeltaEValid, ob er noch zu den aktuellen Steinen passt).
+ */
+export function removePaletteColor(palette: PaletteColor[], data: MosaicData, index: number, replacement?: number, formula: DeltaEFormula = '2000'): PaletteColor[] {
   if (palette.length <= 1) throw new Error('Die letzte Farbe kann nicht entfernt werden.');
   let target = replacement;
-  if (target === undefined || target === index) {
-    const mask = palette.map((_, i) => i !== index);
-    const m = new NearestColorMatcher(
-      palette.map((p) => p.lab),
-      formula,
-      mask,
-    );
-    const l = palette[index].lab;
-    target = m.nearestExact(l[0], l[1], l[2]);
-  }
+  if (target === undefined || target === index) target = nearestOtherColor(palette, index, formula);
   const t = target;
   remapAll(data, (c) => {
     const v = c === index ? t : c;
@@ -318,17 +350,89 @@ export function removePaletteColor(palette: PaletteColor[], data: MosaicData, in
   return palette.filter((_, i) => i !== index);
 }
 
-export function updatePaletteColor(palette: PaletteColor[], index: number, patch: Partial<Pick<PaletteColor, 'hex' | 'name' | 'materialId'>>): PaletteColor[] {
-  return palette.map((p, i) => {
+/**
+ * Ändert HEX, Name oder Material einer Farbe.
+ *  - Ein übergebener Name ist ein Benutzername: nameKey/nameSuffix entfallen, der Name wird nie mehr automatisch geändert.
+ *  - Eine HEX-Änderung bildet den Namen einer automatisch benannten Farbe (isAutoNamed) neu und macht die
+ *    automatischen Namen wieder eindeutig (Sprache `lang`); Benutzer- und Materialnamen bleiben.
+ *    matchDeltaE (Abweichung vom Foto bei der Berechnung) passt danach nicht mehr und wird gelöscht.
+ *  - Eine Material-Änderung lässt Name und Farbe unverändert.
+ */
+export function updatePaletteColor(
+  palette: PaletteColor[],
+  index: number,
+  patch: Partial<Pick<PaletteColor, 'hex' | 'name' | 'materialId'>>,
+  lang: ColorNameLang = 'de',
+): PaletteColor[] {
+  let renamed = false;
+  const out = palette.map((p, i) => {
     if (i !== index) return p;
-    const next = { ...p, ...patch };
-    if (patch.hex) {
-      const lab = hexToLab(patch.hex);
-      next.hex = patch.hex.toUpperCase();
-      next.lab = [Math.round(lab[0] * 100) / 100, Math.round(lab[1] * 100) / 100, Math.round(lab[2] * 100) / 100];
+    const { name, hex, ...rest } = patch;
+    const next: PaletteColor = { ...p, ...rest };
+    if (name !== undefined) {
+      next.name = name;
+      delete next.nameKey;
+      delete next.nameSuffix;
+    }
+    if (hex) {
+      const lab = storedLab(hex);
+      next.hex = hex.toUpperCase();
+      next.lab = lab;
+      if (next.hex !== p.hex.toUpperCase() || lab.some((v, k) => v !== p.lab[k])) delete next.matchDeltaE;
+      if (name === undefined && isAutoNamed(p)) {
+        next.nameKey = nameKeyFor(lab);
+        delete next.nameSuffix;
+        next.name = autoColorName(lab, lang);
+        renamed = true;
+      }
     }
     return next;
   });
+  return renamed ? uniqueAutoNames(out, lang) : out;
+}
+
+/** Setzt den Namen einer Farbe wieder auf den automatischen Namen (z. B. nach Leeren des Namensfelds). */
+export function resetAutoName(palette: PaletteColor[], index: number, lang: ColorNameLang = 'de'): PaletteColor[] {
+  const out = palette.map((p, i) => {
+    if (i !== index) return p;
+    const next: PaletteColor = { ...p, nameKey: nameKeyFor(p.lab), name: autoColorName(p.lab, lang) };
+    delete next.nameSuffix;
+    return next;
+  });
+  return uniqueAutoNames(out, lang);
+}
+
+/**
+ * Bringt die automatischen Namen einer Palette auf den aktuellen Stand der Sprache `lang`:
+ *  1. Farben ohne nameKey und ohne Material, deren Name genau einem automatischen Namen entspricht
+ *     (heutige oder frühere Benennung, siehe isAutoNamed), erhalten ihren Schlüssel – ältere Projekte
+ *     bekommen so die korrekten Namen (z. B. „Rot“ statt „Orange“).
+ *  2. Alle automatischen Namen werden eindeutig gemacht und in `lang` gesetzt (uniqueAutoNames).
+ * Benutzer- und Materialnamen bleiben unverändert. Liefert dasselbe Array, wenn sich nichts ändert.
+ */
+/**
+ * Abweichung vom Foto (matchDeltaE) einer Farbe – nur, wenn sie noch zu den aktuellen Steinen passt:
+ * seit der Berechnung keine manuelle Änderung an Steinen (manualEdits = 0) und dieselbe Stückzahl wie heute.
+ * Sonst null (die Anzeige sagt dann „nicht mehr aktuell“ statt eine veraltete Zahl zu zeigen).
+ */
+export function matchDeltaEValid(p: PaletteColor, currentPieces: number | undefined, manualEdits: number): MatchDeltaE | null {
+  const m = p.matchDeltaE;
+  if (!m || manualEdits > 0 || currentPieces === undefined || m.pieces !== currentPieces) return null;
+  return m;
+}
+
+export function normalizePaletteNames(palette: PaletteColor[], lang: ColorNameLang): PaletteColor[] {
+  let keyed = false;
+  const withKeys = palette.map((p) => {
+    if (p.nameKey || p.materialId) return p;
+    const inf = inferAutoName(p.name, p.lab, { legacy: true });
+    if (!inf) return p;
+    keyed = true;
+    const next: PaletteColor = { ...p, nameKey: inf.key };
+    delete next.nameSuffix;
+    return next;
+  });
+  return uniqueAutoNames(keyed ? withKeys : palette, lang);
 }
 
 /** Ersetzt in einem Bereich (oder überall) Farbe a durch b. Gibt die Anzahl geänderter Steine zurück. */

@@ -6,9 +6,12 @@ import { Viewer, type ViewerHandle } from './Viewer';
 import type { ProjectApi } from './useProject';
 import type { Material } from '../../core/types';
 import { parseCellId } from '../../core/layout';
+import { paletteDisplayName } from '../../core/colorNames';
+import { useLocalizedPaletteNames } from './StepColors';
+import '../css/w2-colour-honesty.css';
 
 export function StepPreview({ api, materials }: { api: ProjectApi; materials: Material[] }) {
-  const { t, n } = useI18n();
+  const { t, n, lang } = useI18n();
   const [realistic, setRealistic] = useState(true);
   const [codes, setCodes] = useState(true);
   const [showSections, setShowSections] = useState(false);
@@ -18,6 +21,8 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const viewer = useRef<ViewerHandle>(null);
   const origRef = useRef<HTMLDivElement>(null);
   const c = api.computed;
+  // automatische Farbnamen folgen der Sprache (auch für Steindetail, PDF und CSV, die den gespeicherten Namen lesen)
+  useLocalizedPaletteNames(api);
 
   useEffect(() => {
     const h = origRef.current;
@@ -32,6 +37,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   if (!c) return <p className={api.integrityError ? 'error' : 'muted'}>{t(api.integrityError ? 'compute.err.integrity' : 'preview.notComputed')}</p>;
   const rec = api.rec!;
   const palette = rec.palette;
+  const matById = new Map(materials.map((m) => [m.id, m]));
   return (
     <div className="viewer-layout">
       <div>
@@ -79,14 +85,31 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           {t('preview.legend')} ({palette.length})
         </h4>
         <div className="legend-list">
-          {palette.map((p, i) => (
-            <button key={i} className={`legend-item ${focus === i ? 'active' : ''}`} onClick={() => setFocus(focus === i ? null : i)}>
-              <Swatch hex={p.hex} />
-              <b>{String(p.code).padStart(2, '0')}</b>
-              <span className="grow">{p.name}</span>
-              <span className="muted">{api.stats ? n(api.stats.perColor[i]?.pieces ?? 0) : '…'}</span>
-            </button>
-          ))}
+          {palette.map((p, i) => {
+            const m = p.materialId ? matById.get(p.materialId) : undefined;
+            const matText = m ? [m.manufacturer, m.colorNumber].filter((x) => x && x.trim()).join(' ') || m.colorName : '';
+            return (
+              <button key={i} className={`legend-item ${focus === i ? 'active' : ''}`} onClick={() => setFocus(focus === i ? null : i)} data-testid="legend-item">
+                <Swatch hex={p.hex} />
+                <b>{String(p.code).padStart(2, '0')}</b>
+                <span className="grow w2ch-legend-name">
+                  <span data-testid="legend-name">{paletteDisplayName(p, lang)}</span>
+                  {/* Verknüpftes Material als Zweitzeile (wie im PDF): Hersteller und Farbnummer */}
+                  {m && matText && (
+                    <small className="w2ch-legend-mat" data-testid="legend-material">
+                      {matText}
+                    </small>
+                  )}
+                  {p.materialId && !m && (
+                    <small className="w2ch-legend-mat missing" data-testid="legend-material-missing">
+                      {t('w2ch.legendMaterialMissing')}
+                    </small>
+                  )}
+                </span>
+                <span className="muted">{api.stats ? n(api.stats.perColor[i]?.pieces ?? 0) : '…'}</span>
+              </button>
+            );
+          })}
         </div>
         {focus !== null && <small className="muted">{t('preview.focusHint')}</small>}
         <h4>{t('preview.original')}</h4>

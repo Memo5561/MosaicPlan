@@ -5,13 +5,14 @@
  *
  * Die Berechnung läuft kachelweise (64×64 Zellen) und meldet Fortschritt.
  */
-import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, describeColor, type Lab, type ColorNameLang } from './color';
+import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, type Lab, type ColorNameLang } from './color';
+import { inferAutoName, nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
 import { regionMask, detailMap, type RGBAImage } from './imageOps';
 import { kmeansLab } from './kmeans';
 import type { Layout } from './layout';
 import type { Pt } from './geometry';
 import { cellRect, diagA, diagB, lineSplit, pieceCuttable, subRects } from './pieces';
-import { CellKind, createEmptyMosaic, Rec, type MosaicData, type PaletteColor, type PaletteMode, type Region, type ShapeOptions } from './types';
+import { CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type Region, type ShapeOptions } from './types';
 
 export interface FixedColor {
   lab: Lab;
@@ -23,6 +24,11 @@ export interface FixedColor {
    * ganze Zahlen, bleiben sie bei der Berechnung erhalten, sonst wird fortlaufend 1…n vergeben.
    */
   code?: number;
+  /** Bestand des Materials in Stück (nur Materialmodi; Vertrag für Welle 3 – die Berechnung nutzt ihn noch nicht) */
+  stock?: number;
+  /** Schlüssel eines automatischen Namens (Modus 'custom'): der Name bleibt automatisch und folgt der UI-Sprache */
+  nameKey?: string;
+  nameSuffix?: NameSuffix;
 }
 
 export interface ComputeParams {
@@ -49,6 +55,19 @@ export interface ComputeDiagnostics {
   recommendCells: number;
   timeMs: number;
   samplesPerCell: number;
+  /**
+   * Angeforderte Farbanzahl: Automatik-Modi = eingestellte Anzahl, „Nur eigene Materialien“ = Anzahl der
+   * angebotenen Materialfarben, eigene Palette = Anzahl ihrer Farben. (Optional: ältere Ergebnisse haben es nicht.)
+   */
+  requestedColors?: number;
+  /** Farben, die mindestens einen Stein erhalten haben */
+  usedColors?: number;
+  /** Farbquelle dieser Berechnung (zum richtigen Lesen von requestedColors) */
+  paletteMode?: PaletteMode;
+  /** Automatik-Modi: Anzahl der aus dem Foto ermittelten Farben (K-Means-Zentren; weniger als angefordert, wenn das Foto nicht mehr hergibt) */
+  imageColors?: number;
+  /** „Automatisch → eigene Materialien“: Bildfarben, die auf ein bereits gewähltes Material fielen (zusammengelegt) */
+  mergedColors?: number;
 }
 
 export interface ComputeResult {
@@ -430,8 +449,10 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const fromQ = (arr: Uint8Array, i: number): Lab => [arr[i * 3] / 2.55, arr[i * 3 + 1] - 128, arr[i * 3 + 2] - 128];
 
   let paletteLab: Lab[] = [];
-  let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number }[] = [];
+  let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number; nameKey?: string; nameSuffix?: NameSuffix; mergedFrom?: number }[] = [];
   const fixed = params.fixedPalette ?? [];
+  let imageColors: number | undefined;
+  let mergedColors: number | undefined;
 
   if (params.paletteMode === 'auto' || params.paletteMode === 'auto-snap') {
     // Stichprobe der tatsächlichen Steinfarben (gewichtet nach Fläche und Region)
@@ -460,33 +481,44 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       }
     }
     const km = kmeansLab(new Float32Array(pts), new Float32Array(ws), Math.max(1, params.colorCount), 30, params.seed ?? 7);
+    imageColors = km.centers.length;
     if (params.paletteMode === 'auto') {
       paletteLab = km.centers;
       paletteMeta = km.centers.map(() => ({}));
     } else {
       if (!fixed.length) throw new Error('Keine Materialfarben vorhanden.');
+      // Jede Bildfarbe (K-Means-Zentrum) → nächstes Material (exakt über alle Materialien, Formel der
+      // Projekteinstellung). Mehrere Zentren können auf dasselbe Material fallen: zusammengelegt (mergedFrom).
+      const snapDE = params.deltaE === '76' ? deltaE76 : deltaE2000;
       const used = new Map<number, number>();
       for (const c of km.centers) {
         let best = 0;
         let bd = Infinity;
         fixed.forEach((f, i) => {
-          const d = deltaE2000(c[0], c[1], c[2], f.lab[0], f.lab[1], f.lab[2]);
+          const d = snapDE(c[0], c[1], c[2], f.lab[0], f.lab[1], f.lab[2]);
           if (d < bd) {
             bd = d;
             best = i;
           }
         });
-        used.set(best, Math.min(used.get(best) ?? Infinity, bd));
+        used.set(best, (used.get(best) ?? 0) + 1);
       }
-      for (const [i] of used) {
+      mergedColors = km.centers.length - used.size;
+      for (const [i, centres] of used) {
         paletteLab.push(fixed[i].lab);
-        paletteMeta.push({ hex: fixed[i].hex, name: fixed[i].name, materialId: fixed[i].materialId });
+        paletteMeta.push({ hex: fixed[i].hex, name: fixed[i].name, materialId: fixed[i].materialId, mergedFrom: centres });
       }
     }
   } else {
     if (!fixed.length) throw new Error('Die Palette ist leer.');
     paletteLab = fixed.map((f) => f.lab);
-    paletteMeta = fixed.map((f) => ({ hex: f.hex, name: f.name, materialId: f.materialId, code: f.code }));
+    paletteMeta = fixed.map((f) => {
+      // Eigene Palette: Namen bleiben genau so, wie sie sind. Ein automatischer Name bleibt automatisch –
+      // über den mitgegebenen Schlüssel oder, falls der Aufrufer ihn nicht weiterreicht, weil der Text genau
+      // dem automatischen Namen dieser Farbe entspricht (nie bei Farben mit Material).
+      const auto = f.nameKey ? { key: f.nameKey, suffix: f.nameSuffix } : !f.materialId ? inferAutoName(f.name, f.lab) : null;
+      return { hex: f.hex, name: f.name, materialId: f.materialId, code: f.code, ...(auto ? { nameKey: auto.key, nameSuffix: auto.suffix } : {}) };
+    });
   }
   onProgress?.('palette', 1);
 
@@ -500,14 +532,36 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   let maxDE = 0;
   let cntDE = 0;
   const hist = new Uint32Array(101);
+  // je Palettenindex: Stückzahl, ΔE-Summe, max. ΔE, Steine über 5 und über 10 (Bild-Lab je Stein gegen zugeordnete Farbe)
+  const nPal = paletteLab.length;
+  const pcCnt = new Uint32Array(nPal);
+  const pcSum = new Float64Array(nPal);
+  const pcMax = new Float64Array(nPal);
+  const pcOver5 = new Uint32Array(nPal);
+  const pcOver10 = new Uint32Array(nPal);
+  // gemessen gegen die Palettenfarbe, wie sie gespeichert wird (Lab auf 0,01 gerundet) – so ergibt eine erneute
+  // Berechnung mit der gespeicherten Palette dieselben Werte
+  const storedLab: Lab[] = paletteLab.map((l) => [round2(l[0]), round2(l[1]), round2(l[2])]);
   const track = (l: Lab, pi: number) => {
-    const p = paletteLab[pi];
+    const p = storedLab[pi];
     const d = dE(l[0], l[1], l[2], p[0], p[1], p[2]);
     sumDE += d;
     cntDE++;
     if (d > maxDE) maxDE = d;
     hist[Math.min(100, Math.floor(d))]++;
+    pcCnt[pi]++;
+    pcSum[pi] += d;
+    if (d > pcMax[pi]) pcMax[pi] = d;
+    if (d > 5) pcOver5[pi]++;
+    if (d > 10) pcOver10[pi]++;
   };
+  const matchOf = (pi: number): MatchDeltaE => ({
+    pieces: pcCnt[pi],
+    mean: pcCnt[pi] ? round2(pcSum[pi] / pcCnt[pi]) : 0,
+    max: round2(pcMax[pi]),
+    over5: pcOver5[pi],
+    over10: pcOver10[pi],
+  });
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
       const idx = row * cols + col;
@@ -577,13 +631,17 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     const keepCodes = codes.every((c) => c !== undefined && Number.isInteger(c) && c > 0) && new Set(codes).size === codes.length;
     palette = paletteLab.map((l, i) => {
       const meta = paletteMeta[i] ?? {};
-      return {
+      const pc: PaletteColor = {
         code: keepCodes ? (codes[i] as number) : i + 1,
         lab: [round2(l[0]), round2(l[1]), round2(l[2])],
         hex: meta.hex ?? labToHex(l[0], l[1], l[2]),
-        name: meta.name ?? describeColor(l, lang),
+        name: meta.name ?? '',
         materialId: meta.materialId,
       };
+      if (meta.nameKey) pc.nameKey = meta.nameKey;
+      if (meta.nameSuffix !== undefined) pc.nameSuffix = meta.nameSuffix;
+      pc.matchDeltaE = matchOf(i);
+      return pc;
     });
   } else {
     // Automatisch/Materialien: Die Palette wird bei jeder Berechnung neu gebildet – unbenutzte Farben
@@ -613,14 +671,23 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     palette = keep.map((old, ni) => {
       const l = paletteLab[old];
       const meta = paletteMeta[old] ?? {};
-      return {
+      // Name aus dem gespeicherten (gerundeten) Lab, damit derselbe Wert später denselben Schlüssel ergibt
+      const lab: Lab = [round2(l[0]), round2(l[1]), round2(l[2])];
+      const pc: PaletteColor = {
         code: ni + 1,
-        lab: [round2(l[0]), round2(l[1]), round2(l[2])],
+        lab,
         hex: meta.hex ?? labToHex(l[0], l[1], l[2]),
-        name: meta.name ?? describeColor(l, lang),
+        name: meta.name ?? '',
         materialId: meta.materialId,
       };
+      if (meta.name === undefined) pc.nameKey = nameKeyFor(lab);
+      if (meta.mergedFrom !== undefined) pc.mergedFrom = meta.mergedFrom;
+      pc.matchDeltaE = matchOf(old);
+      return pc;
     });
+    // Automatische Namen eindeutig machen (hell/mittel/dunkel bzw. Nummer) und in der Sprache setzen;
+    // Materialnamen bleiben unverändert.
+    palette = uniqueAutoNames(palette, lang);
   }
 
   let acc = 0;
@@ -645,6 +712,11 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       recommendCells,
       timeMs: Date.now() - t0,
       samplesPerCell: NS,
+      paletteMode: params.paletteMode,
+      requestedColors: params.paletteMode === 'auto' || params.paletteMode === 'auto-snap' ? Math.max(1, params.colorCount) : fixed.length,
+      usedColors: palette.filter((p) => (p.matchDeltaE?.pieces ?? 0) > 0).length,
+      ...(imageColors !== undefined ? { imageColors } : {}),
+      ...(mergedColors !== undefined ? { mergedColors } : {}),
     },
   };
 }

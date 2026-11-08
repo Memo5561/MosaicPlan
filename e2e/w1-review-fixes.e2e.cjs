@@ -96,7 +96,7 @@ const setNum = async (page, testId, value) => {
   await page.click('[data-testid="compute-btn"]');
   await page.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 120000 });
   await page.click('[data-testid="step-colors"]');
-  await page.click('[data-testid="palette-mode"] >> text=Eigene Palette');
+  await page.click('[data-testid="palette-mode"] >> text=Eigene Farbauswahl');
   // größer rechnen, damit die Berechnung lange genug läuft
   await page.click('[data-testid="step-size"]');
   await setNum(page, 'width-input', '600');

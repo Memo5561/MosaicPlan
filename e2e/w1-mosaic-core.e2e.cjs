@@ -51,11 +51,12 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   const rows = () =>
     page.$$eval('[data-testid="palette-table"] tbody tr', (trs) =>
       trs.map((tr) => {
-        const td = tr.querySelectorAll('td');
-        const stones = td[5].childNodes[0] ? td[5].childNodes[0].textContent.trim() : '';
+        // Spalten über data-col (w2-colour-honesty: Nr.+Farbe, Name, Steine, Bedarf, Material, HEX·L*a*b*)
+        const td = (c) => tr.querySelector(`td[data-col="${c}"]`);
+        const stones = td('stones').childNodes[0] ? td('stones').childNodes[0].textContent.trim() : '';
         return {
-          code: td[0].textContent.trim(),
-          hex: td[3].textContent.trim(),
+          code: td('code').textContent.trim(),
+          hex: td('hexlab').textContent.trim().split(' ')[0],
           stones: /\d/.test(stones) ? parseInt(stones.replace(/\D/g, ''), 10) : null,
           unused: tr.getAttribute('data-unused') === 'true',
           tag: (tr.querySelector('.w1mc-tag') || { textContent: '' }).textContent.trim(),
@@ -100,7 +101,7 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   await page.click('[data-testid="sample-portrait"]');
   await page.waitForSelector('[data-testid="compute-btn"]');
   await page.click('[data-testid="step-colors"]');
-  await page.click('[data-testid="palette-mode"] >> text=Eigene Palette');
+  await page.click('[data-testid="palette-mode"] >> text=Eigene Farbauswahl');
   for (const [hex] of CUSTOM) {
     await page.fill('input[aria-label="Neue Farbe"]', hex.toLowerCase());
     await page.click('button:has-text("Farbe hinzufügen")');
@@ -203,7 +204,7 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   );
 
   // ---------- Andere Farbquelle: Entfernen gilt nur bis zum Neuberechnen – der Dialog sagt das
-  await page.click('[data-testid="palette-mode"] >> text=Automatisch (K-Means)');
+  await page.click('[data-testid="palette-mode"] >> text=Automatisch aus dem Foto');
   await page.click('[data-testid="palette-remove"] >> nth=0');
   await page.waitForSelector('[data-testid="palette-remove-dialog"]');
   const autoNote = await page.textContent('[data-testid="palette-remove-note"]');
@@ -211,7 +212,7 @@ const digits = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   await page.click('.modal-foot >> text=Abbrechen');
   const caveat = await page.textContent('[data-testid="palette-recompute-caveat"]').catch(() => '');
   check('Automatisch: Hinweis unter der Palette, dass Neu berechnen die Palette neu erstellt', /zurückkehren/.test(caveat || ''), (caveat || '').trim());
-  await page.click('[data-testid="palette-mode"] >> text=Eigene Palette');
+  await page.click('[data-testid="palette-mode"] >> text=Eigene Farbauswahl');
 
   // ---------- Handy-Breite: Dialog passt
   await page.setViewportSize({ width: 390, height: 844 });

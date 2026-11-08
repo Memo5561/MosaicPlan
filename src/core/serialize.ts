@@ -21,9 +21,18 @@ export interface StoredMosaic {
   free: [number, { poly: [number, number][]; color: number }[]][];
   progress: Uint16Array;
   rec: Uint8Array;
+  /**
+   * Revision dieses Rasters. Sie wird bei jeder Berechnung neu vergeben und zusammen mit
+   * `ProjectRecord.mosaicRev` in derselben Transaktion gespeichert: Raster und Palette gehören
+   * nur zusammen, wenn beide Revisionen gleich sind. Fehlt bei Daten aus älteren Versionen.
+   */
+  rev?: string;
 }
 
-export function packMosaic(d: MosaicData): StoredMosaic {
+/** Mosaikdaten, die (optional) wissen, zu welcher gespeicherten Revision sie gehören. */
+export type MosaicDataWithRev = MosaicData & { rev?: string };
+
+export function packMosaic(d: MosaicDataWithRev): StoredMosaic {
   const subIdx = new Int32Array(d.sub.size);
   const subLen = new Uint8Array(d.sub.size);
   let total = 0;
@@ -63,10 +72,11 @@ export function packMosaic(d: MosaicData): StoredMosaic {
     free,
     progress: d.progress,
     rec: d.rec,
+    ...(d.rev !== undefined ? { rev: d.rev } : {}),
   };
 }
 
-export function unpackMosaic(s: StoredMosaic): MosaicData {
+export function unpackMosaic(s: StoredMosaic): MosaicDataWithRev {
   const sub = new Map<number, Uint16Array>();
   let o = 0;
   for (let i = 0; i < s.subIdx.length; i++) {
@@ -88,6 +98,7 @@ export function unpackMosaic(s: StoredMosaic): MosaicData {
     free,
     progress: s.progress,
     rec: s.rec ?? new Uint8Array(s.cols * s.rows),
+    ...(s.rev !== undefined ? { rev: s.rev } : {}),
   };
 }
 

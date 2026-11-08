@@ -88,6 +88,71 @@ export function subRects(r: CellRect, k: number, g: number): Pt[][] {
   return res;
 }
 
+/**
+ * Vorlagen des Freiform-Editors:
+ *  - full: ganzer Stein (ein Rechteck),
+ *  - diagA / diagB: zwei Dreiecke entlang ╲ bzw. ╱ (wie die Formknöpfe „Dreiecke ╲/╱“),
+ *  - half: zwei gleiche Hälften, Schnitt quer zur längeren Seite (bei quadratischen Zellen senkrecht),
+ *  - rhombus: Raute mit den Ecken in den Mitten der Zellkanten (ein Teil, die Ecken bleiben Fuge),
+ *  - trapezoid: zwei Trapeze, schräger Schnitt durch die Zellmitte von 35 % oben nach 65 % unten.
+ */
+/** Kleinste zulässige Fläche eines Freiformteils in mm² (Prüfung in validateFreePieces, Vorlagen in freePreset). */
+export const MIN_FREE_AREA_MM2 = 0.25;
+
+export type FreePresetKind = 'full' | 'diagA' | 'diagB' | 'half' | 'rhombus' | 'trapezoid';
+export const FREE_PRESET_KINDS: readonly FreePresetKind[] = ['full', 'diagA', 'diagB', 'half', 'rhombus', 'trapezoid'];
+
+/**
+ * Teilpolygone einer Freiform-Vorlage für eine Zelle w × h mm, relativ zur oberen linken Zellecke.
+ * Mehrteilige Vorlagen entstehen aus denselben Funktionen wie die automatischen Formen (diagA, diagB,
+ * lineSplit) und halten daher zwischen den Teilen genau die Fuge `joint` ein. Die Koordinaten sind exakt
+ * (nicht gerundet). null, wenn ein Teil keine oder zu wenig Fläche hätte (Fuge zu breit für die Zelle,
+ * Fläche < MIN_FREE_AREA_MM2) – dieselbe Untergrenze wie in validateFreePieces.
+ */
+export function freePreset(kind: FreePresetKind, w: number, h: number, joint: number): Pt[][] | null {
+  if (!(w > 0) || !(h > 0)) return null;
+  const r: CellRect = { x: 0, y: 0, w, h };
+  const g = Math.max(0, joint);
+  let polys: Pt[][];
+  switch (kind) {
+    case 'full':
+      polys = [rectPoly(0, 0, w, h)];
+      break;
+    case 'diagA':
+      polys = diagA(r, g);
+      break;
+    case 'diagB':
+      polys = diagB(r, g);
+      break;
+    case 'half':
+      // senkrechter Schnitt (Normale 0°) bei breiten/quadratischen Zellen, sonst waagerecht (Normale 90°)
+      polys = w >= h ? lineSplit(r, 1, 0, 0, g) : lineSplit(r, 0, 1, 0, g);
+      break;
+    case 'rhombus':
+      polys = [
+        [
+          { x: w / 2, y: 0 },
+          { x: w, y: h / 2 },
+          { x: w / 2, y: h },
+          { x: 0, y: h / 2 },
+        ],
+      ];
+      break;
+    case 'trapezoid': {
+      // Schnittrichtung (0,3·w, h): von (0,35·w | 0) nach (0,65·w | h), Normale senkrecht dazu
+      const dx = 0.3 * w;
+      const len = Math.hypot(dx, h);
+      polys = lineSplit(r, h / len, -dx / len, 0, g);
+      break;
+    }
+    default:
+      return null;
+  }
+  const out = polys.map((p) => cleanPoly(p));
+  if (out.some((p) => isDegeneratePiece(p) || area(p) < MIN_FREE_AREA_MM2)) return null;
+  return out;
+}
+
 export function subK(data: MosaicData, idx: number): number {
   const s = data.sub.get(idx);
   return s ? Math.round(Math.sqrt(s.length)) : 1;

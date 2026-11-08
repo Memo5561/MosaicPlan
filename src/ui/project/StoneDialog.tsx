@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
 import { deltaE2000 } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
-import { bbox, centroid, type Pt } from '../../core/geometry';
+import { bbox, centroid } from '../../core/geometry';
 import { cellId, sectionOfCell, type Layout, type SectionGrid } from '../../core/layout';
 import { analyzeCut, cellPieces, cellRect, cutLineItems, pieceWidthCheck, type CutInfo, type WidthCheck } from '../../core/pieces';
 import {
   allowedCellKinds,
   cellKindWidth,
   checkCellKind,
+  freeEditorPieces,
   neighbors,
   sameCellKind,
   setCellKind,
@@ -19,11 +20,13 @@ import {
   type KindChange,
 } from '../../core/edits';
 import { makeRawSizeFn } from '../../core/stats';
-import { CellKind, Rec, type FreePiece, type Material, type MosaicData, type PaletteColor } from '../../core/types';
+import { CellKind, Rec, type Material, type MosaicData, type PaletteColor } from '../../core/types';
 import { useI18n, type TFunc } from '../../i18n';
 import { Badge, Modal, NumberInput, Swatch } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
+import { FreeformEditor, freeIssueText } from './FreeformEditor';
 import '../css/w1-cut-correctness.css';
+import '../css/w3-freeform-editor.css';
 
 export interface CutInstructionItem {
   text: string;
@@ -129,6 +132,12 @@ export function StoneDialog(p: Props) {
   const b = bbox(piece.poly);
   const ctr = centroid(piece.poly);
   const shapeKind = data.kind[idx];
+  const cell = cellRect(layout, p.row, p.col);
+  // verknüpftes Material: null = keine Verknüpfung, undefined = Verknüpfung zeigt ins Leere
+  const material = pc?.materialId ? p.materials.find((x) => x.id === pc.materialId) : null;
+  // gespeicherte Freiformzelle prüfen (ältere Projekte konnten überlappende Teile ohne Fuge speichern)
+  const freeCheck = shapeKind === CellKind.FREE ? validateFreePieces(cell.w, cell.h, data.free.get(idx) ?? [], p.minPieceMm, layout.joint) : null;
+  const freeGapWarnings = freeCheck ? freeCheck.warnings.filter((w) => w.code === 'gap') : [];
   const isCutKind = shapeKind === CellKind.DIAG_A || shapeKind === CellKind.DIAG_B || shapeKind === CellKind.LINE || shapeKind === CellKind.SUB || shapeKind === CellKind.FREE;
   // Gespeicherte Teile, die nach der aktuellen Mindestbreite nicht schneidbar sind (z. B. ältere Berechnung)
   const width = pieceWidthCheck(piece.poly, p.minPieceMm);
@@ -210,11 +219,17 @@ export function StoneDialog(p: Props) {
                   <Swatch hex={pc?.hex ?? '#000'} size={22} /> <b>{String(pc?.code ?? '').padStart(2, '0')}</b> {pc ? paletteDisplayName(pc, lang) : ''} · {pc?.hex}
                   <small className="muted block">
                     L*a*b* {n(pc?.lab[0] ?? 0, 1)} / {n(pc?.lab[1] ?? 0, 1)} / {n(pc?.lab[2] ?? 0, 1)}
-                    {pc?.materialId && ` · ${t('stone.material')}: ${(() => {
-                      const m = p.materials.find((x) => x.id === pc.materialId);
-                      return m ? `${m.manufacturer} ${m.product} ${m.colorNumber}` : '?';
-                    })()}`}
+                    {material && (
+                      <span data-testid="stone-material">
+                        {` · ${t('stone.material')}: ${[material.manufacturer, material.product, material.colorNumber].filter((x) => x && x.trim()).join(' ') || material.colorName}`}
+                      </span>
+                    )}
                   </small>
+                  {material === undefined && (
+                    <span className="w3fe-stone-badge" data-testid="stone-material-missing" title={t('w2ch.materialMissingTitle')}>
+                      <Badge kind="warn">{t('w3fe.materialMissing')}</Badge>
+                    </span>
+                  )}
                 </td>
               </tr>
               <tr>
@@ -295,6 +310,16 @@ export function StoneDialog(p: Props) {
               <Badge kind="warn">{t('stone.belowMin', { min: n(p.minPieceMm, 2), why: widthFailText(width, p.minPieceMm, t, n) })}</Badge>
             </div>
           )}
+          {freeCheck && (freeCheck.errors.length > 0 || freeGapWarnings.length > 0) && (
+            <div className={`w3fe-free-issues ${freeCheck.errors.length > 0 ? 'err' : 'warn'}`} data-testid="stone-free-issues">
+              {freeCheck.errors.length > 0 ? t('w3fe.freeCellIssues') : t('w3fe.freeCellWarnings')}
+              <ul>
+                {[...freeCheck.errors, ...freeGapWarnings].map((is, i) => (
+                  <li key={i}>{freeIssueText(is, t, n, cell.w, cell.h)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {rec !== 0 && (
             <div className="recommend">
               <Badge kind="warn">{t('stone.recommendation')}</Badge>
@@ -314,7 +339,7 @@ export function StoneDialog(p: Props) {
                 <button key={nb.dir} className="neighbor" onClick={() => p.onNavigate(nb.row, nb.col, 0)}>
                   <span className="muted">{t(`dir.${nb.dir}`)}</span> <b>{cellId(layout, nb.row, nb.col)}</b>{' '}
                   {nps.map((q, i) => (
-                    <span key={i} title={`${String(palette[q.color]?.code).padStart(2, '0')}`}>
+                    <span key={i} title={palette[q.color] ? `${String(palette[q.color].code).padStart(2, '0')} ${paletteDisplayName(palette[q.color], lang)}` : ''}>
                       <Swatch hex={palette[q.color]?.hex ?? '#000'} size={12} />
                     </span>
                   ))}
@@ -432,9 +457,10 @@ export function StoneDialog(p: Props) {
       </div>
       {freeOpen && !ro && (
         <FreeformEditor
-          cellW={cellRect(layout, p.row, p.col).w}
-          cellH={cellRect(layout, p.row, p.col).h}
-          initial={pieces.map((q) => ({ poly: q.poly.map((pt) => ({ x: pt.x - cellRect(layout, p.row, p.col).x, y: pt.y - cellRect(layout, p.row, p.col).y })), color: q.color }))}
+          cellW={cell.w}
+          cellH={cell.h}
+          joint={layout.joint}
+          initial={freeEditorPieces(layout, data, p.row, p.col)}
           palette={palette}
           minPieceMm={p.minPieceMm}
           onClose={() => setFreeOpen(false)}
@@ -451,152 +477,4 @@ export function StoneDialog(p: Props) {
       )}
     </Modal>
   );
-}
-
-function FreeformEditor(props: {
-  cellW: number;
-  cellH: number;
-  initial: FreePiece[];
-  palette: PaletteColor[];
-  minPieceMm: number;
-  onClose: () => void;
-  onSave: (p: FreePiece[]) => boolean;
-}) {
-  const { t, n, lang } = useI18n();
-  const [pieces, setPieces] = useState<FreePiece[]>(() => props.initial.map((p) => ({ poly: p.poly.map((q) => ({ x: round1(q.x), y: round1(q.y) })), color: p.color })));
-  const [active, setActive] = useState(0);
-  const size = 320;
-  const s = (size - 40) / Math.max(props.cellW, props.cellH);
-  const pad = 20;
-  const v = validateFreePieces(props.cellW, props.cellH, pieces, props.minPieceMm);
-  const addPoint = (e: React.MouseEvent<SVGSVGElement>) => {
-    const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-    const x = round1(Math.min(props.cellW, Math.max(0, (e.clientX - r.left - pad) / s)));
-    const y = round1(Math.min(props.cellH, Math.max(0, (e.clientY - r.top - pad) / s)));
-    setPieces((ps) => {
-      const next = ps.map((p) => ({ ...p, poly: [...p.poly] }));
-      if (!next[active]) next[active] = { poly: [], color: ps[0]?.color ?? 0 };
-      next[active].poly.push({ x, y });
-      return next;
-    });
-  };
-  const setPt = (pi: number, k: number, patch: Partial<Pt>) =>
-    setPieces((ps) => ps.map((p, i) => (i === pi ? { ...p, poly: p.poly.map((q, j) => (j === k ? { ...q, ...patch } : q)) } : p)));
-  return (
-    <Modal
-      title={t('free.title')}
-      onClose={props.onClose}
-      wide
-      footer={
-        <>
-          <button className="btn" onClick={props.onClose}>
-            {t('common.cancel')}
-          </button>
-          <button className="btn primary" disabled={!v.ok} onClick={() => props.onSave(pieces)}>
-            {t('common.save')}
-          </button>
-        </>
-      }
-    >
-      <p className="muted small">{t('free.hint', { w: n(props.cellW, 2), h: n(props.cellH, 2) })}</p>
-      <div className="stone-grid">
-        <svg width={size} height={size} onClick={addPoint} className="free-svg">
-          <rect x={pad} y={pad} width={props.cellW * s} height={props.cellH * s} fill="#f4f1ec" stroke="#888" strokeDasharray="4 3" />
-          {Array.from({ length: Math.floor(props.cellW) + 1 }, (_, i) => (
-            <line key={`gx${i}`} x1={pad + i * s} y1={pad} x2={pad + i * s} y2={pad + props.cellH * s} stroke="#e2ddd3" />
-          ))}
-          {Array.from({ length: Math.floor(props.cellH) + 1 }, (_, i) => (
-            <line key={`gy${i}`} x1={pad} y1={pad + i * s} x2={pad + props.cellW * s} y2={pad + i * s} stroke="#e2ddd3" />
-          ))}
-          {pieces.map((p, i) => (
-            <g key={i}>
-              {p.poly.length >= 2 && (
-                <polygon
-                  points={p.poly.map((q) => `${pad + q.x * s},${pad + q.y * s}`).join(' ')}
-                  fill={props.palette[p.color]?.hex ?? '#ccc'}
-                  fillOpacity={0.85}
-                  stroke={i === active ? '#ff3d00' : '#222'}
-                  strokeWidth={i === active ? 2 : 1}
-                />
-              )}
-              {p.poly.map((q, k) => (
-                <circle key={k} cx={pad + q.x * s} cy={pad + q.y * s} r={3.5} fill={i === active ? '#ff3d00' : '#222'} />
-              ))}
-            </g>
-          ))}
-        </svg>
-        <div>
-          <div className="btn-row wrap">
-            {pieces.map((_, i) => (
-              <button key={i} className={`btn small ${i === active ? 'primary' : ''}`} onClick={() => setActive(i)}>
-                {t('stone.piece')} {i + 1}
-              </button>
-            ))}
-            <button
-              className="btn small"
-              onClick={() => {
-                setPieces((ps) => [...ps, { poly: [], color: ps[active]?.color ?? 0 }]);
-                setActive(pieces.length);
-              }}
-            >
-              + {t('free.newPiece')}
-            </button>
-          </div>
-          {pieces[active] && (
-            <>
-              <div className="btn-row wrap" style={{ marginTop: 8 }}>
-                <select value={pieces[active].color} onChange={(e) => setPieces((ps) => ps.map((p, i) => (i === active ? { ...p, color: +e.target.value } : p)))}>
-                  {props.palette.map((c, i) => (
-                    <option key={i} value={i}>
-                      {String(c.code).padStart(2, '0')} {paletteDisplayName(c, lang)}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn small" onClick={() => setPieces((ps) => ps.map((p, i) => (i === active ? { ...p, poly: p.poly.slice(0, -1) } : p)))}>
-                  {t('free.undoPoint')}
-                </button>
-                <button
-                  className="btn small danger"
-                  onClick={() => {
-                    setPieces((ps) => ps.filter((_, i) => i !== active));
-                    setActive(0);
-                  }}
-                >
-                  {t('free.deletePiece')}
-                </button>
-              </div>
-              <table className="mini">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>X (mm)</th>
-                    <th>Y (mm)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pieces[active].poly.map((q, k) => (
-                    <tr key={k}>
-                      <td>{k + 1}</td>
-                      <td>
-                        <NumberInput value={q.x} onChange={(x) => setPt(active, k, { x })} min={0} max={props.cellW} width={60} decimals={2} />
-                      </td>
-                      <td>
-                        <NumberInput value={q.y} onChange={(y) => setPt(active, k, { y })} min={0} max={props.cellH} width={60} decimals={2} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
-          {!v.ok && <p className="error small">{v.errors.join(' · ')}</p>}
-          {v.ok && v.warnings.length > 0 && <p className="warn small">{t('free.thin', { min: n(props.minPieceMm, 1) })}</p>}
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function round1(v: number) {
-  return Math.round(v * 10) / 10;
 }

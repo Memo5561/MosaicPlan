@@ -156,22 +156,57 @@ export function isConvex(poly: Pt[]): boolean {
   return true;
 }
 
-function segIntersect(p1: Pt, p2: Pt, p3: Pt, p4: Pt): boolean {
-  const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
-  if (Math.abs(d) < 1e-12) return false;
-  const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
-  const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
-  return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+/** Kreuzprodukt (a − o) × (b − o): > 0, wenn o → a → b mathematisch positiv dreht. */
+function cross3(o: Pt, a: Pt, b: Pt): number {
+  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 }
 
-/** Prüft, ob sich Kanten (nicht benachbarte) schneiden. */
+/** Echte Kreuzung zweier Strecken (beide Strecken wechseln die Seite der anderen; Berührungen zählen nicht). */
+function segProperCross(p1: Pt, p2: Pt, p3: Pt, p4: Pt): boolean {
+  const d1 = cross3(p3, p4, p1);
+  const d2 = cross3(p3, p4, p2);
+  const d3 = cross3(p1, p2, p3);
+  const d4 = cross3(p1, p2, p4);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/**
+ * Kleinster Abstand zweier Strecken in mm: 0, wenn sie sich kreuzen oder berühren (auch an einem
+ * Endpunkt oder kollinear überlappend), sonst der kleinste Abstand eines Endpunkts zur anderen Strecke
+ * (bei sich nicht schneidenden Strecken liegt das Minimum immer an einem Endpunkt).
+ */
+export function segmentDistance(p1: Pt, p2: Pt, p3: Pt, p4: Pt): number {
+  if (segProperCross(p1, p2, p3, p4)) return 0;
+  return Math.min(distToSegment(p1, p3, p4), distToSegment(p2, p3, p4), distToSegment(p3, p1, p2), distToSegment(p4, p1, p2));
+}
+
+/** Toleranz (mm), ab der sich zwei nicht benachbarte Kanten eines Polygons „berühren“. */
+const TOUCH_EPS = 1e-7;
+
+/**
+ * Ist das Polygon einfach (ein zusammenhängender Rand ohne Selbstberührung)? Nicht benachbarte Kanten
+ * dürfen sich weder kreuzen noch berühren – auch nicht an einer Ecke, die auf einer anderen Kante liegt,
+ * oder kollinear überlappend (das frühere strikte Kriterium übersah diese Fälle). Benachbarte Kanten
+ * dürfen nicht auf sich selbst zurücklaufen (Spitze mit 0°).
+ */
 export function isSimple(poly: Pt[]): boolean {
   const n = poly.length;
   if (n < 3) return false;
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       if (Math.abs(i - j) <= 1 || (i === 0 && j === n - 1)) continue;
-      if (segIntersect(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return false;
+      if (segmentDistance(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n]) <= TOUCH_EPS) return false;
+    }
+  }
+  if (n > 3) {
+    for (let i = 0; i < n; i++) {
+      const a = poly[(i - 1 + n) % n];
+      const b = poly[i];
+      const c = poly[(i + 1) % n];
+      const len = Math.hypot(c.x - a.x, c.y - a.y);
+      // kollinear und zurücklaufend: a und c liegen auf derselben Seite von b
+      const collinear = Math.abs(cross3(a, b, c)) <= 1e-12 * Math.max(1, len);
+      if (collinear && (a.x - b.x) * (c.x - b.x) + (a.y - b.y) * (c.y - b.y) > 0) return false;
     }
   }
   return true;
@@ -187,17 +222,145 @@ export function pointInPolygon(p: Pt, poly: Pt[]): boolean {
   return inside;
 }
 
-/** true, wenn sich zwei einfache Polygone flächig überlappen. */
-export function polygonsOverlap(a: Pt[], b: Pt[]): boolean {
-  for (let i = 0; i < a.length; i++) {
-    for (let j = 0; j < b.length; j++) {
-      if (segIntersect(a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length])) return true;
+/**
+ * true, wenn sich zwei einfache Polygone flächig überlappen, d. h. die exakte Schnittfläche
+ * (polygonIntersectionArea) größer als `minArea` mm² ist. Berührungen an Kanten oder Ecken sind keine
+ * Überlappung. (Früher: nur echte Kantenkreuzungen plus Schwerpunkttest – übersah kollineare Kanten und
+ * Ecken auf Kanten.)
+ */
+export function polygonsOverlap(a: Pt[], b: Pt[], minArea = 1e-6): boolean {
+  return polygonIntersectionArea(a, b) > minArea;
+}
+
+function pointInTriangleClosed(p: Pt, a: Pt, b: Pt, c: Pt): boolean {
+  // Dreieck a, b, c mathematisch positiv orientiert; Punkte auf dem Rand zählen als innen
+  return cross3(a, b, p) >= -1e-12 && cross3(b, c, p) >= -1e-12 && cross3(c, a, p) >= -1e-12;
+}
+
+/**
+ * Zerlegt ein einfaches Polygon in Dreiecke (Ohrenschneiden). Das Polygon wird zuerst bereinigt
+ * (cleanPoly) und mathematisch positiv orientiert (signedArea > 0); alle Dreiecke haben diese
+ * Orientierung und zusammen genau die Fläche des Polygons. Weniger als drei Ecken oder Fläche 0 → [].
+ * Für nicht einfache Polygone ist das Ergebnis nicht definiert (die Freiform-Prüfung meldet diese vorher).
+ */
+export function triangulate(poly: Pt[]): Pt[][] {
+  let p = cleanPoly(poly);
+  if (p.length < 3) return [];
+  const sa = signedArea(p);
+  if (!(Math.abs(sa) > 1e-12)) return [];
+  if (sa < 0) p = p.slice().reverse();
+  const out: Pt[][] = [];
+  let guard = p.length * p.length + 16;
+  while (p.length > 3 && guard-- > 0) {
+    const n = p.length;
+    let ear = -1;
+    for (let i = 0; i < n && ear < 0; i++) {
+      const a = p[(i - 1 + n) % n];
+      const b = p[i];
+      const c = p[(i + 1) % n];
+      if (cross3(a, b, c) <= 1e-12) continue; // spitze nach innen (Reflexecke) oder kollinear
+      let blocked = false;
+      for (let k = 0; k < n && !blocked; k++) {
+        if (k === i || k === (i - 1 + n) % n || k === (i + 1) % n) continue;
+        if (pointInTriangleClosed(p[k], a, b, c)) blocked = true;
+      }
+      if (!blocked) ear = i;
+    }
+    if (ear < 0) {
+      // numerisch entartet: eine kollineare Ecke trägt keine Fläche bei und darf entfallen
+      const k = p.findIndex((_, i) => Math.abs(cross3(p[(i - 1 + n) % n], p[i], p[(i + 1) % n])) <= 1e-12);
+      if (k >= 0) {
+        p = p.filter((_, i) => i !== k);
+        continue;
+      }
+      break;
+    }
+    out.push([p[(ear - 1 + n) % n], p[ear], p[(ear + 1) % n]]);
+    p = p.filter((_, i) => i !== ear);
+  }
+  if (p.length === 3) {
+    if (cross3(p[0], p[1], p[2]) > 1e-12) out.push(p);
+  } else if (p.length > 3) {
+    // nur bei nicht einfachen Polygonen erreichbar: Rest als Fächer
+    for (let k = 1; k < p.length - 1; k++) out.push([p[0], p[k], p[k + 1]]);
+  }
+  return out;
+}
+
+/**
+ * Exakte Schnittfläche eines Polygons `a` mit einem konvexen Polygon `b` (mm²): `a` wird an jeder
+ * Kante von `b` mit clipHalfPlane beschnitten. Für konvexe `a` exakt; Orientierung beliebig.
+ */
+export function convexIntersectionArea(a: Pt[], b: Pt[]): number {
+  if (a.length < 3 || b.length < 3) return 0;
+  const s = Math.sign(signedArea(b));
+  if (s === 0) return 0;
+  let r = a;
+  for (let i = 0; i < b.length && r.length >= 3; i++) {
+    const p = b[i];
+    const q = b[(i + 1) % b.length];
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    if (len < 1e-12) continue;
+    // Inneres von b liegt links der Kante p → q (bei positiver Orientierung): behalte n·x ≤ n·p
+    const nx = (s * (q.y - p.y)) / len;
+    const ny = (-s * (q.x - p.x)) / len;
+    r = clipHalfPlane(r, nx, ny, nx * p.x + ny * p.y);
+  }
+  return r.length >= 3 ? area(r) : 0;
+}
+
+function bboxesOverlap(a: Pt[], b: Pt[]): boolean {
+  const A = bbox(a);
+  const B = bbox(b);
+  return A.minX < B.maxX && B.minX < A.maxX && A.minY < B.maxY && B.minY < A.maxY;
+}
+
+/**
+ * Exakte Schnittfläche zweier einfacher (auch nicht konvexer) Polygone in mm²: Beide werden in Dreiecke
+ * zerlegt (triangulate), die Schnittfläche ist die Summe der konvexen Schnittflächen aller Dreieckspaare.
+ * 0, wenn sich die Polygone nur berühren.
+ */
+export function polygonIntersectionArea(a: Pt[], b: Pt[]): number {
+  if (a.length < 3 || b.length < 3 || !bboxesOverlap(a, b)) return 0;
+  return trianglesIntersectionArea(triangulate(a), triangulate(b));
+}
+
+/**
+ * Schnittfläche zweier bereits zerlegter Polygone (Dreieckslisten aus triangulate) in mm² – für viele
+ * Vergleiche derselben Polygone (z. B. alle Paare einer Freiformzelle) wird jedes Polygon nur einmal zerlegt.
+ */
+export function trianglesIntersectionArea(ta: Pt[][], tb: Pt[][]): number {
+  let s = 0;
+  for (const t of ta) for (const u of tb) if (bboxesOverlap(t, u)) s += convexIntersectionArea(t, u);
+  return s;
+}
+
+/**
+ * Kleinster Abstand zweier Polygone in mm (z. B. die Fuge zwischen zwei Freiformteilen):
+ *  - 0, wenn sich Kanten kreuzen oder berühren (auch kollinear oder an einer Ecke)
+ *    oder ein Polygon vollständig im anderen liegt,
+ *  - sonst der kleinste Abstand einer Ecke des einen Polygons zu einer Kante des anderen
+ *    (für sich nicht schneidende Kanten ist das exakt der kleinste Randabstand).
+ * Polygone mit weniger als drei Ecken werden als offene Linienzüge bzw. Punkte behandelt.
+ * Leere Polygone: Infinity.
+ */
+export function polygonDistance(a: Pt[], b: Pt[]): number {
+  if (a.length === 0 || b.length === 0) return Infinity;
+  let m = Infinity;
+  const na = a.length;
+  const nb = b.length;
+  for (let i = 0; i < na; i++) {
+    const p1 = a[i];
+    const p2 = a[(i + 1) % na];
+    for (let j = 0; j < nb; j++) {
+      const d = segmentDistance(p1, p2, b[j], b[(j + 1) % nb]);
+      if (d < m) m = d;
+      if (m === 0) return 0;
     }
   }
-  const ca = centroid(a);
-  const cb = centroid(b);
-  if (pointInPolygon(ca, b) || pointInPolygon(cb, a)) return true;
-  return false;
+  if (nb >= 3 && pointInPolygon(a[0], b)) return 0;
+  if (na >= 3 && pointInPolygon(b[0], a)) return 0;
+  return m;
 }
 
 export function centroid(poly: Pt[]): Pt {

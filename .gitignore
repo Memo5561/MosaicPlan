@@ -12,3 +12,6 @@ test-output
 
 # temporäre Arbeitskopien paralleler Agenten
 .claude/worktrees/
+
+# Debug-Screenshots im Projektwurzelordner
+/*.png

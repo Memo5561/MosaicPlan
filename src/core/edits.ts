@@ -3,10 +3,25 @@
  */
 import { deltaE, hexToLab, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
 import { autoColorName, legacyDescribeColor, nameKeyFor, uniqueAutoNames } from './colorNames';
-import { area, cleanPoly, isSimple, polygonsOverlap, type Pt } from './geometry';
+import { area, bbox, cleanPoly, isConvex, isSimple, polygonDistance, triangulate, trianglesIntersectionArea, type Pt } from './geometry';
 import type { Layout } from './layout';
 import type { Range } from './stats';
-import { cellPieceCount, cellPieces, cellRect, diagA, diagB, isDegeneratePiece, lineSplit, pieceCuttable, subdivisionCuttable, subRects, worstWidth, type WidthCheck } from './pieces';
+import {
+  cellPieceCount,
+  cellPieces,
+  cellRect,
+  diagA,
+  diagB,
+  isDegeneratePiece,
+  lineSplit,
+  MIN_FREE_AREA_MM2,
+  pieceCuttable,
+  pieceWidthCheck,
+  subdivisionCuttable,
+  subRects,
+  worstWidth,
+  type WidthCheck,
+} from './pieces';
 import { CellKind, type CellKindValue, type FreePiece, type MatchDeltaE, type MosaicData, type PaletteColor } from './types';
 
 export function setPieceColor(data: MosaicData, idx: number, piece: number, color: number): void {
@@ -205,37 +220,155 @@ export function repairDegenerateCells(layout: Layout, data: MosaicData): number 
   return n;
 }
 
+/** Höchstzahl der Teile einer Freiformzelle (der Verlegestatus einer Zelle ist eine 16-Bit-Maske). */
+export const MAX_FREE_PIECES = 16;
+/** Kleinste zulässige Fläche eines Freiformteils in mm² (definiert in pieces.ts, dort auch für die Vorlagen). */
+export { MIN_FREE_AREA_MM2 };
+/** Schnittflächen bis zu dieser Größe (mm²) gelten als Berührung bzw. Rechenrauschen, nicht als Überlappung. */
+export const FREE_OVERLAP_TOL_MM2 = 0.01;
+/** Toleranz der Fugenprüfung in mm: eine Fuge gilt als zu schmal, wenn sie kleiner als Projektfuge − 0,01 mm ist. */
+export const FREE_GAP_TOL_MM = 0.01;
+/** Abstand zum Zellrand (mm), innerhalb dessen ein im Editor gesetzter Punkt auf den Rand einrastet. */
+export const FREE_SNAP_EDGE_MM = 0.2;
+
+/**
+ * Ein Befund der Freiform-Prüfung. Teilnummern (`piece`, `a`, `b`) zählen ab 1 – wie „Teil 1“ in der
+ * Oberfläche und wie die Steinkennungen A001-1, A001-2. Übersetzt unter `free.err.<code>` bzw. `free.warn.<code>`.
+ */
+export type FreeIssue =
+  | { code: 'noPieces' }
+  | { code: 'tooMany'; max: number; count: number }
+  | { code: 'tooFewPoints'; piece: number; count: number }
+  | { code: 'selfIntersect'; piece: number }
+  | { code: 'outside'; piece: number }
+  | { code: 'areaTooSmall'; piece: number; areaMm2: number; minMm2: number }
+  /** exakte Schnittfläche zweier Teile (mm², > FREE_OVERLAP_TOL_MM2) */
+  | { code: 'overlap'; a: number; b: number; areaMm2: number }
+  /** Warnung: Teil erfüllt die Mindestbreite eines Schnittteils nicht (gemessene Werte, siehe pieceWidthCheck) */
+  | { code: 'thin'; piece: number; minMm: number; caliperMm: number; incircleMm: number; convex: boolean }
+  /** Warnung: kleinster Abstand zweier Teile (mm) ist kleiner als die Projektfuge; 0 = die Teile berühren sich */
+  | { code: 'gap'; a: number; b: number; gapMm: number; jointMm: number };
+
+export type FreeIssueCode = FreeIssue['code'];
+
 export interface FreeValidation {
+  /** true, wenn es keine Fehler gibt – Warnungen (thin, gap) verhindern das Speichern nicht */
   ok: boolean;
-  errors: string[];
-  warnings: string[];
+  errors: FreeIssue[];
+  warnings: FreeIssue[];
 }
 
-export function validateFreePieces(cellW: number, cellH: number, pieces: FreePiece[], minPieceMm: number): FreeValidation {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  if (pieces.length === 0) errors.push('no-pieces');
-  if (pieces.length > 16) errors.push('too-many');
+/** Betroffene Teile eines Befunds als Index ab 0 (für die Hervorhebung im Editor). */
+export function freeIssuePieces(issue: FreeIssue): number[] {
+  if ('piece' in issue) return [issue.piece - 1];
+  if ('a' in issue) return [issue.a - 1, issue.b - 1];
+  return [];
+}
+
+/**
+ * Prüft die Teile einer Freiformzelle (Polygone relativ zur oberen linken Zellecke, mm).
+ *
+ * Fehler (Speichern nicht möglich): kein Teil, mehr als 16 Teile, weniger als 3 Ecken, Selbstkreuzung oder
+ * Selbstberührung, Ecke außerhalb der Zelle, Fläche < 0,25 mm², und zwei Teile, deren exakte Schnittfläche
+ * (polygonIntersectionArea, auch für nicht-konvexe Teile) größer als 0,01 mm² ist.
+ *
+ * Warnungen: Teil schmaler als die Mindestbreite eines Schnittteils (pieceCuttable – bei nicht-konvexen Teilen
+ * nur näherungsweise) und – bei `joint` > 0 – zwei Teile, deren kleinster Abstand (polygonDistance) kleiner als
+ * `joint` − 0,01 mm ist (0 = sie berühren sich). Die Fuge ist bewusst nur eine Warnung: in Detailbereichen
+ * darf man schmaler verfugen, und ältere gespeicherte Projekte lassen sich weiter öffnen und bearbeiten.
+ * Teilpaare mit einem Fehler am Einzelteil (zu wenige Ecken, Selbstkreuzung) werden nicht verglichen.
+ */
+export function validateFreePieces(cellW: number, cellH: number, pieces: FreePiece[], minPieceMm: number, joint = 0): FreeValidation {
+  const errors: FreeIssue[] = [];
+  const warnings: FreeIssue[] = [];
+  if (pieces.length === 0) errors.push({ code: 'noPieces' });
+  if (pieces.length > MAX_FREE_PIECES) errors.push({ code: 'tooMany', max: MAX_FREE_PIECES, count: pieces.length });
   const polys = pieces.map((p) => cleanPoly(p.poly));
+  const comparable = polys.map(() => false);
   polys.forEach((p, i) => {
-    const n = i + 1;
+    const piece = i + 1;
     if (p.length < 3) {
-      errors.push(`piece ${n}: <3`);
+      errors.push({ code: 'tooFewPoints', piece, count: p.length });
       return;
     }
-    if (!isSimple(p)) errors.push(`piece ${n}: self-intersecting`);
-    if (p.some((q) => q.x < -1e-6 || q.y < -1e-6 || q.x > cellW + 1e-6 || q.y > cellH + 1e-6)) errors.push(`piece ${n}: outside`);
-    if (area(p) < 0.25) errors.push(`piece ${n}: area`);
-    else if (!pieceCuttable(p, minPieceMm)) warnings.push(`piece ${n}: thin`);
+    const simple = isSimple(p);
+    if (!simple) errors.push({ code: 'selfIntersect', piece });
+    if (p.some((q) => q.x < -1e-6 || q.y < -1e-6 || q.x > cellW + 1e-6 || q.y > cellH + 1e-6)) errors.push({ code: 'outside', piece });
+    comparable[i] = simple;
+    // Fläche und Breite sind nur für einfache Polygone sinnvoll (eine Schleife hätte z. B. Fläche 0)
+    if (!simple) return;
+    const A = area(p);
+    if (A < MIN_FREE_AREA_MM2) errors.push({ code: 'areaTooSmall', piece, areaMm2: A, minMm2: MIN_FREE_AREA_MM2 });
+    else {
+      const w = pieceWidthCheck(p, minPieceMm);
+      if (!w.ok) warnings.push({ code: 'thin', piece, minMm: minPieceMm, caliperMm: w.caliper, incircleMm: w.incircle, convex: isConvex(p) });
+    }
   });
+  const gapLimit = joint - FREE_GAP_TOL_MM;
+  // jedes Teil nur einmal in Dreiecke zerlegen (der Editor prüft bei jeder Zeigerbewegung)
+  const tris = polys.map((p, i) => (comparable[i] ? triangulate(p) : []));
+  const boxes = polys.map((p) => (p.length ? bbox(p) : null));
   for (let i = 0; i < polys.length; i++)
-    for (let j = i + 1; j < polys.length; j++) if (polys[i].length >= 3 && polys[j].length >= 3 && polygonsOverlap(polys[i], polys[j])) errors.push(`overlap ${i + 1}/${j + 1}`);
+    for (let j = i + 1; j < polys.length; j++) {
+      if (!comparable[i] || !comparable[j]) continue;
+      const A = boxes[i]!;
+      const B = boxes[j]!;
+      const apart = A.maxX <= B.minX || B.maxX <= A.minX || A.maxY <= B.minY || B.maxY <= A.minY;
+      const ov = apart ? 0 : trianglesIntersectionArea(tris[i], tris[j]);
+      if (ov > FREE_OVERLAP_TOL_MM2) {
+        errors.push({ code: 'overlap', a: i + 1, b: j + 1, areaMm2: ov });
+        continue;
+      }
+      if (joint > 0) {
+        const d = polygonDistance(polys[i], polys[j]);
+        if (d < gapLimit) warnings.push({ code: 'gap', a: i + 1, b: j + 1, gapMm: d, jointMm: joint });
+      }
+    }
   return { ok: errors.length === 0, errors, warnings };
 }
 
+/**
+ * Rastet einen im Freiform-Editor gesetzten oder gezogenen Punkt (mm, relativ zur Zelle) ein: auf die Zelle
+ * begrenzt, innerhalb von 0,2 mm genau auf den Zellrand, sonst auf 0,1 mm gerundet. Nur angeklickte und
+ * gezogene Punkte werden so gerundet – vorgeladene oder als Vorlage erzeugte Teile behalten ihre exakten
+ * Koordinaten (sonst würde z. B. die Fuge einer Diagonale schmaler).
+ */
+export function snapFreePoint(p: Pt, cellW: number, cellH: number): Pt {
+  const ax = (v: number, max: number) => {
+    const c = Math.min(max, Math.max(0, Number.isFinite(v) ? v : 0));
+    if (c <= FREE_SNAP_EDGE_MM) return 0;
+    if (max - c <= FREE_SNAP_EDGE_MM) return max;
+    return Math.min(max, Math.max(0, Math.round(c * 10) / 10));
+  };
+  return { x: ax(p.x, cellW), y: ax(p.y, cellH) };
+}
+
+/** Koordinate relativ zur Zelle ohne Rechenrauschen der Subtraktion (0 und Zellmaß bleiben exakt). */
+function relCoord(v: number, max: number): number {
+  if (Math.abs(v) < 1e-9) return 0;
+  if (Math.abs(v - max) < 1e-9) return max;
+  return v;
+}
+
+/**
+ * Teile einer Zelle für den Freiform-Editor, relativ zur oberen linken Zellecke und exakt (nicht gerundet):
+ * gespeicherte Freiformteile unverändert, alle anderen Zellarten aus ihrer exakten Geometrie (cellPieces,
+ * inkl. Fuge). Unverändert gespeichert ergeben sie dieselben Steine.
+ */
+export function freeEditorPieces(layout: Layout, data: MosaicData, row: number, col: number): FreePiece[] {
+  const idx = row * layout.cols + col;
+  const r = cellRect(layout, row, col);
+  if (data.kind[idx] === CellKind.FREE) return (data.free.get(idx) ?? []).map((f) => ({ poly: f.poly.map((q) => ({ x: q.x, y: q.y })), color: f.color }));
+  return cellPieces(layout, data, row, col).map((q) => ({
+    poly: q.poly.map((pt) => ({ x: relCoord(pt.x - r.x, r.w), y: relCoord(pt.y - r.y, r.h) })),
+    color: q.color,
+  }));
+}
+
+/** Speichert Freiform-Teile in einer Zelle, wenn validateFreePieces (mit der Projektfuge) keinen Fehler findet. */
 export function setFreePieces(layout: Layout, data: MosaicData, row: number, col: number, pieces: FreePiece[], minPieceMm: number): FreeValidation {
   const r = cellRect(layout, row, col);
-  const v = validateFreePieces(r.w, r.h, pieces, minPieceMm);
+  const v = validateFreePieces(r.w, r.h, pieces, minPieceMm, layout.joint);
   if (!v.ok) return v;
   const idx = row * layout.cols + col;
   data.kind[idx] = CellKind.FREE;

@@ -1,0 +1,329 @@
+/* Freiform-Editor und Steindetail-Hinweise (w3-freeform-editor) */
+
+/* Der Editor-Dialog hat eine feste Höhe: neue Punktzeilen verschieben die Zeichenfläche nicht unter dem Zeiger */
+.modal:has(> .modal-body > .w3fe-editor) {
+  height: min(860px, calc(100dvh - 24px));
+}
+.modal:has(> .modal-body > .w3fe-editor) > .modal-body {
+  flex: 1 1 auto;
+}
+.w3fe-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.w3fe-hint {
+  margin: 0;
+  line-height: 1.45;
+}
+.w3fe-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.w3fe-presets-label {
+  margin-left: 8px;
+}
+.w3fe-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.w3fe-canvas {
+  display: flex;
+  justify-content: center;
+}
+.free-svg.w3fe-svg {
+  display: block;
+  width: min(560px, 100%);
+  height: auto;
+  max-height: 60vh;
+  max-width: 100%;
+  touch-action: none; /* Ziehen mit dem Finger scrollt die Seite nicht */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  background: #fbfaf7;
+}
+.w3fe-svg .w3fe-cell {
+  fill: #f4f1ec;
+}
+.w3fe-svg .w3fe-cell-edge {
+  fill: none;
+  stroke: #8a8378;
+  stroke-width: 1px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-gridline {
+  stroke: #e2ddd3;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-fill {
+  fill-opacity: 0.78;
+}
+.w3fe-svg .w3fe-piece.active .w3fe-fill {
+  fill-opacity: 0.6;
+}
+.w3fe-svg .w3fe-outline {
+  fill: none;
+  stroke: #2b2b2b;
+  stroke-width: 1px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-outline.active {
+  stroke: var(--accent);
+  stroke-width: 2.5px;
+}
+.w3fe-svg .w3fe-closing {
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-issue-err,
+.w3fe-svg .w3fe-issue-warn {
+  fill: none;
+  stroke-width: 2.5px;
+  stroke-dasharray: 7 4;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.w3fe-svg .w3fe-issue-err {
+  stroke: var(--err);
+}
+.w3fe-svg .w3fe-issue-warn {
+  stroke: #d08a00;
+}
+.w3fe-svg .w3fe-num circle {
+  fill: rgba(255, 255, 255, 0.88);
+  stroke: #2b2b2b;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-num text {
+  fill: var(--ink);
+  font-weight: 700;
+}
+.w3fe-svg .w3fe-num.active circle {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+}
+.w3fe-svg .w3fe-len {
+  fill: var(--ink);
+  font-weight: 600;
+  stroke: #fff;
+  paint-order: stroke;
+  stroke-linejoin: round;
+}
+.w3fe-svg .w3fe-len.closing {
+  fill: var(--accent);
+}
+.w3fe-svg .w3fe-hit {
+  fill: transparent;
+  stroke: none;
+}
+.w3fe-svg .w3fe-vtx {
+  cursor: grab;
+}
+.w3fe-svg.dragging,
+.w3fe-svg.dragging .w3fe-vtx {
+  cursor: grabbing;
+}
+.w3fe-svg .w3fe-vtx-dot {
+  fill: #2b2b2b;
+  stroke: #fff;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-vtx-dot.active {
+  fill: var(--accent);
+  stroke-width: 1.5px;
+}
+.w3fe-svg .w3fe-vtx.dragging .w3fe-vtx-dot.active,
+.w3fe-svg .w3fe-vtx:hover .w3fe-vtx-dot.active {
+  fill: var(--accent-hover);
+  stroke: var(--gold);
+  stroke-width: 2.5px;
+}
+.w3fe-svg .w3fe-vtx-no {
+  fill: #fff;
+  font-weight: 700;
+}
+.w3fe-svg .w3fe-mid {
+  cursor: copy;
+}
+.w3fe-svg .w3fe-mid-dot {
+  fill: #fff;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-mid-plus {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.w3fe-svg .w3fe-mid:hover .w3fe-mid-dot {
+  fill: var(--accent-soft);
+}
+.w3fe-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.w3fe-tabs .w3fe-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.w3fe-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-left: 2px;
+  border: 1px solid #fff;
+}
+.w3fe-dot.err {
+  background: var(--err);
+}
+.w3fe-dot.warn {
+  background: #d08a00;
+}
+.w3fe-fullhint {
+  margin: 0;
+  color: var(--warn);
+  background: #fff8ea;
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+.w3fe-piece-tools select {
+  max-width: 100%;
+  min-width: 0;
+  flex: 1 1 160px;
+}
+.w3fe-measure {
+  background: #f6f4ef;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+.w3fe-measure small {
+  display: block;
+  margin-top: 2px;
+}
+.w3fe-nopts {
+  margin: 0;
+}
+.w3fe-pts {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.w3fe-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.w3fe-table thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  text-align: left;
+  z-index: 1;
+}
+.w3fe-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.w3fe-table tr.w3fe-row-drag td {
+  background: var(--accent-soft);
+}
+.w3fe-table .w3fe-del {
+  min-width: 36px;
+  min-height: 36px;
+  color: var(--muted);
+}
+.w3fe-table .w3fe-del:hover {
+  color: var(--err);
+}
+.w3fe-issues h5 {
+  margin: 4px 0 4px;
+  font-size: 0.86rem;
+}
+.w3fe-issues ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+.w3fe-issues li.err {
+  color: var(--err);
+}
+.w3fe-issues li.warn {
+  color: var(--warn);
+}
+.w3fe-ok {
+  margin: 0;
+  color: var(--ok);
+}
+.w3fe-blocked {
+  margin-right: auto;
+  align-self: center;
+  color: var(--err);
+}
+
+/* Steindetail */
+.w3fe-stone-badge {
+  display: inline-block;
+  margin-top: 4px;
+}
+.w3fe-stone-badge .badge {
+  white-space: normal;
+  line-height: 1.35;
+}
+.w3fe-free-issues {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+.w3fe-free-issues.err {
+  background: #fdecec;
+  color: var(--err);
+}
+.w3fe-free-issues.warn {
+  background: #fff8ea;
+  color: var(--warn);
+}
+.w3fe-free-issues ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 980px) {
+  .w3fe-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .modal:has(> .modal-body > .w3fe-editor) {
+    height: auto;
+  }
+  .w3fe-presets-label {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+  .free-svg.w3fe-svg {
+    max-height: 52vh;
+  }
+}

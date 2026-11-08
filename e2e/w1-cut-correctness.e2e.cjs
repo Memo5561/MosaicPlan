@@ -149,8 +149,6 @@ function strictlyInside(p, poly, eps) {
   await page.click('[data-testid="kind-free"]');
   await page.waitForSelector('.free-svg');
   for (let i = 0; i < 4; i++) await page.click('text=Letzten Punkt entfernen');
-  const svg = await page.$('.free-svg');
-  const sc = (320 - 40) / Math.max(cw, ch);
   const hx = Math.round((cw / 2) * 10) / 10;
   const hy = Math.round((ch / 2) * 10) / 10;
   const L = [
@@ -162,9 +160,12 @@ function strictlyInside(p, poly, eps) {
     [0, ch],
   ];
   for (const [x, y] of L) {
-    // Der Dialog wächst mit jeder Punktzeile – Lage der Zeichenfläche vor jedem Klick neu bestimmen
-    const sb = await svg.boundingBox();
-    await page.mouse.click(sb.x + 20 + x * sc, sb.y + 20 + y * sc);
+    // Zeichenfläche in mm (viewBox, w3-freeform-editor): mm → Bildschirm über getScreenCTM, vor jedem Klick neu
+    const sp = await page.evaluate(([mx, my]) => {
+      const p = new DOMPoint(mx, my).matrixTransform(document.querySelector('.free-svg').getScreenCTM());
+      return { x: p.x, y: p.y };
+    }, [x, y]);
+    await page.mouse.click(sp.x, sp.y);
     await page.waitForTimeout(80);
   }
   const nPts = await page.$$eval('table.mini tbody tr', (r) => r.length);

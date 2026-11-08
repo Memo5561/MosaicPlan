@@ -301,7 +301,10 @@ describe('w4-face-detector: Texte und Offline-Vorrat', () => {
   it('Texte nennen die Grenzen (nur frontale menschliche Gesichter) und „geschätzt“', () => {
     const de = dictionaries.de as Record<string, string>;
     expect(de['w4fd.scope']).toMatch(/nur frontale menschliche Gesichter/);
-    expect(de['w4fd.none']).toBe('Kein Gesicht gefunden.');
+    // ehrlich über die Grenze: gezeichnete/gemalte Gesichter erkennt die Automatik nicht (z. B. das Beispielporträt)
+    expect(de['w4fd.none']).toMatch(/^Kein Gesicht automatisch erkannt .*gezeichnete oder gemalte Gesichter/);
+    expect(de['w4fd.noneKept']).toMatch(/markierten Gesichtsbereiche bleiben unverändert/);
+    expect(de['w4fd.scope']).toMatch(/gezeichneten\/gemalten Gesichter/);
     expect(de['w4fd.estimated']).toBe('geschätzt');
     expect(de['w4fd.sugg.title']).toMatch(/automatisch erkannt – bitte prüfen/);
     expect(de['w4fd.sugg.adds']).toMatch(/geschätzt/);

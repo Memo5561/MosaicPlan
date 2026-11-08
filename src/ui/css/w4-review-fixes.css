@@ -1,0 +1,54 @@
+/* Korrekturen nach dem Review von Welle 4 */
+
+/* ---- Fehlende Akzentfarben: übersprungene Gruppen, Steinbezeichnungen als Knöpfe */
+.w4fx-acc-skipped {
+  margin: 6px 0 4px;
+  padding-left: 18px;
+  color: var(--muted);
+}
+.w4fx-acc-skipped li + li {
+  margin-top: 3px;
+}
+.w4fx-id-btn {
+  margin: 2px 4px 2px 0;
+  padding: 2px 8px;
+  min-height: 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+}
+@media (pointer: coarse) {
+  .w4fx-id-btn {
+    min-height: 36px;
+    padding: 4px 10px;
+  }
+}
+
+/* ---- Verlegeplan: Rückfrage-Leisten unten, wenn oben das Rechteck bzw. die Abschnittsbezeichnung liegt */
+.w4lw .w4lw-overlays.at-bottom {
+  top: auto;
+  bottom: 12px;
+  justify-content: flex-end;
+}
+
+/* Handy: Statuszeile mit zwei fest reservierten Zeilen – die Meldung (z. B. was „Rückgängig“ zurückgenommen hat) ist
+   lesbar, das Mosaik verschiebt sich trotzdem nie; Leisten nutzen die Breite */
+@media (max-width: 600px) {
+  .w4lw .w4lw-status {
+    height: 2.6em;
+    line-height: 1.3em;
+    white-space: normal;
+    text-overflow: clip;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .w4lw .w4lw-overlays {
+    left: 8px;
+  }
+  .w4lw .w4lw-bar {
+    padding: 6px 8px;
+    font-size: 0.84rem;
+  }
+}

@@ -13,19 +13,19 @@ export const de: Record<string, string> = {
   'w4lw.tool.paint': 'Malen',
   'w4lw.tool.rect': 'Rechteck',
   'w4lw.toolHint.paint':
-    'Malen: mit einem Finger oder der Maus über die Steine ziehen – alle berührten werden als verlegt markiert (war der erste schon verlegt: wieder offen). Verschieben: zwei Finger, Leertaste oder mittlere Maustaste.',
+    'Malen: mit einem Finger oder der Maus über die Steine ziehen – alle berührten werden als verlegt markiert (war der erste schon verlegt: wieder offen). Verschieben: zwei Finger, Leertaste oder mittlere Maustaste. Am Handy bei kleinen Steinen erst hineinzoomen (einmal antippen).',
   'w4lw.toolHint.rect': 'Rechteck: über die Steine ziehen, danach bestätigen. Verschieben: zwei Finger, Leertaste oder mittlere Maustaste.',
 
   'w4lw.idle.view': 'Antippen öffnet das Steindetail mit Farbe, Größe und Schnittanweisung.',
   'w4lw.idle.tap': 'Tippen: Stein als verlegt markieren – erneutes Tippen macht ihn wieder offen.',
-  'w4lw.idle.paint': 'Malen: mit einem Finger oder der Maus über die Steine ziehen.',
+  'w4lw.idle.paint': 'Malen: mit einem Finger oder der Maus über die Steine ziehen (kleine Steine: erst antippen = hineinzoomen).',
   'w4lw.idle.rect': 'Rechteck: über die Steine ziehen, danach bestätigen.',
 
   'w4lw.undo': 'Rückgängig ({n})',
   'w4lw.undoLabel': 'Rückgängig',
   'w4lw.undoTitle':
     'Macht die letzte Änderung am Verlegefortschritt rückgängig. Gilt nur in dieser Sitzung (bis zum Verlassen des Projekts oder Neuladen), höchstens 50 Schritte; Farb- und Formänderungen sind nicht enthalten.',
-  'w4lw.undoNote': 'Rückgängig gilt nur für den Verlegefortschritt dieser Sitzung (letzte 50 Schritte, nicht nach dem Neuladen).',
+  'w4lw.undoNote': 'Rückgängig gilt für den Verlegefortschritt, solange das Projekt geöffnet ist – auch nach einem Schrittwechsel (letzte 50 Schritte; Neuladen, Verlassen des Projekts, Neuberechnen oder geänderte Steine leeren den Verlauf).',
   'w4lw.undone': 'Rückgängig gemacht: {what}',
 
   'w4lw.st.laidOne': '{id} als verlegt markiert',
@@ -109,19 +109,19 @@ export const en: Record<string, string> = {
   'w4lw.tool.paint': 'Paint',
   'w4lw.tool.rect': 'Rectangle',
   'w4lw.toolHint.paint':
-    'Paint: drag one finger or the mouse across the tiles – every tile touched is marked as laid (if the first one was already laid: open again). Pan: two fingers, space bar or middle mouse button.',
+    'Paint: drag one finger or the mouse across the tiles – every tile touched is marked as laid (if the first one was already laid: open again). Pan: two fingers, space bar or middle mouse button. On a phone, zoom in first if the tiles are small (tap once).',
   'w4lw.toolHint.rect': 'Rectangle: drag across the tiles, then confirm. Pan: two fingers, space bar or middle mouse button.',
 
   'w4lw.idle.view': 'Tap a tile to open its details with colour, size and cutting instructions.',
   'w4lw.idle.tap': 'Tap: mark a tile as laid – tap again to make it open again.',
-  'w4lw.idle.paint': 'Paint: drag one finger or the mouse across the tiles.',
+  'w4lw.idle.paint': 'Paint: drag one finger or the mouse across the tiles (small tiles: tap first to zoom in).',
   'w4lw.idle.rect': 'Rectangle: drag across the tiles, then confirm.',
 
   'w4lw.undo': 'Undo ({n})',
   'w4lw.undoLabel': 'Undo',
   'w4lw.undoTitle':
     'Undoes the last change to the laying progress. Only for this session (until you leave the project or reload), at most 50 steps; colour and shape changes are not included.',
-  'w4lw.undoNote': 'Undo only covers the laying progress of this session (last 50 steps, not after reloading).',
+  'w4lw.undoNote': 'Undo covers the laying progress while the project is open – also after switching steps (last 50 steps; reloading, leaving the project, recomputing or changed tiles clear the history).',
   'w4lw.undone': 'Undone: {what}',
 
   'w4lw.st.laidOne': '{id} marked as laid',
@@ -205,19 +205,19 @@ export const tr: Record<string, string> = {
   'w4lw.tool.paint': 'Boya',
   'w4lw.tool.rect': 'Dikdörtgen',
   'w4lw.toolHint.paint':
-    'Boya: tek parmakla veya fareyle taşların üzerinde sürükleyin – dokunulan her taş döşendi olarak işaretlenir (ilk taş zaten döşenmişse: yeniden açık). Kaydırma: iki parmak, boşluk tuşu veya farenin orta tuşu.',
+    'Boya: tek parmakla veya fareyle taşların üzerinde sürükleyin – dokunulan her taş döşendi olarak işaretlenir (ilk taş zaten döşenmişse: yeniden açık). Kaydırma: iki parmak, boşluk tuşu veya farenin orta tuşu. Telefonda taşlar küçükse önce yakınlaştırın (bir kez dokunun).',
   'w4lw.toolHint.rect': 'Dikdörtgen: taşların üzerinde sürükleyin, ardından onaylayın. Kaydırma: iki parmak, boşluk tuşu veya farenin orta tuşu.',
 
   'w4lw.idle.view': 'Bir taşa dokunmak renk, boyut ve kesim talimatıyla ayrıntılarını açar.',
   'w4lw.idle.tap': 'Dokun: taşı döşendi olarak işaretle – yeniden dokunmak onu tekrar açık yapar.',
-  'w4lw.idle.paint': 'Boya: tek parmakla veya fareyle taşların üzerinde sürükleyin.',
+  'w4lw.idle.paint': 'Boya: tek parmakla veya fareyle taşların üzerinde sürükleyin (küçük taşlar: önce dokunarak yakınlaştırın).',
   'w4lw.idle.rect': 'Dikdörtgen: taşların üzerinde sürükleyin, ardından onaylayın.',
 
   'w4lw.undo': 'Geri al ({n})',
   'w4lw.undoLabel': 'Geri al',
   'w4lw.undoTitle':
     'Döşeme ilerlemesindeki son değişikliği geri alır. Yalnızca bu oturumda geçerlidir (projeden çıkana veya sayfa yeniden yüklenene kadar), en fazla 50 adım; renk ve şekil değişiklikleri dahil değildir.',
-  'w4lw.undoNote': 'Geri alma yalnızca bu oturumdaki döşeme ilerlemesini kapsar (son 50 adım, yeniden yüklemeden sonra değil).',
+  'w4lw.undoNote': 'Geri alma, proje açık kaldığı sürece döşeme ilerlemesini kapsar – adım değiştirildikten sonra da (son 50 adım; yeniden yükleme, projeden çıkma, yeniden hesaplama veya değiştirilen taşlar geçmişi siler).',
   'w4lw.undone': 'Geri alındı: {what}',
 
   'w4lw.st.laidOne': '{id} döşendi olarak işaretlendi',

@@ -143,6 +143,27 @@ export interface MissingAccent {
   snapDE?: number;
 }
 
+/** Anzahl Gruppen und Steine (Teilstücke) */
+export interface AccentCount {
+  groups: number;
+  stones: number;
+}
+
+/**
+ * Warum Gruppen abweichender Steine nicht als fehlende Akzentfarbe erscheinen (siehe ComputeDiagnostics.missingAccentsSkipped).
+ *  - nearPalette: der Mittelwert der Gruppe liegt höchstens ACCENT_MIN_DE/2 von einer Palettenfarbe entfernt – eine
+ *    zusätzliche Farbe in diesem Ton änderte nichts (die Abweichung kommt aus Farbmischung/Zuordnung)
+ *  - noMaterial ('auto-snap'): kein angebotenes Material liegt näher als ACCENT_MIN_DE am Vorschlag
+ *  - inPalette ('auto-snap'): das nächste Material ist schon in der Palette
+ *  - ungrouped: Steine jenseits der ersten ACCENT_MAX_GROUPS Gruppen (nicht weiter gruppiert, nur gezählt)
+ */
+export interface AccentSkipped {
+  nearPalette?: AccentCount;
+  noMaterial?: AccentCount;
+  inPalette?: AccentCount;
+  ungrouped?: { stones: number };
+}
+
 /** Was eine Pflichtfarbe in dieser Berechnung bewirkt hat (exakt aus der Zuordnung). */
 export interface PinnedColorResult {
   /** HEX der Pflichtfarbe, wie übergeben (Großbuchstaben) */
@@ -182,6 +203,12 @@ export interface ComputeDiagnostics {
   contourContinuity?: boolean;
   /** Modi 'auto', 'auto-snap', 'custom': fehlende Akzentfarben (höchstens ACCENT_MAX, wichtigste zuerst; leer = keine) */
   missingAccents?: MissingAccent[];
+  /**
+   * Gruppen von mindestens 2 Steinen über ACCENT_MIN_DE, die NICHT als fehlende Akzentfarbe vorgeschlagen werden, nach
+   * Grund (exakt gezählt). Immer zusammen mit missingAccents gesetzt; leeres Objekt = nichts übersprungen (dann stimmt
+   * „keine Gruppe weicht ab“). Ältere Ergebnisse haben das Feld nicht – dort ist unbekannt, ob etwas übersprungen wurde.
+   */
+  missingAccentsSkipped?: AccentSkipped;
   /** Pflichtfarben dieser Berechnung und was aus ihnen wurde ('auto'/'auto-snap') */
   pinnedColors?: PinnedColorResult[];
   recommendCells: number;
@@ -1159,21 +1186,41 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
 
   // ---------------- Fehlende Akzentfarben
   let missingAccents: MissingAccent[] | undefined;
+  let missingAccentsSkipped: AccentSkipped | undefined;
   if (accentBins) {
     const out: (MissingAccent & { sx: number })[] = [];
-    for (const g of groupAccents(accentBins.values())) {
+    const skipped: AccentSkipped = {};
+    const skip = (why: 'nearPalette' | 'noMaterial' | 'inPalette', n: number) => {
+      const c = (skipped[why] ??= { groups: 0, stones: 0 });
+      c.groups++;
+      c.stones += n;
+    };
+    const grouped = groupAccents(accentBins.values());
+    if (grouped.ungroupedStones > 0) skipped.ungrouped = { stones: grouped.ungroupedStones };
+    for (const g of grouped.groups) {
       const mean: Lab = [g.sl / g.n, g.sa / g.n, g.sb / g.n];
       // Abstand des Vorschlags zur nächsten Palettenfarbe: liegt er nahe an einer, hilft er nicht
       let nearestDE = Infinity;
       for (const pc of palette) nearestDE = Math.min(nearestDE, dE(mean[0], mean[1], mean[2], pc.lab[0], pc.lab[1], pc.lab[2]));
-      if (!(nearestDE > ACCENT_MIN_DE / 2)) continue;
+      if (!(nearestDE > ACCENT_MIN_DE / 2)) {
+        skip('nearPalette', g.n);
+        continue;
+      }
       let snap: Pick<MissingAccent, 'snapMaterialId' | 'snapHex' | 'snapName' | 'snapDE'> = {};
       if (params.paletteMode === 'auto-snap') {
         // Als Pflichtfarbe fiele der Vorschlag auf das nächste Material – ist das schon in der Palette oder selbst
-        // weiter als ACCENT_MIN_DE entfernt, hilft er nicht (dann zeigt „Fehlende Farben“ den Farbton zum Nachkaufen)
+        // weiter als ACCENT_MIN_DE entfernt, hilft er nicht (dann zeigt „Fehlende Farben“ den Farbton zum Nachkaufen).
+        // Gezählt wird beides trotzdem: „keine Gruppe weicht ab“ wäre sonst falsch.
         const nf = nearestFixed(fixed, mean, dE);
         const f = fixed[nf.index];
-        if (nf.d > ACCENT_MIN_DE || palette.some((pc) => pc.hex === f.hex && pc.materialId === f.materialId)) continue;
+        if (nf.d > ACCENT_MIN_DE) {
+          skip('noMaterial', g.n);
+          continue;
+        }
+        if (palette.some((pc) => pc.hex === f.hex && pc.materialId === f.materialId)) {
+          skip('inPalette', g.n);
+          continue;
+        }
         snap = { ...(f.materialId !== undefined ? { snapMaterialId: f.materialId } : {}), snapHex: f.hex, snapName: f.name, snapDE: round2(nf.d) };
       }
       const ids: string[] = [];
@@ -1195,6 +1242,9 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     }
     out.sort((a, b) => b.sx - a.sx || b.stones - a.stones);
     missingAccents = out.slice(0, ACCENT_MAX).map(({ sx: _sx, ...m }) => m);
+    // immer gesetzt (auch leer), damit die Oberfläche ein neues „nichts übersprungen“ von älteren Ergebnissen ohne
+    // diese Zählung unterscheiden kann
+    missingAccentsSkipped = skipped;
   }
 
   let acc = 0;
@@ -1232,6 +1282,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       ...(shapes.line ? { contourPairs: contourAlignment(layout, data) } : {}),
       ...(continuity ? { contourContinuity: true } : {}),
       ...(missingAccents ? { missingAccents } : {}),
+      ...(missingAccentsSkipped ? { missingAccentsSkipped } : {}),
       ...(pinnedResults ? { pinnedColors: pinnedResults } : {}),
     },
   };
@@ -1278,7 +1329,7 @@ interface AccentBin {
  * Rasterwerte mit ΔE76 < ACCENT_GROUP_DE (auf dem gespeicherten Lab-Raster gemessen), dann der nächste Start. Höchstens
  * ACCENT_MAX_GROUPS Gruppen; nur Gruppen mit mindestens 2 Steinen. Deterministisch.
  */
-function groupAccents(bins: Iterable<AccentBin>): AccentBin[] {
+function groupAccents(bins: Iterable<AccentBin>): { groups: AccentBin[]; ungroupedStones: number } {
   const list = [...bins].sort((a, b) => b.maxWd - a.maxWd || a.key - b.key);
   const n = list.length;
   const rep = new Float64Array(n * 3);
@@ -1321,7 +1372,10 @@ function groupAccents(bins: Iterable<AccentBin>): AccentBin[] {
     for (const q of order.slice(0, ACCENT_MAX_IDS)) g.refs.push(refs[q], refs[q + 1], refs[q + 2]);
     out.push(g);
   }
-  return out;
+  // Steine jenseits der ersten ACCENT_MAX_GROUPS Gruppen: nicht gruppiert, aber exakt gezählt
+  let ungroupedStones = 0;
+  for (let i = 0; i < n; i++) if (!used[i]) ungroupedStones += list[i].n;
+  return { groups: out, ungroupedStones };
 }
 
 /** Pflichtfarben: gültige HEX-Werte (Großbuchstaben, #RRGGBB), jede nur einmal, L*a*b* aus dem HEX-Wert. */

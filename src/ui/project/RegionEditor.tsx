@@ -456,7 +456,7 @@ export function RegionEditor({ api }: { api: ProjectApi }) {
       : det.status === 'found'
         ? tCount(t, 'w4fd.found', sugg.length, { n: sugg.length })
         : det.status === 'none'
-          ? t('w4fd.none')
+          ? t(hasFace ? 'w4fd.noneKept' : 'w4fd.none')
           : det.status === 'covered'
             ? t('w4fd.covered')
             : det.status === 'error'

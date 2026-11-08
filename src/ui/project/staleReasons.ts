@@ -7,7 +7,7 @@
  */
 import type { TFunc } from '../../i18n';
 import type { ProjectRecord } from '../../storage/db';
-import { OPTIONAL_SHAPE_FIELDS } from '../../core/types';
+import { canonShapes, OPTIONAL_SHAPE_FIELDS } from '../../core/types';
 
 /** Geparster Berechnungsschlüssel (siehe computeKey in useProject.ts) */
 interface KeyObj {
@@ -75,6 +75,20 @@ export function parseKey(s: string | undefined | null): KeyObj | null {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+/** Formoptionen unabhängig von der Reihenfolge der nur bei Abweichung gesetzten Felder vergleichen */
+const sameShapes = (a: unknown, b: unknown) => (isObj(a) && isObj(b) ? same(canonShapes(a), canonShapes(b)) : same(a, b));
+
+/**
+ * Gehört der gespeicherte Berechnungsschlüssel zum aktuellen Schlüssel? Zeichengleich – oder gleich, nachdem die
+ * Formoptionen in die feste Reihenfolge gebracht wurden (canonShapes): Schlüssel, die vor der festen Reihenfolge
+ * gespeichert wurden, können bgCutFactor/contourContinuity in umgekehrter Reihenfolge enthalten.
+ */
+export function sameComputeKey(computedWith: string | undefined, currentKey: string): boolean {
+  if (computedWith === currentKey) return true;
+  const a = parseKey(computedWith);
+  if (!a || !isObj(a.sh)) return false;
+  return JSON.stringify({ ...a, sh: canonShapes(a.sh) }) === currentKey;
+}
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 /**
@@ -84,7 +98,7 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' && Number
  * als geändert, wie in der App (`stale`).
  */
 export function staleReasons(computedWith: string | undefined, currentKey: string): StaleReason[] {
-  if (computedWith === currentKey) return [];
+  if (sameComputeKey(computedWith, currentKey)) return [];
   const a = parseKey(computedWith);
   const b = parseKey(currentKey);
   if (!a || !b) return [{ group: 'other' }];
@@ -115,7 +129,7 @@ export function staleReasons(computedWith: string | undefined, currentKey: strin
     const extra = [...new Set([...Object.keys(la), ...Object.keys(lb)])].some((k) => !known.has(k) && !same(la[k], lb[k]));
     if (extra || out.length === n0) out.push({ group: 'layout' });
   }
-  if (!same(a.sh, b.sh)) out.push({ group: 'shapes' });
+  if (!sameShapes(a.sh, b.sh)) out.push({ group: 'shapes' });
   if (!same(a.pm, b.pm)) out.push({ group: 'paletteMode' });
   if (!same(a.cc, b.cc)) {
     const ca = num(a.cc);

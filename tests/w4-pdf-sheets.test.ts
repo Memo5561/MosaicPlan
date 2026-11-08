@@ -263,11 +263,12 @@ describe('labelOk und Codeplan-Zoom', () => {
     expect(labelOk({ w: 5, h: 5, tile: 5 }, 0.4)).toBe(false);
   });
   it('kleinster ganzzahliger Zoom ≥ 2', () => {
-    expect(codePlanZoom(2, 2, 1)).toEqual({ k: 2, complete: true });
-    expect(codePlanZoom(5, 5, 1 / 4)).toEqual({ k: 2, complete: true });
-    expect(codePlanZoom(5, 5, 1 / 6)).toEqual({ k: 3, complete: true });
-    expect(codePlanZoom(5, 0.5, 1)).toEqual({ k: 4, complete: true });
+    expect(codePlanZoom(2, 2, 1)).toEqual({ k: 2, complete: true, wholeComplete: true });
+    expect(codePlanZoom(5, 5, 1 / 4)).toEqual({ k: 2, complete: true, wholeComplete: true });
+    expect(codePlanZoom(5, 5, 1 / 6)).toEqual({ k: 3, complete: true, wholeComplete: true });
+    expect(codePlanZoom(5, 0.5, 1)).toEqual({ k: 4, complete: true, wholeComplete: true });
     expect(codePlanZoom(5, 0.1, 1).complete).toBe(false);
+    expect(codePlanZoom(5, 0.1, 1).wholeComplete).toBe(true);
     expect(CODE_MIN_CELL).toBe(2.2);
   });
 });

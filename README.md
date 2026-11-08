@@ -170,11 +170,11 @@ Die Testbilder sind synthetisch erzeugt (`scripts/svg/*.svg` → `scripts/render
 | Projektverwaltung, Export/Import, Offline | fertig |
 | **Rauten** | **unvollständig**: werden erkannt/klassifiziert und können per Freiform gezeichnet werden; ein automatisches Rautenraster gibt es nicht |
 | **Gemischte Steingrößen** | nur als k×k-Unterteilung (2×2, 3×3) des Grundrasters; frei kombinierbare Zonen mit eigenem Raster sind **nicht** umgesetzt |
-| **Gesichtserkennung** | automatische Erkennung nur, wenn der Browser die Shape-Detection-API (`FaceDetector`) anbietet; sonst manuelles Markieren + automatischer Hauttonschutz |
+| **Gesichtserkennung** | offline mit pico.js (Vorschläge zum Übernehmen/Verwerfen; Augenpartie geschätzt): nur frontale, fotografierte menschliche Gesichter – keine Profile, Tiere, sehr kleinen oder gezeichneten/gemalten Gesichter (z. B. das Beispielporträt); dann von Hand markieren |
 | **Hintergrund vereinfachen** | heuristisch über Kantendichte (keine KI-Segmentierung) |
 | **OpenCV** | **nicht verwendet**: die benötigten Verfahren (Filter, Sobel, Unschärfemaske, K-Means) sind in TypeScript implementiert und getestet; opencv.js (~8–10 MB WASM) wäre für Handy/Offline unverhältnismäßig |
 | Freiform | Konturen bleiben innerhalb einer Rasterzelle; zellübergreifende Freiformsteine sind nicht möglich |
 | Kantenschnitte | Winkel in 15°-Schritten, Versatz im 0,5-mm-Raster (bewusst, damit sich gleiche Schnittvorlagen wiederholen) |
-| Rückgängig (Undo) | nicht vorhanden |
+| Rückgängig (Undo) | nur für den Verlegefortschritt in Schritt 9 (letzte 50 Schritte, solange das Projekt geöffnet ist; Neuladen, Neuberechnen oder geänderte Steine leeren den Verlauf); Farb-/Formänderungen ohne Rückgängig |
 | Farbwerte der Materialien | werden vom Benutzer eingegeben (HEX oder Pipette); keine Kamerakalibrierung |
 | Sehr große Projekte | Berechnung mit mehreren Millionen Positionen funktioniert (getestet bis 2 Mio.); Speicherbedarf und PDF-Umfang steigen entsprechend – große PDFs abschnittsweise exportieren, vollständige Koordinaten per CSV |

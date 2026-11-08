@@ -2,11 +2,12 @@
 // Verschieben/Größe-Ändern von Bereichen (w4-face-detector). Überschreibt keine vorhandenen Schlüssel.
 export const de: Record<string, string> = {
   'w4fd.detect': 'Gesichter erkennen',
-  'w4fd.scope': 'Automatische Erkennung (offline): nur frontale menschliche Gesichter, aufrecht oder leicht geneigt – keine Profile, Tiere oder sehr kleinen Gesichter. Ein Vorschlag wird erst mit „Übernehmen“ zum Bereich.',
+  'w4fd.scope': 'Automatische Erkennung (offline): nur frontale menschliche Gesichter, aufrecht oder leicht geneigt – keine Profile, Tiere, sehr kleinen oder gezeichneten/gemalten Gesichter. Ein Vorschlag wird erst mit „Übernehmen“ zum Bereich.',
   'w4fd.running': 'Suche nach Gesichtern …',
   'w4fd.found': '{n} Gesichter vorgeschlagen – bitte prüfen und übernehmen oder verwerfen.',
   'w4fd.found.one': '1 Gesicht vorgeschlagen – bitte prüfen und übernehmen oder verwerfen.',
-  'w4fd.none': 'Kein Gesicht gefunden.',
+  'w4fd.none': 'Kein Gesicht automatisch erkannt (gezeichnete oder gemalte Gesichter erkennt die Automatik nicht) – bei Bedarf von Hand markieren.',
+  'w4fd.noneKept': 'Kein weiteres Gesicht automatisch erkannt – Ihre markierten Gesichtsbereiche bleiben unverändert. Gezeichnete oder gemalte Gesichter erkennt die Automatik nicht.',
   'w4fd.covered': 'Die erkannten Gesichter sind bereits als Gesichtsbereich markiert.',
   'w4fd.error': 'Die Gesichtserkennung konnte nicht geladen werden – bitte Gesicht von Hand markieren.',
   'w4fd.sugg.title': 'Gesicht {letter}: automatisch erkannt – bitte prüfen',
@@ -52,11 +53,12 @@ export const de: Record<string, string> = {
 
 export const en: Record<string, string> = {
   'w4fd.detect': 'Detect faces',
-  'w4fd.scope': 'Automatic detection (offline): frontal human faces only, upright or slightly tilted – no profiles, animals or very small faces. A suggestion only becomes an area after “Apply”.',
+  'w4fd.scope': 'Automatic detection (offline): frontal human faces only, upright or slightly tilted – no profiles, animals, very small or drawn/painted faces. A suggestion only becomes an area after “Apply”.',
   'w4fd.running': 'Looking for faces …',
   'w4fd.found': '{n} faces suggested – please check them and apply or discard.',
   'w4fd.found.one': '1 face suggested – please check it and apply or discard.',
-  'w4fd.none': 'No face found.',
+  'w4fd.none': 'No face detected automatically (drawn or painted faces are not detected) – mark it by hand if needed.',
+  'w4fd.noneKept': 'No further face detected automatically – your marked face areas stay unchanged. Drawn or painted faces are not detected automatically.',
   'w4fd.covered': 'The detected faces are already marked as face areas.',
   'w4fd.error': 'Face detection could not be loaded – please mark the face by hand.',
   'w4fd.sugg.title': 'Face {letter}: detected automatically – please check',
@@ -102,11 +104,12 @@ export const en: Record<string, string> = {
 
 export const tr: Record<string, string> = {
   'w4fd.detect': 'Yüzleri algıla',
-  'w4fd.scope': 'Otomatik algılama (çevrimdışı): yalnızca önden, dik veya hafif eğik insan yüzleri – profil, hayvan veya çok küçük yüzler yok. Bir öneri ancak “Uygula” ile bölge olur.',
+  'w4fd.scope': 'Otomatik algılama (çevrimdışı): yalnızca önden, dik veya hafif eğik insan yüzleri – profil, hayvan, çok küçük veya çizilmiş/boyanmış yüzler yok. Bir öneri ancak “Uygula” ile bölge olur.',
   'w4fd.running': 'Yüz aranıyor …',
   'w4fd.found': '{n} yüz önerildi – lütfen kontrol edip uygulayın veya reddedin.',
   'w4fd.found.one': '1 yüz önerildi – lütfen kontrol edip uygulayın veya reddedin.',
-  'w4fd.none': 'Yüz bulunamadı.',
+  'w4fd.none': 'Otomatik olarak yüz algılanmadı (çizilmiş veya boyanmış yüzler algılanmaz) – gerekirse elle işaretleyin.',
+  'w4fd.noneKept': 'Otomatik olarak başka yüz algılanmadı – işaretlediğiniz yüz alanları değişmeden kalır. Çizilmiş veya boyanmış yüzler otomatik olarak algılanmaz.',
   'w4fd.covered': 'Algılanan yüzler zaten yüz bölgesi olarak işaretli.',
   'w4fd.error': 'Yüz algılama yüklenemedi – lütfen yüzü elle işaretleyin.',
   'w4fd.sugg.title': 'Yüz {letter}: otomatik algılandı – lütfen kontrol edin',

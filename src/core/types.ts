@@ -140,6 +140,22 @@ export interface ShapeOptions {
 export const OPTIONAL_SHAPE_FIELDS = ['bgCutFactor', 'contourContinuity'] as const;
 
 /**
+ * Formoptionen in fester Reihenfolge (für den Berechnungsschlüssel): alle übrigen Felder in ihrer bisherigen
+ * Reihenfolge, danach die nur bei Abweichung gesetzten Felder in der Reihenfolge von OPTIONAL_SHAPE_FIELDS.
+ * Entfernen und erneutes Setzen eines dieser Felder (Schieberegler auf ×1 und zurück, „Zurücksetzen“) hängt es
+ * hinten an – ohne feste Reihenfolge wäre derselbe Stand dann ein anderer Schlüssel („geändert“). Schlüssel ohne
+ * die neuen Felder bleiben Zeichen für Zeichen gleich.
+ */
+export function canonShapes<T extends object>(sh: T): T {
+  const src = sh as Record<string, unknown>;
+  const opt = OPTIONAL_SHAPE_FIELDS as readonly string[];
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(src)) if (!opt.includes(k)) out[k] = src[k];
+  for (const k of opt) if (k in src) out[k] = src[k];
+  return out as T;
+}
+
+/**
  * Formoptionen ändern. Die nur bei Abweichung gespeicherten Felder (bgCutFactor > 1, contourContinuity = true) werden
  * beim Standardwert entfernt – so bleibt der Berechnungsschlüssel älterer Projekte Zeichen für Zeichen gleich.
  */

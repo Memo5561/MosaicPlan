@@ -106,10 +106,22 @@ export function listProgressOf(r: Pick<ProjectRecord, 'meta' | 'mosaicRev'>): { 
  * ein einzelner verlegter Stein ergibt nie „0 %“ (dann `lessThanOne`).
  */
 export function laidPercent(placed: number, total: number): { pct: number; lessThanOne: boolean } {
-  if (total <= 0 || placed <= 0) return { pct: 0, lessThanOne: false };
-  if (placed >= total) return { pct: 100, lessThanOne: false };
-  const pct = Math.min(99, Math.floor((placed * 100) / total));
-  return { pct, lessThanOne: pct === 0 };
+  const r = laidPercentAt(placed, total, 0);
+  return { pct: r.value, lessThanOne: r.lessThan };
+}
+
+/**
+ * Prozentwert mit `decimals` Nachkommastellen für alle Fortschrittsanzeigen (Listen, Schritt 9, Abschnittskacheln) –
+ * EINE Regel: auf die angezeigte Genauigkeit abgerundet, „100“ nur, wenn alles verlegt ist, und `lessThan`, wenn
+ * Steine verlegt sind, der abgerundete Wert aber 0 wäre (Anzeige „< 1 %“ bzw. „< 0,1 %“ statt „0 %“).
+ */
+export function laidPercentAt(placed: number, total: number, decimals = 0): { value: number; lessThan: boolean } {
+  if (total <= 0 || placed <= 0) return { value: 0, lessThan: false };
+  if (placed >= total) return { value: 100, lessThan: false };
+  const f = 10 ** Math.max(0, Math.floor(decimals));
+  // ganzzahlige Rechnung (placed·100·f ÷ total) vor dem Abrunden – kein 24,999… statt 25
+  const steps = Math.min(100 * f - 1, Math.floor((placed * 100 * f) / total));
+  return { value: steps / f, lessThan: steps === 0 };
 }
 
 export interface ImageRecord {
@@ -645,6 +657,32 @@ export interface SaveParts {
   mosaic?: StoredMosaicNoProgress;
   progress?: Uint16Array;
   image?: ImageRecord;
+  /**
+   * Nur der Verlegefortschritt für Projektlisten (meta.progressSummary, ggf. Änderungszeitpunkt). Ohne `rec` wird
+   * NICHT der ganze Projektstand dieses Tabs geschrieben, sondern nur dieses Feld im gespeicherten Projekt geändert –
+   * ein Antippen beim Verlegen überschreibt so nie Name, Einstellungen, Palette oder Bereiche aus einem anderen Tab.
+   */
+  summary?: SummaryPatch;
+}
+
+/** Änderung von meta.progressSummary (siehe SaveParts.summary) */
+export interface SummaryPatch {
+  value: ProgressSummary;
+  /** Änderungszeitpunkt (nur bei einer Bearbeitung, nicht beim Nachtragen nach dem Laden) */
+  updatedAt?: number;
+}
+
+/**
+ * Gespeichertes Projekt mit neuem Listen-Fortschritt – alle übrigen Felder bleiben, wie sie gespeichert sind. null,
+ * wenn der Fortschritt nicht zum gespeicherten Raster gehört (anderswo neu berechnet) oder sich nichts ändert.
+ */
+export function withProgressSummary(stored: ProjectRecord, p: SummaryPatch): ProjectRecord | null {
+  if ((stored.mosaicRev ?? null) !== (p.value.rev ?? null)) return null;
+  const cur = stored.meta.progressSummary;
+  const sameValue = !!cur && cur.placed === p.value.placed && cur.total === p.value.total && (cur.rev ?? null) === (p.value.rev ?? null);
+  const updatedAt = p.updatedAt !== undefined ? Math.max(stored.meta.updatedAt ?? 0, p.updatedAt) : stored.meta.updatedAt;
+  if (sameValue && updatedAt === stored.meta.updatedAt) return null;
+  return { ...stored, meta: { ...stored.meta, progressSummary: p.value, updatedAt } };
 }
 /**
  * 'rev': nur schreiben, wenn das gespeicherte Raster noch dieselbe Revision hat (sonst nur die
@@ -662,16 +700,26 @@ export function saveProjectState(id: string, parts: SaveParts, guard: SaveGuard,
   if (parts.mosaic) stores.push('mosaics');
   if (parts.progress) stores.push('progress');
   if (parts.image) stores.push('images');
-  if (!stores.length) return Promise.resolve('ok');
-  const writeAll = (ctx: TxCtx<SaveOutcome>) => {
+  // Beim Verlassen der Seite (ohne Lesen) lässt sich der Listen-Fortschritt nicht gezielt ändern: eigene, nachgelagerte
+  // Transaktion (bestes Bemühen) – bricht sie ab, bleibt der bisherige Wert, der Fortschritt selbst ist gespeichert
+  const summaryLater = guard === 'none' && !!parts.summary && !parts.rec;
+  if (!stores.length) {
+    if (summaryLater) void patchSummaryOnly(id, parts.summary!).catch(() => {});
+    return Promise.resolve('ok');
+  }
+  const writeAll = (ctx: TxCtx<SaveOutcome>, stored?: ProjectRecord) => {
     if (parts.rec) ctx.store('projects').put(parts.rec, id);
+    else if (parts.summary && stored) {
+      const next = withProgressSummary(stored, parts.summary);
+      if (next) ctx.store('projects').put(next, id);
+    }
     if (parts.mosaic) ctx.store('mosaics').put(parts.mosaic, id);
     if (parts.progress) ctx.store('progress').put(parts.progress, id);
     if (parts.image) ctx.store('images').put(parts.image, id);
     ctx.commit();
     ctx.done('ok');
   };
-  return txMulti<SaveOutcome>(stores, 'readwrite', (ctx) => {
+  const main = txMulti<SaveOutcome>(stores, 'readwrite', (ctx) => {
     if (guard === 'none') {
       writeAll(ctx);
       return;
@@ -692,7 +740,20 @@ export function saveProjectState(id: string, parts: SaveParts, guard: SaveGuard,
         ctx.done('stale');
         return;
       }
-      writeAll(ctx);
+      writeAll(ctx, stored);
+    });
+  });
+  if (summaryLater) void patchSummaryOnly(id, parts.summary!).catch(() => {});
+  return main;
+}
+
+/** Nur meta.progressSummary im gespeicherten Projekt ändern (eigene Transaktion, siehe saveProjectState). */
+function patchSummaryOnly(id: string, p: SummaryPatch): Promise<void> {
+  return txMulti<void>(['projects'], 'readwrite', (ctx) => {
+    ctx.on(ctx.store('projects').get(id) as IDBRequest<ProjectRecord | undefined>, (stored) => {
+      const next = stored ? withProgressSummary(stored, p) : null;
+      if (next) ctx.store('projects').put(next, id);
+      ctx.commit();
     });
   });
 }

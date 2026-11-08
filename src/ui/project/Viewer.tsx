@@ -606,6 +606,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     let pinchMid: { x: number; y: number } | null = null;
     let longTimer = 0;
     let longFired = false;
+    /** Hinweis „Steine zu klein zum Malen“ in dieser Geste schon gezeigt */
+    let blockedHinted = false;
     let lastType = 'mouse';
     const local = (e: PointerEvent | WheelEvent | MouseEvent) => {
       const r = cv.getBoundingClientRect();
@@ -773,6 +775,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
         downAt = { ...p, t: performance.now(), type: lastType };
         moved = false;
         longFired = false;
+        blockedHinted = false;
         clearLong();
         const m = mode();
         const middle = lastType === 'mouse' && e.button === 1;
@@ -854,6 +857,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
           moved = true;
         }
         const g = gesture.current;
+        // Malen mit dem Finger, Steine zu klein: nicht still verschieben, sondern sofort sagen, warum nichts markiert wird
+        if (g.kind === 'paintBlocked' && moved && !blockedHinted) {
+          blockedHinted = true;
+          showHint(tRef.current('w4fx.paintTooSmall'));
+        }
         if (e.pointerType === 'mouse') updateStatus(p.x, p.y);
         if (g.kind === 'paint') {
           const a = toWorld(g.last.x, g.last.y);
@@ -928,7 +936,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
           }
           if (st.pieces.length && st.set !== null) pr.onPaint?.(st.pieces.slice(), st.set);
         } else if (g.kind === 'paintBlocked') {
-          if (!moved) {
+          if (moved) {
+            // gezogen: das Mosaik wurde nur verschoben – Hinweis steht (siehe onMove), kein Geister-Klick
+            tapHandled.current = true;
+            if (!blockedHinted) showHint(tRef.current('w4fx.paintTooSmall'));
+          } else {
             tapHandled.current = true;
             const pitch = pitchPxOf(pr.layout, view.current.scale);
             animateZoomAt(p.x, p.y, Math.min(TOUCH_ZOOM_TARGET_PX / Math.max(0.01, pitch), MAX_SCALE / view.current.scale));

@@ -39,9 +39,11 @@ import { stepHash } from './stepNav';
 import { cutInstructionItems, StoneDialog } from './StoneDialog';
 import { MAX_SCALE } from './touchTap';
 import type { ProjectApi } from './useProject';
+import { laidPercentAt } from '../../storage/db';
 import { Viewer, type OutsideTap, type PieceRef, type ViewerHandle, type ViewerMode } from './Viewer';
 import '../css/w1-review-fixes.css';
 import '../css/w4-laying-workbench.css';
+import '../css/w4-review-fixes.css';
 
 export { MaterialCalc } from './MaterialCalc';
 
@@ -49,6 +51,22 @@ export { MaterialCalc } from './MaterialCalc';
 interface UndoMeta {
   label: string;
   flash?: PieceRef;
+}
+
+/**
+ * Rückgängig-Stapel je Raster: gehört zum berechneten Mosaik (Objekt `computed` aus useProject) und dessen
+ * Änderungsstand (`version`). So übersteht er das Verlassen von Schritt 9 (Schrittwechsel, Android-Zurück, Link
+ * „anzeigen“) – eine neue Berechnung, eine Änderung an Steinen, Verlassen des Projekts oder Neuladen leeren ihn.
+ * WeakMap: mit dem Raster wird auch der Stapel freigegeben.
+ */
+const undoByGrid = new WeakMap<object, { version: number; undo: ProgressUndo<UndoMeta> }>();
+function undoFor(grid: object | null, version: number): ProgressUndo<UndoMeta> {
+  if (!grid) return new ProgressUndo<UndoMeta>(50);
+  const e = undoByGrid.get(grid);
+  if (e && e.version === version) return e.undo;
+  const undo = new ProgressUndo<UndoMeta>(50);
+  undoByGrid.set(grid, { version, undo });
+  return undo;
 }
 
 /** Mehr geänderte Zellen werden nicht einzeln gemeldet (useProject zählt dann neu) */
@@ -78,13 +96,16 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const cardHistory = useRef<number[]>([]);
   const cardCode = useRef<number | null>(null);
   const [status, setStatusState] = useState<{ text: string; id: number } | null>(null);
-  const [outsideAsk, setOutsideAsk] = useState<{ id: string; sec: string } | null>(null);
-  const [pendingRect, setPendingRect] = useState<{ range: Range; placed: number; total: number } | null>(null);
+  const [outsideAsk, setOutsideAsk] = useState<{ id: string; sec: string; atBottom?: boolean } | null>(null);
+  /** atBottom: Rechteck liegt in der oberen Hälfte des Viewers – Rückfrage unten anzeigen, damit sie es nicht verdeckt */
+  const [pendingRect, setPendingRect] = useState<{ range: Range; placed: number; total: number; atBottom: boolean } | null>(null);
   const [csvBusy, setCsvBusy] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
   const [, setTick] = useState(0);
-  const undo = useRef(new ProgressUndo<UndoMeta>(50));
-  const [undoSize, setUndoSize] = useState(0);
+  // Stapel des aktuellen Rasters (übersteht das Verlassen von Schritt 9, siehe undoFor)
+  const undo = useRef<ProgressUndo<UndoMeta>>(undoFor(api.computed, api.version));
+  undo.current = undoFor(api.computed, api.version);
+  const [undoSize, setUndoSize] = useState(() => undo.current.size);
   const viewer = useRef<ViewerHandle>(null);
   const viewerBox = useRef<HTMLDivElement>(null);
   const cardBox = useRef<HTMLDivElement>(null);
@@ -116,10 +137,10 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   useEffect(() => {
     if (G && selected && !G.sections.some((x) => x.id === selected)) setSelected(null);
   }, [G, selected]);
-  // Rückgängig nur für den Fortschritt dieses Rasters: neue Berechnung oder Änderung am Mosaik leeren den Stapel
+  // Rückgängig nur für den Fortschritt dieses Rasters: neue Berechnung oder Änderung am Mosaik → neuer, leerer Stapel
+  // (undoFor); beim erneuten Öffnen von Schritt 9 bleibt der bisherige Stapel samt Anzahl erhalten
   useEffect(() => {
-    undo.current.clear();
-    setUndoSize(0);
+    setUndoSize(undo.current.size);
   }, [c, api.version]);
   // Statusmeldung nach einigen Sekunden ausblenden
   useEffect(() => {
@@ -232,6 +253,9 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const data = c.data;
   const pr = api.progress;
   const pct = pr && pr.total.total ? pr.total.placed / pr.total.total : 0;
+  // gleiche Regel wie „Meine Projekte“ (laidPercentAt): abgerundet, nie „0 %“ mit verlegten Steinen, „100 %“ nur fertig
+  const pctShown = pr ? laidPercentAt(pr.total.placed, pr.total.total, 1) : { value: 0, lessThan: false };
+  const pctText = pctShown.lessThan ? `< ${n(0.1, 1)} %` : `${n(pctShown.value, 1)} %`;
   const doneSections = G.sections.filter((x) => {
     const st = pr?.perSection.get(x.id);
     return st && st.total > 0 && st.placed === st.total;
@@ -319,8 +343,32 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
     if (!layActive || apiComputing()) return;
     const cnt = rangeCounts(L, data, range);
     setOutsideAsk(null);
-    setPendingRect({ range, placed: cnt.placed, total: cnt.total });
+    const yMid = (L.rowY[range.r0] + L.rowY[range.r1 - 1] + L.rowH[range.r1 - 1]) / 2;
+    setPendingRect({ range, placed: cnt.placed, total: cnt.total, atBottom: barAtBottom(yMid) });
   };
+  /**
+   * Rückfrage-Leiste unten statt oben? Nur, wenn die Unterkante des Viewers zu sehen ist. `yMid` (mm im Mosaik):
+   * liegt diese Stelle in der oberen Hälfte des sichtbaren Mosaiks, kommt die Leiste nach unten (verdeckt sie nicht);
+   * ohne `yMid` (Rückfrage „wechseln?“): unten, wenn oben nicht zu sehen ist oder auf schmalen Bildschirmen (dort steht
+   * oben links die Abschnittsbezeichnung).
+   */
+  function barAtBottom(yMid?: number): boolean {
+    const cv = viewerBox.current?.querySelector<HTMLCanvasElement>('canvas[data-testid="mosaic-canvas"]');
+    if (!cv) return false;
+    const r = cv.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const topVisible = r.top >= -1;
+    const bottomVisible = r.bottom <= vh + 1;
+    if (!bottomVisible) return false;
+    if (!topVisible) return true;
+    if (yMid === undefined) return !wide;
+    const scale = parseFloat(cv.dataset.scale ?? '');
+    const oy = parseFloat(cv.dataset.oy ?? '');
+    if (!(scale > 0) || !Number.isFinite(oy)) return false;
+    const visTop = Math.max(r.top, 0);
+    const visBottom = Math.min(r.bottom, vh);
+    return r.top + oy + yMid * scale < (visTop + visBottom) / 2;
+  }
   const applyRect = (set: boolean) => {
     const pr0 = pendingRect;
     setPendingRect(null);
@@ -342,7 +390,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
 
   const onOutside = (o: OutsideTap) => {
     if (!layActive || !o.sectionId) return;
-    setOutsideAsk({ id: pieceId(L, o.row, o.col, o.piece, cellPieceCount(data, o.row * L.cols + o.col)), sec: o.sectionId });
+    setOutsideAsk({ id: pieceId(L, o.row, o.col, o.piece, cellPieceCount(data, o.row * L.cols + o.col)), sec: o.sectionId, atBottom: barAtBottom() });
   };
 
   const selectSection = (x: Section) => {
@@ -503,7 +551,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
     setStatus(t('w4lw.st.found', { id: pieceId(L, row, col, piece, cellPieceCount(data, idx)) }));
     if (layActive && sec && (row < sec.r0 || row >= sec.r1 || col < sec.c0 || col >= sec.c1)) {
       const other = G.sections.find((x) => row >= x.r0 && row < x.r1 && col >= x.c0 && col < x.c1);
-      if (other) setOutsideAsk({ id: pieceId(L, row, col, piece, cellPieceCount(data, idx)), sec: other.id });
+      if (other) setOutsideAsk({ id: pieceId(L, row, col, piece, cellPieceCount(data, idx)), sec: other.id, atBottom: barAtBottom() });
     }
     if (wide) viewerBox.current?.scrollIntoView({ block: 'nearest' });
     showStone(row, col, piece, true);
@@ -549,7 +597,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
       <div className="summary-box">
         <div className="stat">
           <span>{t('plan.progress')}</span>
-          <b data-testid="progress-pct">{n(pct * 100, 1)} %</b>
+          <b data-testid="progress-pct">{pctText}</b>
         </div>
         <div className="stat">
           <span>{t('plan.placed')}</span>
@@ -576,7 +624,8 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
             testId="plan-view"
           />
         </div>
-        <ProgressBar value={pct} />
+        {/* ein verlegter Stein bleibt als schmaler Streifen sichtbar (wie in den Projektlisten) */}
+        <ProgressBar value={pr && pr.total.placed > 0 && pr.total.placed < pr.total.total ? Math.max(0.01, pct) : pct} />
       </div>
       {view === 'material' ? (
         <div className="w4lw-material" data-testid="plan-material">
@@ -663,7 +712,9 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                 onRect={onRect}
                 onPick={onPick}
               />
-              <div className="w4lw-overlays">
+              {/* Rückfragen verdecken nie, worum es geht: Rechteck oben → Leiste unten; „wechseln?“ am Handy unten
+                  (die Abschnittsbezeichnung steht oben links) */}
+              <div className={`w4lw-overlays ${(pendingRect ? pendingRect.atBottom : !!outsideAsk?.atBottom) ? 'at-bottom' : ''}`} data-testid="lay-overlays">
                 {pendingRect && (
                   <div className="w4lw-bar" role="alertdialog" aria-label={t('w4lw.tool.rect')} data-testid="rect-confirm">
                     <span>
@@ -713,8 +764,9 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               </div>
             </div>
             <div className="w4lw-notes">
-              <small className="muted block" data-testid="tool-hint">
-                {t(layActive && tool !== 'tap' ? (tool === 'paint' ? 'w4lw.toolHint.paint' : 'w4lw.toolHint.rect') : 'plan.layModeHint')}
+              {/* beschreibt, was JETZT passiert: ohne Verlegemodus öffnet Antippen das Steindetail */}
+              <small className="muted block" data-testid="tool-hint" data-mode={layActive ? tool : 'off'}>
+                {t(!layActive ? 'w4fx.toolHint.off' : tool === 'paint' ? 'w4lw.toolHint.paint' : tool === 'rect' ? 'w4lw.toolHint.rect' : 'plan.layModeHint')}
               </small>
               {layActive && sec && <small className="muted block">{t('w4lw.focusNote', { sec: sec.id })}</small>}
               {layActive && <WakeNote state={wake} />}
@@ -735,17 +787,21 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               <div className="section-grid" style={{ gridTemplateColumns: `repeat(${G.scols}, minmax(${G.scols > 8 ? 40 : 0}px, 1fr))` }}>
                 {G.sections.map((x) => {
                   const st = pr?.perSection.get(x.id);
-                  const p = st && st.total ? st.placed / st.total : 0;
+                  const done = !!st && st.total > 0 && st.placed === st.total;
+                  const sp = st ? laidPercentAt(st.placed, st.total, 0) : { value: 0, lessThan: false };
+                  const sTxt = sp.lessThan ? '< 1' : String(sp.value);
                   return (
                     <button
                       key={x.id}
-                      className={`section-cell ${selected === x.id ? 'active' : ''} ${p >= 1 ? 'done' : ''}`}
+                      className={`section-cell ${selected === x.id ? 'active' : ''} ${done ? 'done' : ''}`}
                       onClick={() => selectSection(x)}
-                      title={`${x.id}: ${Math.round(p * 100)} %`}
+                      title={`${x.id}: ${sTxt} % (${n(st?.placed ?? 0)} / ${n(st?.total ?? 0)})`}
                       aria-pressed={selected === x.id}
+                      data-testid="section-cell"
+                      data-section={x.id}
                     >
                       <b>{x.id}</b>
-                      <small>{Math.round(p * 100)}%</small>
+                      <small>{sTxt}%</small>
                     </button>
                   );
                 })}
@@ -818,7 +874,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                 </div>
               </div>
             )}
-            {counter && <ColorChips counter={counter} palette={rec.palette} focus={focusColor} onFocus={setFocusColor} scopeText={scopeText} />}
+            {counter && <ColorChips counter={counter} palette={rec.palette} focus={focusColor} onFocus={setFocusColor} scopeText={scopeText} layActive={layActive} />}
             <div className="btn-row wrap" style={{ marginTop: 10 }}>
               <button className="btn small" disabled={csvBusy} onClick={() => exportCsv(null)} data-testid="csv-all">
                 {csvBusy ? t('common.loading') : t('plan.csvAll')}
@@ -920,7 +976,7 @@ function useDialogMask(idx: number, data: MosaicData | null, version: number) {
 }
 
 /** Offene Steine je Farbe (Abschnitt bzw. ganzes Mosaik); Antippen hebt die Farbe hervor */
-function ColorChips(p: { counter: ColorProgressCounter; palette: PaletteColor[]; focus: number | null; onFocus: (c: number | null) => void; scopeText: string }) {
+function ColorChips(p: { counter: ColorProgressCounter; palette: PaletteColor[]; focus: number | null; onFocus: (c: number | null) => void; scopeText: string; layActive: boolean }) {
   const { t, n, lang } = useI18n();
   const codeOf = (ci: number) => p.palette[ci]?.code ?? Number.MAX_SAFE_INTEGER;
   const entries = [...p.counter.counts.entries()].filter(([, e]) => e.total > 0).sort((a, b) => codeOf(a[0]) - codeOf(b[0]) || a[0] - b[0]);
@@ -961,7 +1017,10 @@ function ColorChips(p: { counter: ColorProgressCounter; palette: PaletteColor[];
           </button>
         )}
       </p>
-      <small className="muted block">{t('w4lw.chips.hint')}</small>
+      {/* „Nächster Stein“ gibt es nur im Verlegemodus */}
+      <small className="muted block" data-testid="chips-hint">
+        {t(p.layActive ? 'w4lw.chips.hint' : 'w4fx.chips.hintView')}
+      </small>
     </div>
   );
 }

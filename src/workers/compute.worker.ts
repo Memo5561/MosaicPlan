@@ -59,7 +59,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         const cache = new CutCache();
         const opts = { reservePct: msg.reservePct, groutDepthMm: msg.groutDepthMm };
         const total = computeStats(layout, data, msg.palette, msg.materials, opts, undefined, cache);
-        const ranges = msg.ranges.map((r) => ({ key: r.key, stats: computeStats(layout, data, msg.palette, msg.materials, opts, r.range, cache) }));
+        const ranges = (msg.ranges ?? []).map((r) => ({ key: r.key, stats: computeStats(layout, data, msg.palette, msg.materials, opts, r.range, cache) }));
         post({ type: 'stats', id: msg.id, total, ranges });
         break;
       }

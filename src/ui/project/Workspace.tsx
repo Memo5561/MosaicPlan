@@ -493,7 +493,7 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
             {step === 'size' && <StepSize api={api} />}
             {step === 'tiles' && <StepTiles api={api} />}
             {step === 'joint' && <StepJoint api={api} />}
-            {step === 'colors' && <StepColors api={api} materials={materials} />}
+            {step === 'colors' && <StepColors api={api} materials={materials} onGo={goStep} />}
             {step === 'shapes' && (
               <>
                 {photoMissing && (

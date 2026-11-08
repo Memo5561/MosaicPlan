@@ -16,7 +16,7 @@ export const de: Record<string, string> = {
   'w4cpa.bg.presetActive': '✓ Schnitte konzentriert (×{f})',
   'w4cpa.bg.reset': 'Zurücksetzen',
   'w4cpa.bg.hint':
-    'Außerhalb aller Gesichts- und Detailbereiche wird jeder Schnitt um den Faktor teurer, die Kantendichte (Textur, Spiegelungen) macht ihn dort nicht mehr billiger, und feinere Steine (2×2/3×3) gibt es dort keine. In den Bereichen ändert sich nichts. Wie viele geschnittene Steine wo liegen, zeigt Schritt 7 nach der Berechnung – exakt gezählt.',
+    'Außerhalb aller Gesichts- und Detailbereiche wird jeder Schnitt um den Faktor teurer, die Kantendichte (Textur, Spiegelungen) macht ihn dort nicht mehr billiger, und feinere Steine (2×2/3×3) gibt es dort keine. In den Bereichen bleiben Steinformen und Schnitte gleich. Wie viele geschnittene Steine wo liegen, zeigt Schritt 7 nach der Berechnung – exakt gezählt.',
   'w4cpa.bg.hairHint': 'Tipp: Haare und wichtige Konturen als Detailbereich markieren, damit sie ihre Schnitte behalten.',
   'w4cpa.bg.noRegions': 'Schnitte auf Gesicht oder Details konzentrieren: zuerst einen Gesichts- oder Detailbereich markieren (Bild rechts bzw. unten).',
   'w4cpa.bg.inactive': 'Eingestellt: Schnitt ×{f} teurer – wirkt erst, wenn ein Bereich markiert ist.',
@@ -99,7 +99,7 @@ export const en: Record<string, string> = {
   'w4cpa.bg.presetActive': '✓ Cuts focused (×{f})',
   'w4cpa.bg.reset': 'Reset',
   'w4cpa.bg.hint':
-    'Outside all face and detail areas every cut becomes costlier by this factor, edge density (texture, reflections) no longer makes it cheaper there, and there are no finer stones (2×2/3×3) there. Inside the areas nothing changes. Step 7 shows how many cut stones lie where after computing – counted exactly.',
+    'Outside all face and detail areas every cut becomes costlier by this factor, edge density (texture, reflections) no longer makes it cheaper there, and there are no finer stones (2×2/3×3) there. Inside the areas stone shapes and cuts stay the same. Step 7 shows how many cut stones lie where after computing – counted exactly.',
   'w4cpa.bg.hairHint': 'Tip: mark hair and important contours as detail areas so they keep their cuts.',
   'w4cpa.bg.noRegions': 'To focus cuts on the face or details, first mark a face or detail area (image on the right or below).',
   'w4cpa.bg.inactive': 'Set: cut ×{f} costlier – takes effect only once an area is marked.',
@@ -179,7 +179,7 @@ export const tr: Record<string, string> = {
   'w4cpa.bg.presetActive': '✓ Kesimler yoğunlaştırıldı (×{f})',
   'w4cpa.bg.reset': 'Sıfırla',
   'w4cpa.bg.hint':
-    'Tüm yüz ve ayrıntı alanlarının dışında her kesim bu katsayı kadar pahalılaşır, kenar yoğunluğu (doku, yansımalar) onu orada artık ucuzlatmaz ve orada daha küçük taşlar (2×2/3×3) olmaz. Alanların içinde hiçbir şey değişmez. Kaç kesimli taşın nerede olduğunu hesaplamadan sonra 7. adım gösterir – tam sayılmış olarak.',
+    'Tüm yüz ve ayrıntı alanlarının dışında her kesim bu katsayı kadar pahalılaşır, kenar yoğunluğu (doku, yansımalar) onu orada artık ucuzlatmaz ve orada daha küçük taşlar (2×2/3×3) olmaz. Alanların içinde taş şekilleri ve kesimler aynı kalır. Kaç kesimli taşın nerede olduğunu hesaplamadan sonra 7. adım gösterir – tam sayılmış olarak.',
   'w4cpa.bg.hairHint': 'İpucu: Saçları ve önemli konturları ayrıntı alanı olarak işaretleyin, böylece kesimlerini korurlar.',
   'w4cpa.bg.noRegions': 'Kesimleri yüzde veya ayrıntılarda yoğunlaştırmak için önce bir yüz veya ayrıntı alanı işaretleyin (sağdaki veya alttaki resim).',
   'w4cpa.bg.inactive': 'Ayarlı: kesim ×{f} daha pahalı – ancak bir alan işaretlendiğinde etkili olur.',

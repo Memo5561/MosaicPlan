@@ -259,7 +259,7 @@ async function touchDrag(cdp, page, x0, y0, dx, dy, steps = 10) {
   await page.click('[data-testid="step-shapes"]');
   await page.waitForSelector('[data-testid="face-detect-status"][data-status="none"]', { timeout: 20000 }).catch(() => {});
   const none = await page.textContent('[data-testid="face-detect-status"]').catch(() => '');
-  check('Landschaft: „Kein Gesicht gefunden.“, keine Bereiche, Karte zum Markieren von Hand', /^Kein Gesicht gefunden\./.test(none) && (await readProject(page)).regions.length === 0 && (await page.isVisible('[data-testid="face-manual-card"]')), none);
+  check('Landschaft: „Kein Gesicht automatisch erkannt …“, keine Bereiche, Karte zum Markieren von Hand', /^Kein Gesicht automatisch erkannt/.test(none) && (await readProject(page)).regions.length === 0 && (await page.isVisible('[data-testid="face-manual-card"]')), none);
   await shot(page, '.w4fd-regions', '05-landscape-none.png');
   await ctx.close();
 

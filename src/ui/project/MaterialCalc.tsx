@@ -100,8 +100,14 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
     </span>
   );
   return (
-    <div data-testid="material-calc" className="w4lw-mc">
+    <div data-testid="material-calc" className="w4lw-mc" data-busy={api.statsBusy ? 'yes' : 'no'}>
       <div className="w4lw-mc-a">
+        {/* nach einer Änderung (Reserve, Palette, Steine …) zeigen die Zahlen bis zum neuen Durchlauf den alten Stand */}
+        {api.statsBusy && (
+          <p className="muted small" role="status" data-testid="mc-updating">
+            {t('w4fx.stats.updating')}
+          </p>
+        )}
         <Field label={t('plan.reserve')}>
           <div className="btn-row wrap">
             {reserves.map((r) => (

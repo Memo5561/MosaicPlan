@@ -4,7 +4,10 @@ import { timestampedName, type SaveResult } from '../../platform';
 import { downloadBlob, Modal, safeFileName } from '../components';
 import { SaveResultNote, saveNoteState } from '../SaveResultNote';
 import { saveErrorText } from './SaveStatus';
-import { classifySaveError, type ProjectApi } from './useProject';
+import { classifySaveError, layoutParamsOf, type ProjectApi } from './useProject';
+import { sameLayoutParams } from '../../core/progressCarry';
+import type { LayoutParams } from '../../core/layout';
+import { staleReasonLabels, staleReasons, type StaleReason } from './staleReasons';
 import '../css/w2-workspace-shell.css';
 
 /** Was ein Neuberechnen verwerfen würde – exakte Zahlen aus dem aktuellen Stand. */
@@ -45,6 +48,23 @@ export function lossOf(api: ProjectApi): RecomputeLoss | null {
     storedPlaced: !api.computed && api.integrityError ? (api.rejected?.placed ?? 0) : 0,
     storedCells: api.rejected?.cells ?? 0,
   });
+}
+
+/**
+ * Ändert das neue Ergebnis das Raster (Größe, Steinmaß, Fuge, Randmodus, kleinste Randsteinbreite)? Dann übernimmt
+ * carryOverProgress keinen verlegten Stein (Status 'layout') – das steht schon vor der Berechnung fest und wird so
+ * gesagt, statt einer Bedingung. null: gleiches Raster oder unbekannt.
+ */
+export function gridChangeReasons(oldLp: LayoutParams | undefined | null, newLp: LayoutParams | undefined | null): StaleReason[] | null {
+  if (!oldLp || !newLp || sameLayoutParams(oldLp, newLp)) return null;
+  const r = staleReasons(JSON.stringify({ l: oldLp }), JSON.stringify({ l: newLp }));
+  return r.length && !r.every((x) => x.group === 'other') ? r : [{ group: 'layout' }];
+}
+
+/** Rasteränderung der anstehenden Berechnung (pending: des wartenden Ergebnisses) gegenüber dem angezeigten Mosaik. */
+export function gridChangeOf(api: ProjectApi, pending: boolean): StaleReason[] | null {
+  if (!api.computed || !api.rec) return null;
+  return gridChangeReasons(api.computed.layoutParams, pending ? api.pendingResult?.lp : layoutParamsOf(api.rec.settings));
 }
 
 /** Aufzählung „1.526 als verlegt markierte Steine (25,6 % des Mosaiks), 3 manuelle Änderungen und 2 geänderte Palettenfarben“. */
@@ -208,6 +228,10 @@ export function useGuardedCompute(api: ProjectApi, onDone: () => void) {
   const open = pendingMode || !!ask;
   const mode: 'compute' | 'apply' = pendingMode ? 'apply' : 'compute';
   const downloadState = download?.result ? saveNoteState(download.result) : null;
+  // Raster ändert sich → alle verlegten Steine werden wieder offen (feststehend, keine Bedingung)
+  const gridChange = open ? gridChangeOf(api, pendingMode) : null;
+  const layoutLoss = !!gridChange && !shown?.stored;
+  const gridText = gridChange ? staleReasonLabels(gridChange, t, n).join(', ') : '';
   const dialog: ReactNode = open ? (
     <Modal
       title={pendingMode ? t('w2ws.pending.title') : t('w2ws.guard.title')}
@@ -234,15 +258,19 @@ export function useGuardedCompute(api: ProjectApi, onDone: () => void) {
         </div>
       }
     >
-      <div data-testid="recompute-guard" data-mode={mode}>
+      <div data-testid="recompute-guard" data-mode={mode} data-grid={gridChange ? 'changed' : 'same'}>
         <p className="w2ws-guard-lead" data-testid="guard-loss">
           {pendingMode
             ? shown
-              ? t('w2ws.pending.lead', { list: lossList(shown, t, n) })
+              ? layoutLoss && shown.placed > 0
+                ? tCount(t, 'w4fx.pending.leadLayout', shown.placed, { list: lossList(shown, t, n), reasons: gridText, n: n(shown.placed) })
+                : t('w2ws.pending.lead', { list: lossList(shown, t, n) })
               : t('w2ws.pending.leadNone')
             : shown?.stored
               ? t('w2ws.guard.leadStored', { list: lossList(shown, t, n) })
-              : t('w2ws.guard.lead', { list: shown ? lossList(shown, t, n) : '' })}
+              : shown && layoutLoss && shown.placed > 0
+                ? tCount(t, 'w4fx.guard.leadLayout', shown.placed, { list: lossList(shown, t, n), reasons: gridText, n: n(shown.placed) })
+                : t('w2ws.guard.lead', { list: shown ? lossList(shown, t, n) : '' })}
         </p>
         <p className="muted small">{pendingMode ? t('w2ws.pending.info') : t('w2ws.guard.backupInfo')}</p>
         {failure && (

@@ -9,7 +9,7 @@ import { carryOverProgress, type CarryOverReport, type CarrySide } from '../../c
 import { applyDiff, applyDirty, buildProgressIndex, countProgress, progressFromIndex, type ProgressIndex } from '../../core/progressIndex';
 import { packMosaic, unpackMosaic, type MosaicDataWithRev } from '../../core/serialize';
 import { popcount, type Stats } from '../../core/stats';
-import { DEFAULT_ADJUST, type ImageAdjust, type Material, type MosaicData, type PaletteColor, type ProjectSettings, type Region } from '../../core/types';
+import { canonShapes, DEFAULT_ADJUST, type ImageAdjust, type Material, type MosaicData, type PaletteColor, type ProjectSettings, type Region } from '../../core/types';
 import {
   commitComputed,
   DELETED,
@@ -34,6 +34,7 @@ import {
   type SaveGuard,
   type SaveParts,
   type StoredMosaicNoProgress,
+  type SummaryPatch,
 } from '../../storage/db';
 import { beginCompute, isComputing, onComputeLock } from '../../storage/computeLock';
 import { buildProjectExport, duplicateProject } from '../../storage/projects';
@@ -58,6 +59,7 @@ import {
 import { estimatePreviewMs, isSlowDevice, isTypingTarget, previewDebounceMs, previewPolicy, type PreviewManualReason } from './previewPolicy';
 import type { Lang } from '../../i18n';
 import { announceNotice } from '../SaveResultNote';
+import { sameComputeKey } from './staleReasons';
 
 export function layoutParamsOf(s: ProjectSettings): LayoutParams {
   return { widthMm: s.widthMm, heightMm: s.heightMm, tileW: s.tileW, tileH: s.tileH, joint: s.joint, edgeMode: s.edgeMode, minCutMm: s.minCutMm };
@@ -216,7 +218,8 @@ export function computeKey(r: ProjectRecord): string {
   const s = r.settings;
   return JSON.stringify({
     l: layoutParamsOf(s),
-    sh: s.shapes,
+    // feste Reihenfolge der Formfelder (siehe canonShapes) – sonst wäre derselbe Stand nach „×1 und zurück“ „geändert“
+    sh: canonShapes(s.shapes),
     pm: s.paletteMode,
     cc: s.colorCount,
     di: s.dither,
@@ -286,6 +289,8 @@ export interface PendingCommit {
 export interface PendingResult {
   /** Zeitpunkt, an dem das Ergebnis fertig wurde (ms) */
   at: number;
+  /** Raster des wartenden Ergebnisses (ändert es sich, geht der Verlegefortschritt sicher ganz verloren) */
+  lp?: LayoutParams;
 }
 
 /** Verlegte Steine im gespeicherten Fortschritt (nur wenn er zum gespeicherten Raster passt). */
@@ -296,10 +301,11 @@ export function placedInStored(m: StoredMosaicNoProgress | undefined, prog: Uint
   return n;
 }
 
-type SaveKey = 'rec' | 'mosaic' | 'progress' | 'image';
-const KEYS: SaveKey[] = ['rec', 'mosaic', 'progress', 'image'];
+/** 'summary': nur meta.progressSummary (Listen-Fortschritt) – wird gezielt im gespeicherten Projekt geändert, nie als ganzer Stand */
+type SaveKey = 'rec' | 'mosaic' | 'progress' | 'image' | 'summary';
+const KEYS: SaveKey[] = ['rec', 'mosaic', 'progress', 'image', 'summary'];
 /** Entprellzeiten je Teil (ms) */
-export const SAVE_DEBOUNCE: Record<SaveKey, number> = { rec: 250, progress: 150, mosaic: 300, image: 0 };
+export const SAVE_DEBOUNCE: Record<SaveKey, number> = { rec: 250, progress: 150, mosaic: 300, image: 0, summary: 150 };
 /** Spätestens nach dieser Zeit wird auch bei Dauerbearbeitung gespeichert (ms) */
 const SAVE_MAX_WAIT = 2000;
 /** Wartezeiten bis zum nächsten automatischen Versuch nach einem Fehler (ms) */
@@ -443,7 +449,7 @@ export function describeComputeInputs(r: ProjectRecord, env: ComputeEnv): Comput
     regions: r.regions,
     layoutParams: lp,
     params: {
-      shapes: s.shapes,
+      shapes: canonShapes(s.shapes), // feste Feldreihenfolge: gleicher Stand ⇒ gleicher Fingerabdruck (Vorschau wiederverwendbar)
       paletteMode: s.paletteMode,
       colorCount: s.colorCount,
       dither: s.dither,
@@ -863,7 +869,6 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const [committedAt, setCommittedAt] = useState(0);
   const [computeError, setComputeError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [sectionStats, setSectionStats] = useState<Map<string, Stats>>(new Map());
   const [statsBusy, setStatsBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   /**
@@ -943,10 +948,10 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   // Jede Änderung erhöht die Generation ihres Teils. Ein Speichervorgang schreibt ALLE ungespeicherten
   // Teile in einer Transaktion; ein Teil gilt erst als gespeichert, wenn diese Transaktion abgeschlossen ist.
   const sv = useRef({
-    gen: { rec: 0, mosaic: 0, progress: 0, image: 0 } as Record<SaveKey, number>,
-    saved: { rec: 0, mosaic: 0, progress: 0, image: 0 } as Record<SaveKey, number>,
+    gen: { rec: 0, mosaic: 0, progress: 0, image: 0, summary: 0 } as Record<SaveKey, number>,
+    saved: { rec: 0, mosaic: 0, progress: 0, image: 0, summary: 0 } as Record<SaveKey, number>,
     /** höchste Generation, die gerade geschrieben wird oder geschrieben wurde */
-    writing: { rec: 0, mosaic: 0, progress: 0, image: 0 } as Record<SaveKey, number>,
+    writing: { rec: 0, mosaic: 0, progress: 0, image: 0, summary: 0 } as Record<SaveKey, number>,
     timers: {} as Partial<Record<SaveKey, { t: number; first: number }>>,
     inflight: new Set<Promise<void>>(),
     retryTimer: 0,
@@ -959,6 +964,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     /** Eigene Berechnung konnte nicht gespeichert werden → nächster Vorgang schreibt den Stand im Speicher vollständig */
     force: false,
     pendingImage: null as ImageRecord | null,
+    /** zu speichernder Listen-Fortschritt (SaveKey 'summary') */
+    pendingSummary: null as SummaryPatch | null,
   });
   const persistRef = useRef<(mode: 'normal' | 'unload') => Promise<void>>(() => Promise.resolve());
 
@@ -1037,6 +1044,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         parts.image = s.pendingImage;
         covered.add('image');
       }
+      if (keys.includes('summary') && s.pendingSummary) {
+        // nur dieses Feld – der ganze Projektstand nur, wenn er selbst geändert wurde (dann enthält er es schon)
+        parts.summary = s.pendingSummary;
+        covered.add('summary');
+      }
       // ohne Datenquelle (z. B. Raster ersetzt) gibt es nichts mehr zu schreiben
       for (const k of keys) if (!covered.has(k)) s.saved[k] = s.writing[k] = s.gen[k];
       if (!covered.size) {
@@ -1061,6 +1073,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
             for (const k of covered) s.saved[k] = Math.max(s.saved[k], gens[k]);
             if (outcome === 'ok' && parts.rec) paletteBaseRef.current = parts.rec.palette;
             if (parts.image && s.pendingImage === parts.image) s.pendingImage = null;
+            if (parts.summary && s.pendingSummary === parts.summary) s.pendingSummary = null;
             if (wasForced && guard === 'exists') s.force = false;
             s.retryAttempt = 0;
             window.clearTimeout(s.retryTimer);
@@ -1161,9 +1174,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, [liveIndex]);
 
   /**
-   * Schreibt den Verlegefortschritt für Projektlisten (meta.progressSummary) in den Projektstand, wenn er sich
-   * geändert hat; gespeichert wird er zusammen mit dem Fortschritt (eine Transaktion). `bump`: als Bearbeitung zählen
-   * (Änderungszeitpunkt), nicht beim bloßen Nachtragen nach dem Laden.
+   * Führt den Verlegefortschritt für Projektlisten (meta.progressSummary) nach, wenn er sich geändert hat. Gespeichert
+   * wird NUR dieses Feld (SaveKey 'summary', gezielte Änderung des gespeicherten Projekts) – nicht der ganze Projektstand
+   * dieses Tabs: ein Antippen beim Verlegen macht so keine Änderungen aus einem anderen Tab rückgängig. Im Speicher
+   * steht der Wert trotzdem im Projektstand (Anzeige; eine echte Bearbeitung speichert ihn mit). `bump`: als
+   * Bearbeitung zählen (Änderungszeitpunkt), nicht beim bloßen Nachtragen nach dem Laden.
    */
   const syncSummary = useCallback(
     (bump: boolean) => {
@@ -1174,8 +1189,10 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       const next: ProgressSummary = { placed: index.placedAll, total: index.totalAll, ...(r.mosaicRev !== undefined ? { rev: r.mosaicRev } : {}) };
       const cur = r.meta.progressSummary;
       if (cur && cur.placed === next.placed && cur.total === next.total && (cur.rev ?? null) === (next.rev ?? null)) return;
-      setRecBoth({ ...r, meta: { ...r.meta, progressSummary: next, ...(bump ? { updatedAt: Date.now() } : {}) } });
-      markDirty('rec');
+      const updatedAt = bump ? Date.now() : undefined;
+      setRecBoth({ ...r, meta: { ...r.meta, progressSummary: next, ...(updatedAt !== undefined ? { updatedAt } : {}) } });
+      sv.current.pendingSummary = { value: next, ...(updatedAt !== undefined ? { updatedAt } : {}) };
+      markDirty('summary');
     },
     [syncIndex, setRecBoth, markDirty],
   );
@@ -1566,7 +1583,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     return sectionsFor(computed.layout, rec.settings);
   }, [computed, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stale = !!rec && !!computed && rec.computedWith !== computeKey(rec);
+  const stale = !!rec && !!computed && !sameComputeKey(rec.computedWith, computeKey(rec));
 
   /**
    * Palettenfarben, die seit der letzten Berechnung bearbeitet wurden (HEX, Name, Material, hinzugefügt) und beim
@@ -1588,8 +1605,9 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [computed, version]);
   /** Stein, der in der Vorschau (Schritt 8) geöffnet werden soll (z. B. aus dem Hinweis zu ungültigen Freiformsteinen) */
-  const [stoneRequest, setStoneRequest] = useState<{ row: number; col: number; n: number } | null>(null);
-  const requestStone = useCallback((row: number, col: number) => setStoneRequest((p) => ({ row, col, n: (p?.n ?? 0) + 1 })), []);
+  const [stoneRequest, setStoneRequest] = useState<{ row: number; col: number; piece: number; n: number } | null>(null);
+  /** Stein in der Vorschau öffnen (Teilstück ab 0; die Vorschau nimmt Teil 0, wenn die Zelle so viele Teile nicht hat) */
+  const requestStone = useCallback((row: number, col: number, piece = 0) => setStoneRequest((p) => ({ row, col, piece, n: (p?.n ?? 0) + 1 })), []);
   /**
    * Erledigte Anforderung vergessen (beim Verlassen von Schritt 8, wenn die Vorschau nicht angezeigt wird) – sonst
    * öffnete Schritt 8 den Stein bei jedem erneuten Öffnen wieder (z. B. nach dem nächsten Berechnen).
@@ -1666,7 +1684,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     setStatsBusy(true);
     let req: Parameters<typeof runWorker<'stats'>>[1];
     try {
-      const secs = sectionsFor(c.layout, r.settings);
+      // nur die Gesamtstatistik: Zahlen je Abschnitt liefern progressIndex/laying.ts exakt – kein Durchlauf je Abschnitt
       req = {
         type: 'stats',
         layoutParams: c.layoutParams,
@@ -1675,7 +1693,6 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         materials: materialsRef.current,
         reservePct: r.settings.reservePct,
         groutDepthMm: r.settings.groutDepthMm,
-        ranges: secs.sections.map((x) => ({ key: x.id, range: { r0: x.r0, r1: x.r1, c0: x.c0, c1: x.c1 } })),
       };
     } catch (e) {
       console.error(e);
@@ -1689,7 +1706,6 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
           // Nur das Ergebnis der neuesten Anforderung zeigen (sonst stünden veraltete Zahlen da)
           if (!mounted.current || my !== ctl.req || ctl.scheduled) return;
           setStats(res.total);
-          setSectionStats(new Map(res.ranges.map((x) => [x.key, x.stats])));
         },
         (e: unknown) => {
           // abgebrochen (veraltet): kein Fehler
@@ -1734,7 +1750,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     return () => window.clearTimeout(timer);
     // progressVersion bewusst NICHT: Antippen im Verlegemodus startet keinen Statistik-Durchlauf
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, version, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.sectionMode, rec?.settings.sectionWmm, rec?.settings.sectionHmm, rec?.settings.sectionCols, rec?.settings.sectionRows]);
+  }, [computed, version, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm]);
 
   // ---------- Berechnung und Live-Vorschau (gemeinsamer Rechenweg, siehe describeComputeInputs)
   /** Eingaben einer Berechnung für den Projektstand `r` mit dem aktuellen Foto, den Materialien und der Sprache. */
@@ -1856,7 +1872,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       },
       hold: (job) => {
         pendingRef.current = job;
-        setPendingResult({ at: Date.now() });
+        setPendingResult({ at: Date.now(), lp: job.lp });
       },
       applyCommitted: (job, committed, saveFailure) => handlerImpl.current.applyCommitted(job, committed, saveFailure),
       onError: (code) => {
@@ -2139,7 +2155,6 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     version,
     progressVersion,
     stats,
-    sectionStats,
     progress,
     /** Statistik wird gerade (neu) berechnet – angezeigte Zahlen sind bis dahin die der letzten Berechnung */
     statsBusy,

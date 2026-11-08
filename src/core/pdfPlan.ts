@@ -165,8 +165,14 @@ export const CODE_MIN_CELL = 2.2;
 export const CODE_MIN_PIECE = 1.8;
 /** Kleinstes Inkreismaß (4 · Fläche ÷ Umfang, Papier-mm), bei dem die Vorlagennummer „T12“ als zweite Zeile in den Stein passt. */
 export const TNO_MIN = 4.5;
-/** Größter Codeplan-Zoom; noch kleinere Teile stehen mit Farbnummer in der Zuschnittliste. */
+/** Größter Codeplan-Zoom für zugeschnittene Kleinstteile; noch kleinere stehen mit Farbnummer in der Zuschnittliste. */
 export const CODE_PLAN_MAX_K = 8;
+/**
+ * Größter Codeplan-Zoom für nicht zugeschnittene Steine (ganze Steine, feinere Steine): bis zu diesem Faktor wird
+ * vergrößert, damit jeder solche Stein eine Nummer bekommt – sie stehen in keiner Zuschnittliste. Darüber (winzige
+ * Steine bei sehr kleinem Maßstab) bleibt der Codeplan unvollständig und sagt das ausdrücklich.
+ */
+export const CODE_PLAN_WHOLE_MAX_K = 12;
 
 /** Maße eines Steins für die Beschriftung: Begrenzungsrechteck w × h und kleinste Rasterseite (mm im Mosaik). */
 export interface LabelDims {
@@ -185,14 +191,21 @@ export function labelOk(p: LabelDims, s: number): boolean {
 }
 
 /**
- * Kleinster ganzzahliger Zoom k ≥ 2, bei dem alle Steine (kleinste Rasterseite `tile`, kleinste Teilseite `minSide`)
- * bei Maßstab s·k eine Farbnummer bekommen; höchstens CODE_PLAN_MAX_K (complete = false: Kleinstteile bleiben ohne
- * Nummer und stehen in der Zuschnittliste).
+ * Codeplan-Zoom k ≥ 2 (Maßstab s·k). Kleinste Rasterseite `tile`, kleinste Seite der zugeschnittenen Steine `minSide`,
+ * kleinste Seite der NICHT zugeschnittenen Steine `minSideWhole` (Standard: Rasterseite).
+ *  - Nicht zugeschnittene Steine stehen in keiner Zuschnittliste: für sie wird bis CODE_PLAN_WHOLE_MAX_K vergrößert.
+ *  - Zugeschnittene Kleinstteile stehen mit Farbnummer in der Zuschnittliste: für sie höchstens CODE_PLAN_MAX_K
+ *    (bzw. so weit, wie die ganzen Steine ohnehin brauchen).
+ * complete: alle Steine bekommen eine Nummer; wholeComplete: alle nicht zugeschnittenen Steine bekommen eine Nummer
+ * (false nur bei winzigen Steinen auf sehr kleinem Maßstab – der Codeplan sagt das dann ausdrücklich).
  */
-export function codePlanZoom(tile: number, minSide: number, s: number): { k: number; complete: boolean } {
-  const need = (v: number, min: number) => (v > 0 ? Math.ceil(min / (v * s) - EPS) : Infinity);
-  const k = Math.max(2, need(tile, CODE_MIN_CELL), need(minSide, CODE_MIN_PIECE));
-  return k <= CODE_PLAN_MAX_K ? { k, complete: true } : { k: CODE_PLAN_MAX_K, complete: false };
+export function codePlanZoom(tile: number, minSide: number, s: number, minSideWhole = tile): { k: number; complete: boolean; wholeComplete: boolean } {
+  const need = (v: number, min: number) => (v > 0 && Number.isFinite(v) ? Math.ceil(min / (v * s) - EPS) : v > 0 ? 0 : Infinity);
+  const kWhole = Math.max(need(tile, CODE_MIN_CELL), need(minSideWhole, CODE_MIN_PIECE));
+  const kAll = Math.max(kWhole, need(minSide, CODE_MIN_PIECE));
+  const kW = Math.min(kWhole, CODE_PLAN_WHOLE_MAX_K);
+  const k = Math.max(2, kW, Math.min(kAll, Math.max(CODE_PLAN_MAX_K, kW)));
+  return { k, complete: k >= kAll, wholeComplete: k >= kWhole };
 }
 
 /** Teile eines Codeplans: derselbe Zellbereich wie das Blatt, bei Maßstab s·k gleichmäßig auf Seiten verteilt. */

@@ -3,7 +3,7 @@ import { exportProject } from '../../storage/projects';
 import { tCount, useI18n } from '../../i18n';
 import { Badge, downloadBlob, ProgressBar, safeFileName } from '../components';
 import { EmptyState } from './EmptyState';
-import { lossList, lossOf } from './RecomputeGuard';
+import { gridChangeOf, lossList, lossOf } from './RecomputeGuard';
 import { computedDeltaE, deltaERating, restoreComputedSettings, splitRestorable, staleReasonLabels, type StaleReason } from './staleReasons';
 import { computeOverall } from './previewPolicy';
 import { LayoutSummary } from './StepGeometry';
@@ -119,6 +119,8 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
   const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Was ein Neuberechnen jetzt verwerfen würde (exakte Zahlen; vor dem Berechnen wird nachgefragt)
   const loss = api.computed ? lossOf(api) : null;
+  // Raster ändert sich: verlegte Steine werden sicher alle wieder offen (statt „bei gleichem Raster …“)
+  const gridChange = loss && loss.placed > 0 ? gridChangeOf(api, false) : null;
   // Änderungen seit der letzten Berechnung
   const reasonLabels = staleReasonLabels(reasons, t, n);
   // Was „Änderungen verwerfen“ hier wirklich wiederherstellt (nach einem Fotowechsel nicht Bereiche/Zuschnitt des alten Fotos)
@@ -269,8 +271,10 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
         {api.computed &&
           !api.computing &&
           (loss ? (
-            <p className="warn small w2ws-overwrite" data-testid="overwrite-warn">
-              {t('w2ws.overwriteCounts', { list: lossList(loss, t, n) })}
+            <p className="warn small w2ws-overwrite" data-testid="overwrite-warn" data-grid={gridChange ? 'changed' : 'same'}>
+              {loss.placed > 0 && gridChange
+                ? tCount(t, 'w4fx.overwriteLayout', loss.placed, { list: lossList(loss, t, n), reasons: staleReasonLabels(gridChange, t, n).join(', '), n: n(loss.placed) })
+                : t('w2ws.overwriteCounts', { list: lossList(loss, t, n) })}
               {paletteRebuilt && ` ${t('w2ws.paletteRebuilt')}`}
             </p>
           ) : (
@@ -372,7 +376,20 @@ export function StepCompute({ api, onCompute, onGo, reasons }: { api: ProjectApi
         {pvd ? (
           <AccentsPanel api={api} d={pvd} formula={previewDE} stale={false} fromPreview testId="compute-accents" />
         ) : (
-          d && api.computed && <AccentsPanel api={api} d={d} formula={resultDE} stale={api.stale} testId="compute-accents" />
+          d &&
+          api.computed && (
+            <AccentsPanel
+              api={api}
+              d={d}
+              formula={resultDE}
+              stale={api.stale}
+              testId="compute-accents"
+              onOpenStone={(row, col, piece) => {
+                api.requestStone(row, col, piece);
+                onGo('preview');
+              }}
+            />
+          )
         )}
       </div>
     </div>

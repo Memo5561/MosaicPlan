@@ -8,20 +8,55 @@
  */
 import { useState } from 'react';
 import { addPaletteColor } from '../../core/edits';
-import type { ComputeDiagnostics, MissingAccent } from '../../core/mosaic';
-import { ACCENT_MIN_DE } from '../../core/mosaic';
+import type { AccentSkipped, ComputeDiagnostics, MissingAccent } from '../../core/mosaic';
+import { ACCENT_MAX_GROUPS, ACCENT_MIN_DE } from '../../core/mosaic';
+import { parseCellId } from '../../core/layout';
 import type { Material } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
 import { Swatch } from '../components';
 import { addPinned, isPinned, normalizeHexInput, pinnedApplies, pinnedResultFor, removePinned, renamePinned } from './pinnedColors';
 import type { ProjectApi } from './useProject';
 import '../css/w4-cut-placement-accents.css';
+import '../css/w4-review-fixes.css';
 
 /** Wie viele Steinbezeichnungen je Vorschlag direkt sichtbar sind (die übrigen gespeicherten im Tooltip) */
 const IDS_SHOWN = 8;
 
 function deLabel(formula: '2000' | '76' | null): string {
   return formula === '76' ? 'ΔE76' : formula === '2000' ? 'ΔE00' : 'ΔE';
+}
+
+/** Wurden Gruppen abweichender Steine übersprungen (nicht vorgeschlagen)? */
+export function accentsSkippedAny(sk: AccentSkipped | undefined): boolean {
+  return !!sk && !!(sk.nearPalette?.groups || sk.noMaterial?.groups || sk.inPalette?.groups || sk.ungrouped?.stones);
+}
+
+/**
+ * Gruppen abweichender Steine, die nicht vorgeschlagen werden – mit Grund und exakter Anzahl. So steht nie
+ * „keine Gruppe weicht ab“, wenn Steine abweichen, für die nur kein passendes Material da ist.
+ */
+function AccentSkippedNotes({ sk, de, thr, half, testId }: { sk: AccentSkipped; de: string; thr: string; half: string; testId: string }) {
+  const { t, n } = useI18n();
+  const rows: { key: string; why: string; text: string }[] = [];
+  const add = (why: 'noMaterial' | 'inPalette' | 'nearPalette') => {
+    const c = sk[why];
+    if (!c || !c.groups) return;
+    rows.push({ key: why, why, text: tCount(t, `w4fx.acc.skip.${why}`, c.groups, { groups: n(c.groups), stones: n(c.stones), de, thr, half }) });
+  };
+  add('noMaterial');
+  add('inPalette');
+  add('nearPalette');
+  if (sk.ungrouped?.stones) rows.push({ key: 'ungrouped', why: 'ungrouped', text: tCount(t, 'w4fx.acc.skip.ungrouped', sk.ungrouped.stones, { stones: n(sk.ungrouped.stones), de, thr, max: ACCENT_MAX_GROUPS }) });
+  if (!rows.length) return null;
+  return (
+    <ul className="w4fx-acc-skipped small" data-testid={`${testId}-skipped`}>
+      {rows.map((r) => (
+        <li key={r.key} data-why={r.why} data-testid={`${testId}-skipped-row`}>
+          {r.text}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function AccentsPanel({
@@ -31,6 +66,7 @@ export function AccentsPanel({
   stale,
   fromPreview = false,
   testId = 'accents',
+  onOpenStone,
 }: {
   api: ProjectApi;
   d: ComputeDiagnostics | undefined;
@@ -38,6 +74,8 @@ export function AccentsPanel({
   stale: boolean;
   fromPreview?: boolean;
   testId?: string;
+  /** Stein in Schritt 8 öffnen (Zeile, Spalte, Teilstück ab 0); nur für Steine des gespeicherten Mosaiks */
+  onOpenStone?: (row: number, col: number, piece: number) => void;
 }) {
   const { t, n, lang } = useI18n();
   const [notice, setNotice] = useState<string | null>(null);
@@ -49,12 +87,27 @@ export function AccentsPanel({
   const locale = lang === 'de' ? 'de-DE' : lang === 'tr' ? 'tr-TR' : 'en-GB';
   const f1 = (v: number) => (Number.isFinite(v) ? v.toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '–');
   const thr = f1(ACCENT_MIN_DE);
+  const sk = d.missingAccentsSkipped;
+  const skippedNotes = sk ? <AccentSkippedNotes sk={sk} de={de} thr={thr} half={f1(ACCENT_MIN_DE / 2)} testId={testId} /> : null;
+  // Steinbezeichnungen öffnen nur Steine des gespeicherten Mosaiks (Vorschau-Steine gibt es in Schritt 8 noch nicht)
+  const layout = !fromPreview && onOpenStone && api.computed ? api.computed.layout : null;
   if (!list.length) {
+    if (sk && !accentsSkippedAny(sk)) {
+      return (
+        <p className="muted small w4cpa-acc-none" data-testid={`${testId}-none`}>
+          {t('w4cpa.acc.none', { de, thr })}
+          {stale && <span> {t('w4cpa.acc.stale')}</span>}
+        </p>
+      );
+    }
     return (
-      <p className="muted small w4cpa-acc-none" data-testid={`${testId}-none`}>
-        {t('w4cpa.acc.none', { de, thr })}
-        {stale && <span> {t('w4cpa.acc.stale')}</span>}
-      </p>
+      <div className="muted small w4cpa-acc-none" data-testid={`${testId}-nosuggest`} data-known={sk ? 'yes' : 'no'}>
+        <p>
+          {t(sk ? 'w4fx.acc.noneShown' : 'w4fx.acc.noneUnknown', { de, thr })}
+          {stale && <span> {t('w4cpa.acc.stale')}</span>}
+        </p>
+        {skippedNotes}
+      </div>
     );
   }
   const pin = (hex: string) => {
@@ -103,7 +156,33 @@ export function AccentsPanel({
                   </div>
                 )}
                 <div className="small w4cpa-acc-ids" title={a.cellIds.join(', ')} data-testid={`${testId}-ids`}>
-                  {t('w4cpa.acc.ids', { ids: shown.join(', ') })}
+                  {layout && onOpenStone ? (
+                    <>
+                      {t('w4fx.acc.idsLabel')}{' '}
+                      {shown.map((id) => {
+                        const p = parseCellId(layout, id);
+                        return p ? (
+                          <button
+                            key={id}
+                            type="button"
+                            className="btn small w4fx-id-btn"
+                            title={t('w4fx.acc.openStone', { id })}
+                            data-testid={`${testId}-open`}
+                            data-id={id}
+                            onClick={() => onOpenStone(p.row, p.col, p.piece)}
+                          >
+                            {id}
+                          </button>
+                        ) : (
+                          <span key={id} className="mono">
+                            {id}{' '}
+                          </span>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    t('w4cpa.acc.ids', { ids: shown.join(', ') })
+                  )}
                   {more > 0 && ` ${t('w4cpa.acc.more', { n: n(more) })}`}
                 </div>
                 <div className="w4cpa-acc-actions">
@@ -133,7 +212,10 @@ export function AccentsPanel({
           );
         })}
       </ul>
-      <p className="muted small">{t('w4cpa.acc.findHint')}</p>
+      {skippedNotes}
+      <p className="muted small" data-testid={`${testId}-findhint`}>
+        {t(layout ? 'w4fx.acc.openHint' : fromPreview ? 'w4fx.acc.previewIdsHint' : 'w4cpa.acc.findHint')}
+      </p>
       {notice && (
         <p className="w4cpa-notice small" role="status" data-testid={`${testId}-notice`}>
           {notice}

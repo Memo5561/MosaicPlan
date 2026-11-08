@@ -91,7 +91,7 @@ const num = (s) => parseInt(String(s).replace(/\./g, '').match(/\d+/)?.[0] ?? 'N
   );
   check(
     'Vorschlag: gemessener Mittelwert (L*a*b*), Abstand zur nächsten Palettenfarbe > 5, Steinbezeichnungen; Erklärung ohne Behauptung über die Steine',
-    acc.every((a) => /L \d+,\d a -?\d+,\d b -?\d+,\d/.test(a.text) && /Steine: [A-Z]+\d{3}(-\d)?/.test(a.text)) && /gemessene Mittelwert/.test(accTxt) && /mehr als ΔE00 10,0/.test(accTxt),
+    acc.every((a) => /L \d+,\d a -?\d+,\d b -?\d+,\d/.test(a.text) && /Steine(?: \(antippen zum Ansehen\))?: ?[A-Z]+\d{3}(-\d)?/.test(a.text)) && /gemessene Mittelwert/.test(accTxt) && /mehr als ΔE00 10,0/.test(accTxt),
   );
   await page.locator('[data-testid="compute-accents"]').scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(OUT, 'w4cpa-02-compute-accents.png') });

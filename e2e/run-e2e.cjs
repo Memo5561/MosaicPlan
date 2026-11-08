@@ -101,7 +101,9 @@ function check(name, ok, info = '') {
   await page.click('text=Abschnitt fertig');
   await page.waitForTimeout(1500);
   const pct2 = await page.textContent('[data-testid="progress-pct"]');
-  check('Abschnitt fertig markiert', parseFloat(pct2.replace(',', '.')) > parseFloat(pct.replace(',', '.')), pct2);
+  // „< 0,1 %“ (verlegt, aber unter der Anzeigegenauigkeit) zählt als 0,1
+  const pctNum = (s) => parseFloat(String(s).replace(/[^\d,.]/g, '').replace(',', '.'));
+  check('Abschnitt fertig markiert', pctNum(pct2) > pctNum(pct), `${pct} → ${pct2}`);
   await page.screenshot({ path: path.join(OUT, '06-plan.png') });
   await page.click('text=Material >> nth=-1');
   await page.waitForSelector('[data-testid="material-calc"]');

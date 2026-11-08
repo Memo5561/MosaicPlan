@@ -104,7 +104,12 @@ export function StepShapes({ api }: { api: ProjectApi }) {
                   </button>
                 )}
               </div>
-              <p className="muted small w4cpa-hint">{t('w4cpa.bg.hint')}</p>
+              <p className="muted small w4cpa-hint" data-testid="cut-focus-hint">
+                {t('w4cpa.bg.hint')}
+                {/* Automatische Farbwahl: die Palette entsteht aus allen Steinen – weniger Hintergrundschnitte verschieben
+                    auch die Farben im Gesicht (gemessen: einzelne Steine deutlich). Mit fester Palette bleiben sie gleich. */}
+                {(s.paletteMode === 'auto' || s.paletteMode === 'auto-snap') && <> {t('w4fx.bg.paletteNote')}</>}
+              </p>
               <p className="small w4cpa-hint" data-testid="cut-focus-hair">
                 {t('w4cpa.bg.hairHint')}
               </p>

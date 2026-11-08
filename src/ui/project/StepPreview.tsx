@@ -51,9 +51,12 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     if (!req || !c || req.n === handledRequest.current) return;
     handledRequest.current = req.n;
     if (req.row >= c.layout.rows || req.col >= c.layout.cols) return;
-    setPick({ row: req.row, col: req.col, piece: 0 });
+    const idx = req.row * c.layout.cols + req.col;
+    // angefordertes Teilstück nur, wenn die Zelle (noch) so viele Teile hat – sonst Teil 1
+    const piece = req.piece > 0 && req.piece < cellPieceCount(c.data, idx) ? req.piece : 0;
+    setPick({ row: req.row, col: req.col, piece });
     viewer.current?.center(c.layout.colX[req.col] + c.layout.colW[req.col] / 2, c.layout.rowY[req.row] + c.layout.rowH[req.row] / 2, 12);
-    setFlash({ idx: req.row * c.layout.cols + req.col, piece: 0 });
+    setFlash({ idx, piece });
   }, [api.stoneRequest, c]);
 
   // ohne Referenz kein Vergleich (z. B. nach dem Neuladen)

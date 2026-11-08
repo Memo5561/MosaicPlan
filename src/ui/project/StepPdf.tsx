@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { DEFAULT_PDF_OPTIONS, PAPER, type PdfOptions } from '../../core/pdfOptions';
+import { DEFAULT_PDF_OPTIONS, effectiveSheetScale, PAPER, printableArea, type PdfOptions } from '../../core/pdfOptions';
+import { CODE_MIN_CELL, CODE_PLAN_WHOLE_MAX_K, codePlanZoom } from '../../core/pdfPlan';
 import { renderFull } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
 import type { Material } from '../../core/types';
@@ -34,7 +35,13 @@ export function StepPdf({ api, materials }: { api: ProjectApi; materials: Materi
     if (opts.sheetScale <= 0) return acc + 1;
     return acc + Math.ceil((s.w * opts.sheetScale) / printW) * Math.ceil((s.h * opts.sheetScale) / printH);
   }, 0);
-  const tooSmallCodes = Math.min(c.layout.tileW, c.layout.tileH) * (opts.sheetScale || 1) < 2.2;
+  // wirksamer Blattmaßstab wie im PDF (bei „an Seite anpassen“ der gemeinsame Anpassungsmaßstab aller Abschnitte)
+  const area = printableArea(opts);
+  const effScale = effectiveSheetScale(opts, G.sections, area.printW, area.printH);
+  const tileMin = Math.min(c.layout.tileW, c.layout.tileH);
+  const tooSmallCodes = opts.codePlan !== 'off' && tileMin * effScale < CODE_MIN_CELL;
+  // auch im Codeplan (höchstens CODE_PLAN_WHOLE_MAX_K-fach) zu klein: ganze Steine bekommen keine Farbnummer
+  const codesIncomplete = opts.codePlan !== 'off' && codePlanZoom(tileMin, Infinity, effScale).wholeComplete === false;
 
   const generate = async () => {
     setErr(null);
@@ -126,6 +133,12 @@ export function StepPdf({ api, materials }: { api: ProjectApi; materials: Materi
           />
         </Field>
         {tooSmallCodes && <Badge kind="warn">{t('pdfui.codesTooSmall')}</Badge>}
+        {opts.codePlan === 'off' && tileMin * effScale < CODE_MIN_CELL && <Badge kind="warn">{t('pdf.w4.codesOffWarn')}</Badge>}
+        {codesIncomplete && (
+          <p className="warn-box small" data-testid="pdf-codes-incomplete">
+            {t('w4fx.pdf.codesIncomplete', { k: CODE_PLAN_WHOLE_MAX_K })}
+          </p>
+        )}
         <Field label={t('pdfui.sections')}>
           <div className="btn-row wrap">
             <button className={`btn small ${!sel ? 'primary' : ''}`} onClick={() => setOpts({ sectionIds: null })}>

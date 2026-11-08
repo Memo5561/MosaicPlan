@@ -271,6 +271,11 @@ export interface SheetScan {
   codeK: number;
   /** false: auch beim größten Zoom bleiben Kleinstteile ohne Nummer (sie stehen in der Zuschnittliste) */
   codeComplete: boolean;
+  /**
+   * false: auch im Codeplan bleiben nicht zugeschnittene Steine ohne Nummer (winzige Steine bei sehr kleinem Maßstab) –
+   * sie stehen in keiner Zuschnittliste; Blatt und Codeplan sagen das ausdrücklich.
+   */
+  codeWholeComplete: boolean;
 }
 
 export interface SheetScanOptions {
@@ -301,7 +306,9 @@ export function scanSheet(
   let stones = 0;
   let unlabelled = 0;
   let unlabelledUncut = 0;
-  let minSide = Infinity;
+  // kleinste Seite getrennt nach zugeschnittenen und nicht zugeschnittenen Steinen (siehe codePlanZoom)
+  let minSideCut = Infinity;
+  let minSideWhole = Infinity;
   forEachStone(layout, data, raw, cache, o.memo ?? new Map(), range, (v) => {
     stones++;
     const tg = v.ci.needsCut ? tpl.bySig.get(v.ci.signature) : undefined;
@@ -309,7 +316,9 @@ export function scanSheet(
     const inPdf = tNo !== null && o.printed(tNo);
     const m = pieceMark(v.ci, v.dims, s, tNo, inPdf);
     const side = Math.min(v.dims.w, v.dims.h);
-    if (side < minSide) minSide = side;
+    if (m.cut) {
+      if (side < minSideCut) minSideCut = side;
+    } else if (side < minSideWhole) minSideWhole = side;
     if (!m.labelled) {
       unlabelled++;
       if (!m.cut) unlabelledUncut++;
@@ -322,8 +331,8 @@ export function scanSheet(
   const tile = Math.min(layout.tileW, layout.tileH);
   const codeless = tile * s < CODE_MIN_CELL - 1e-9;
   const need = stones > 0 && (o.codePlan === 'always' || (o.codePlan === 'auto' && (unlabelledUncut > 0 || codeless)));
-  const z = need ? codePlanZoom(tile, minSide, s) : { k: 0, complete: true };
-  return { entries, onPiece, stones, unlabelled, unlabelledUncut, codeK: z.k, codeComplete: z.complete };
+  const z = need ? codePlanZoom(tile, minSideCut, s, minSideWhole) : { k: 0, complete: true, wholeComplete: true };
+  return { entries, onPiece, stones, unlabelled, unlabelledUncut, codeK: z.k, codeComplete: z.complete, codeWholeComplete: z.wholeComplete };
 }
 
 /** Zuschnittliste eines Blatts (siehe scanSheet). */
@@ -1258,8 +1267,12 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     bd.cutLists += cl.pages;
   }
 
-  /** Mosaikbereich zeichnen: Fugenfläche, Steine (Farbe oder Codeplan-Tönung), Nummern, Markierungen. */
-  function drawStones(range: Range, s: number, L: number, T: number, variant: 'lay' | 'codes'): { unlabelled: number } {
+  /**
+   * Mosaikbereich zeichnen: Fugenfläche, Steine (Farbe oder Codeplan-Tönung), Nummern, Markierungen. Ergebnis: Steine
+   * ohne Farbnummer (davon nicht zugeschnitten) und gezeichnete Ringe „○“ – Legende und Hinweise nennen nur, was
+   * wirklich gezeichnet wurde.
+   */
+  function drawStones(range: Range, s: number, L: number, T: number, variant: 'lay' | 'codes'): { unlabelled: number; unlabelledUncut: number; rings: number } {
     const X0 = layout.colX[range.c0];
     const Y0 = layout.rowY[range.r0];
     const X1 = layout.colX[range.c1 - 1] + layout.colW[range.c1 - 1];
@@ -1276,6 +1289,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     const baseLW = Math.min(0.15, 0.05 * s);
     const cutLW = Math.max(0.12, Math.min(0.25, 0.06 * s));
     let unlabelled = 0;
+    let unlabelledUncut = 0;
     let strokeKind = -1;
     const lists: { x: number; y: number; r: number }[] = [];
     const labels: { str: string; x: number; y: number; size: number; color: string; t?: { str: string; y: number; size: number } }[] = [];
@@ -1300,20 +1314,24 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       }
       let cx: number;
       let cy: number;
+      // zugeschnittene Steine auf Verlegeblättern IMMER orange umranden (auch bei kleinem Maßstab, wo ganze Steine nur
+      // gefüllt werden) – Legende und Zuschnittliste verweisen auf diese Markierung
+      const op = sk ? 'FD' : stroke;
       if (v.poly === null) {
         const x = px(layout.colX[v.col]);
         const yv = py(layout.rowY[v.row]);
-        doc.rect(x, yv, v.dims.w * s, v.dims.h * s, stroke);
+        doc.rect(x, yv, v.dims.w * s, v.dims.h * s, op);
         cx = x + (v.dims.w * s) / 2;
         cy = yv + (v.dims.h * s) / 2;
       } else {
-        poly(v.poly, L - X0 * s, T - Y0 * s, s, stroke);
+        poly(v.poly, L - X0 * s, T - Y0 * s, s, op);
         const c = centroid(v.poly);
         cx = px(c.x);
         cy = py(c.y);
       }
       if (!m.labelled || !pc) {
         unlabelled++;
+        if (!m.cut) unlabelledUncut++;
         // zugeschnitten, aber zu klein für die Nummer: kleiner Ring („siehe Zuschnittliste“) – nur auf Blättern mit Nummern
         if (variant === 'lay' && m.cut && minCell >= CODE_MIN_CELL - 1e-9) lists.push({ x: cx, y: cy, r: Math.max(0.2, Math.min(0.45, 0.3 * Math.min(v.dims.w, v.dims.h) * s)) });
         return;
@@ -1361,7 +1379,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       for (const d of lists) doc.circle(d.x, d.y, d.r, 'S');
     }
     setText('#000000');
-    return { unlabelled };
+    return { unlabelled, unlabelledUncut, rings: lists.length };
   }
 
   /** Zeilen-/Spaltenbeschriftung und mm-Lineal am Rand des Mosaikbereichs */
@@ -1469,7 +1487,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       `${t('pdf.scale')} ${fmtScale(s, loc)}${notFull ? ` (${t('pdf.notFullSizeShort')})` : ''}`,
       t('pdf.originShort'),
     ]);
-    drawStones(sh, s, L, T, 'lay');
+    const drawn = drawStones(sh, s, L, T, 'lay');
     drawMargins(sh, s, L, T);
 
     // Anschluss-/Passmarken auf Fugenmitte (bzw. Außenkante am Projektrand)
@@ -1544,11 +1562,15 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       const refsShort: string[] = [];
       const hasCut = scan.entries.length > 0 || scan.onPiece.length > 0;
       if (hasCut) {
-        refsFull.push(cutPages.length ? t('pdf.w4.legendCut', { p: pagesStr(cutPages) }) : t('pdf.w4.legendCutAll'));
+        // Legende nur für das, was auf diesem Blatt wirklich steht: „T…“ im Stein nur, wenn es solche Steine gibt,
+        // „○“ nur, wenn Ringe gezeichnet wurden (zugeschnittene Steine sind immer orange umrandet, siehe drawStones)
+        const legend = !cutPages.length ? t('pdf.w4.legendCutAll') : scan.onPiece.length > 0 ? t('pdf.w4.legendCut', { p: pagesStr(cutPages) }) : t('pdf.w4.legendCutList', { p: pagesStr(cutPages) });
+        refsFull.push(drawn.rings > 0 ? `${legend} ${t('pdf.w4.legendRing')}` : legend);
         if (cutPages.length) refsShort.push(t('pdf.w4.refCut', { p: pagesStr(cutPages) }));
       }
       if (codePages.length) {
-        const r = t('pdf.w4.refCodePlan', { p: pagesStr(codePages) });
+        // Codeplan unvollständig (winzige ganze Steine bei sehr kleinem Maßstab): ausdrücklich sagen
+        const r = t(scan.codeWholeComplete ? 'pdf.w4.refCodePlan' : 'pdf.w4.refCodePlanPartial', { p: pagesStr(codePages) });
         refsFull.push(r);
         refsShort.push(r);
       } else if (scan.unlabelledUncut > 0) {
@@ -1617,7 +1639,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     const L = M + leftReserve;
     const T = M + topReserve;
     sheetTitle(t('pdf.w4.codePlanTitle', { id: sh.key, i: i + 1, n, scale }), [`X ${f1(X0, 2)}–${f1(X1, 2)} mm`, `Y ${f1(Y0, 2)}–${f1(Y1, 2)} mm`, `${t('pdf.rows')} ${rowLabel(part.r0)}–${rowLabel(part.r1 - 1)}`, `${t('pdf.cols')} ${part.c0 + 1}–${part.c1}`], '#8A1C00');
-    const { unlabelled } = drawStones(part, s, L, T, 'codes');
+    const { unlabelled, unlabelledUncut } = drawStones(part, s, L, T, 'codes');
     drawMargins(part, s, L, T);
     // deutliche Kennzeichnung: rot gestrichelter Rahmen um den Mosaikbereich und Hinweis in der Fußzeile
     setDraw('#B3261E');
@@ -1626,7 +1648,12 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     doc.rect(L - 1.2, T - 1.2, (X1 - X0) * s + 2.4, (Y1 - Y0) * s + 2.4, 'S');
     doc.setLineDashPattern([], 0);
     const lines = [t('pdf.w4.codePlanMarker')];
-    if (unlabelled > 0) lines.push(cutPages.length ? t('pdf.w4.codePlanSmall', { n: num(unlabelled), id: sh.key, p: pagesStr(cutPages) }) : t('pdf.w4.codePlanSmallNoList', { n: num(unlabelled) }));
+    // Ohne Nummer: zugeschnittene Steine stehen (mit Farbnummer) in der Zuschnittliste des Blatts – jeder zugeschnittene
+    // Stein ohne Nummer ist dort gelistet (pieceMark: listed). Nicht zugeschnittene Steine stehen in KEINER Liste.
+    const unlabelledCut = unlabelled - unlabelledUncut;
+    if (unlabelledCut > 0)
+      lines.push(cutPages.length ? tc('pdf.w4.codePlanSmall', unlabelledCut, { n: num(unlabelledCut), id: sh.key, p: pagesStr(cutPages) }) : tc('pdf.w4.codePlanSmallNoList', unlabelledCut, { n: num(unlabelledCut) }));
+    if (unlabelledUncut > 0) lines.push(tc(opts.includeCoords ? 'pdf.w4.codePlanWholeCoords' : 'pdf.w4.codePlanWhole', unlabelledUncut, { n: num(unlabelledUncut) }));
     let yv = Math.min(T + (Y1 - Y0) * s + 6, PH - M - 9);
     setText('#8A1C00');
     for (const [k, l] of lines.entries()) {
@@ -1657,7 +1684,17 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     const title0 = withEntries.length > 1 ? t('pdf.w4.cutListTitleMany', { from: withEntries[0], to: withEntries[withEntries.length - 1] }) : t('pdf.w4.cutListTitle', { id: name });
     const nEntries = scans.reduce((a, sc) => a + sc.entries.length, 0);
     const nOnPiece = scans.reduce((a, sc) => a + sc.onPiece.length, 0);
-    const hint = t('pdf.w4.cutListHint', { n: num(nEntries), onPiece: num(nOnPiece) });
+    // Hinweis aus dem Stand: „weitere tragen T… im Stein“ nur, wenn es solche gibt; Kapitel Schnittvorlagen nur, wenn die
+    // Vorlagen der Liste wirklich im PDF stehen (sonst: nicht enthalten bzw. nur bis zum Limit)
+    const withT = scans.flatMap((sc) => sc.entries.filter((e) => e.tNo !== null));
+    const tail = !withT.length
+      ? ''
+      : withT.every((e) => e.inPdf)
+        ? t('pdf.w4.cutListHintTpl')
+        : !opts.includeTemplates
+          ? t('pdf.w4.cutListHintNoTpl')
+          : t('pdf.w4.cutListHintLimit', { limit: num(opts.templateLimit) });
+    const hint = [tc('pdf.w4.cutListHint', nEntries, { n: num(nEntries) }), nOnPiece > 0 ? tc('pdf.w4.cutListHintOnPiece', nOnPiece, { onPiece: num(nOnPiece) }) : '', tail].filter(Boolean).join(' ');
     const at = (slot: number) => {
       const inPage = slot % cl.perPage;
       return { page: Math.floor(slot / cl.perPage), x0: M + Math.floor(inPage / cl.rowsPerCol) * (colW + C.gap), y: M + C.firstRowY + (inPage % cl.rowsPerCol) * C.rowH, row: inPage % cl.rowsPerCol };

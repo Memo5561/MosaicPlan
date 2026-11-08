@@ -31,7 +31,8 @@ export type WorkerRequest =
       materials: Material[];
       reservePct: number;
       groutDepthMm: number;
-      ranges: { key: string; range: Range }[];
+      /** zusätzliche Teilbereiche (optional; die App fragt nur die Gesamtstatistik ab) */
+      ranges?: { key: string; range: Range }[];
     }
   | {
       type: 'pdf';

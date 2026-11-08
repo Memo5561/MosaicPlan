@@ -10,6 +10,7 @@ import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../
 import { computedDeltaE } from './staleReasons';
 import { AccentsPanel, PinnedColorsEditor } from './AccentColors';
 import type { ProjectApi } from './useProject';
+import type { Step } from './stepNav';
 import '../css/w1-mosaic-core.css';
 import '../css/w2-colour-honesty.css';
 import '../css/w3-colour-quality.css';
@@ -89,7 +90,7 @@ export function colorCountNotice(d: ComputeDiagnostics | undefined, t: TFunc): {
   return { text: parts.join(' '), warn };
 }
 
-export function StepColors({ api, materials }: { api: ProjectApi; materials: Material[] }) {
+export function StepColors({ api, materials, onGo }: { api: ProjectApi; materials: Material[]; onGo?: (s: Step) => void }) {
   const { t } = useI18n();
   const s = api.rec!.settings;
   const usesMaterials = s.paletteMode === 'materials' || s.paletteMode === 'auto-snap';
@@ -185,7 +186,7 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
         </div>
       </details>
       <fieldset className="w1fx-fieldset" disabled={locked} data-testid="palette-fieldset">
-        <PaletteEditor api={api} materials={materials} />
+        <PaletteEditor api={api} materials={materials} onGo={onGo} />
       </fieldset>
     </div>
   );
@@ -249,7 +250,7 @@ interface Snapshot {
 
 type MergeDialog = { kind: 'merge'; plan: MaterialMergePlan; snap: Snapshot } | { kind: 'replace'; next: PaletteColor[]; snap: Snapshot };
 
-export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: Material[] }) {
+export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; materials: Material[]; onGo?: (s: Step) => void }) {
   const { t, n, lang } = useI18n();
   const rec = api.rec!;
   const palette = rec.palette;
@@ -431,7 +432,23 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           totalPieces={statsOk ? stats.pieces : palette.every((p) => p.matchDeltaE) ? palette.reduce((s, p) => s + p.matchDeltaE!.pieces, 0) : undefined}
         />
       )}
-      {api.computed && <AccentsPanel api={api} d={rec.diagnostics} formula={resultDE} stale={api.stale} testId="colors-accents" />}
+      {api.computed && (
+        <AccentsPanel
+          api={api}
+          d={rec.diagnostics}
+          formula={resultDE}
+          stale={api.stale}
+          testId="colors-accents"
+          onOpenStone={
+            onGo
+              ? (row, col, piece) => {
+                  api.requestStone(row, col, piece);
+                  onGo('preview');
+                }
+              : undefined
+          }
+        />
+      )}
       {notice && (
         <div className="w1mc-notice" role="status" data-testid="palette-notice">
           <span>{notice}</span>

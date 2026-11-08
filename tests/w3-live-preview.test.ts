@@ -260,7 +260,7 @@ describe('describeComputeInputs: Fingerabdruck aller Eingaben', () => {
       sig(rec({ joint: 2 })),
       sig(rec({ widthMm: 310 })),
       sig(rec({ colorCount: 16 })),
-      sig(rec({ dither: 0.5 })),
+      sig(rec({ dither: DEFAULT_SETTINGS.dither === 0.25 ? 0.75 : 0.25 })), // nicht der Standardwert (w3-colour-quality: 0,5)
       sig(rec({ deltaE: '76' })),
       sig(rec({ shapes: { ...DEFAULT_SHAPES, diagonal: !DEFAULT_SHAPES.diagonal } })),
       sig(rec({}, { adjust: { ...DEFAULT_ADJUST, brightness: 10 } })),

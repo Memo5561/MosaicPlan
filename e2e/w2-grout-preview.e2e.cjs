@@ -35,15 +35,25 @@ const lin2lab = ([r, g, b]) => {
 const de76 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const fmt = (v) => v.toFixed(2);
 
-/** Mittlere Farbe (lineares Licht) eines Quadrats um die Viewer-Mitte mit halber Kantenlänge rMm (Mosaik-mm). */
-async function centreMean(page, rMm) {
-  return page.evaluate((rMm) => {
+/**
+ * Mittlere Farbe (lineares Licht) eines Quadrats mit halber Kantenlänge rMm (Mosaik-mm) um die Viewer-Mitte –
+ * oder, mit anchor {x, y} (Mosaik-mm), um diesen festen Mosaikpunkt. Gibt den Mosaikpunkt der Messmitte zurück.
+ * Mit Lineal (w3-viewer-features) zoomen die Zoomknöpfe um die Mitte der Fläche innerhalb des Lineals, nicht um
+ * die Canvas-Mitte: Ein Vergleich über einen Zoomschritt muss deshalb denselben Mosaikpunkt messen.
+ */
+async function centreMean(page, rMm, anchor = null) {
+  return page.evaluate(([rMm, anchor]) => {
     const cv = document.querySelector('[data-testid="mosaic-canvas"]');
     const s = parseFloat(cv.dataset.scale);
-    const dpr = cv.width / cv.getBoundingClientRect().width;
+    const ox = parseFloat(cv.dataset.ox);
+    const oy = parseFloat(cv.dataset.oy);
+    const cssW = cv.getBoundingClientRect().width;
+    const dpr = cv.width / cssW;
+    const cssH = cv.height / dpr;
+    const at = anchor ?? { x: (cssW / 2 - ox) / s, y: (cssH / 2 - oy) / s };
     const half = Math.max(1, Math.round(rMm * s * dpr));
-    const x0 = Math.round(cv.width / 2 - half);
-    const y0 = Math.round(cv.height / 2 - half);
+    const x0 = Math.round((ox + at.x * s) * dpr - half);
+    const y0 = Math.round((oy + at.y * s) * dpr - half);
     const d = cv.getContext('2d').getImageData(x0, y0, 2 * half, 2 * half).data;
     const lin = (v) => {
       v /= 255;
@@ -58,8 +68,8 @@ async function centreMean(page, rMm) {
       g += lin(d[i * 4 + 1]);
       b += lin(d[i * 4 + 2]);
     }
-    return { lin: [r / n, g / n, b / n], overview: cv.dataset.overview ?? null, scale: s, px: 2 * half };
-  }, rMm);
+    return { lin: [r / n, g / n, b / n], overview: cv.dataset.overview ?? null, scale: s, px: 2 * half, at };
+  }, [rMm, anchor]);
 }
 /** Ganzes Canvas als Bytes (für Pixelvergleiche). */
 async function canvasPixels(page) {
@@ -104,12 +114,13 @@ function changedPixels(a, b, thr = 12) {
     // ---- Zoomschritt über die Übersichtsgrenze
     const R = 110; // mm halbe Kantenlänge des Mess-Ausschnitts
     let prev = await centreMean(page, R);
+    const anchor = prev.at; // derselbe Mosaikpunkt vor und nach jedem Zoomschritt
     const startOverview = prev.overview;
     let crossed = null;
     for (let i = 0; i < 8 && !crossed; i++) {
       await page.click('[data-testid="viewer-zoom-in"]');
       await wait(350);
-      const cur = await centreMean(page, R);
+      const cur = await centreMean(page, R, anchor);
       if (prev.overview === '1' && cur.overview === '0') crossed = { before: prev, after: cur };
       prev = cur;
     }

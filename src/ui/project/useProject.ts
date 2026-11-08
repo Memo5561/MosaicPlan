@@ -72,7 +72,7 @@ export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'mate
       hex: m.hex.toUpperCase(),
       name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(),
       materialId: m.id,
-      // Bestand: Vertrag für Welle 3 (die Berechnung nutzt ihn noch nicht)
+      // Bestand: nur „Meine Steine – begrenzte Farbanzahl“ (auto-snap) nutzt ihn – bei der Auswahl, nie bei der Zuordnung der Steine
       ...(m.stock !== undefined ? { stock: m.stock } : {}),
     }));
     if (!fixed.length) throw new Error('no-materials');

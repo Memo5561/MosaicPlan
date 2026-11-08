@@ -11,7 +11,9 @@ export default defineConfig({
       injectRegister: null,
       includeAssets: ['icon.svg', 'samples/*.png'],
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest,ttf}'],
+        // 'bin': Kaskade der Offline-Gesichtserkennung (src/vendor/pico/facefinder.bin, ≈ 240 KB) – vorab
+        // zwischengespeichert, damit die Gesichtsvorschläge auch offline funktionieren (APK: liegt ohnehin in dist/)
+        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest,ttf,bin}'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
       manifest: {

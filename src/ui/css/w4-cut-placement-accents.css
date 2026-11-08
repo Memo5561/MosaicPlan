@@ -1,0 +1,153 @@
+/* w4-cut-placement-accents: Schnitte verteilen (Schritt 6), fehlende Akzentfarben (Schritt 5/7), Pflichtfarben (Schritt 5) */
+
+/* ---- Schritt 6: Schnitte verteilen */
+.w4cpa-cuts {
+  margin: 14px 0 6px;
+  padding: 10px 12px 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.w4cpa-cuts > h4 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+.w4cpa-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.w4cpa-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 4px;
+}
+.w4cpa-cuts .w4cpa-hint {
+  margin: 6px 0;
+}
+
+/* ---- fehlende Akzentfarben */
+.w4cpa-acc {
+  margin: 10px 0 12px;
+  padding: 8px 12px 6px;
+  border: 1px solid #c9d8e8;
+  border-radius: 10px;
+  background: #f4f8fc;
+}
+.w4cpa-acc-title {
+  margin: 2px 0 4px;
+  font-size: 0.95rem;
+}
+.w4cpa-acc-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.w4cpa-acc-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-top: 1px solid #dde6ef;
+}
+.w4cpa-acc-item:first-child {
+  border-top: 0;
+}
+.w4cpa-acc-swatch {
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+.w4cpa-acc-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.w4cpa-acc-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.w4cpa-acc-ids {
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+.w4cpa-acc-snap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.w4cpa-acc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.w4cpa-ok {
+  color: var(--ok);
+}
+.w4cpa-notice {
+  margin: 4px 0;
+  color: var(--ok);
+}
+.w4cpa-acc-none {
+  margin: 6px 0 10px;
+}
+
+/* ---- Pflichtfarben */
+.w4cpa-pin-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.w4cpa-pin-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(90px, 160px) 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+}
+.w4cpa-pin-row:first-child {
+  border-top: 0;
+}
+.w4cpa-pin-status {
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+input.text.w4cpa-pin-hex {
+  width: 96px;
+}
+input.text.w4cpa-pin-note {
+  width: 100%;
+  max-width: 180px;
+  min-width: 0;
+}
+.w4cpa-pin-add {
+  align-items: center;
+}
+.w4cpa-pin-add input[type='color'] {
+  width: 44px;
+  height: 34px;
+  padding: 0;
+}
+
+@media (max-width: 600px) {
+  .w4cpa-pin-row {
+    grid-template-columns: auto auto 1fr auto;
+  }
+  .w4cpa-pin-row > .icon-btn {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .w4cpa-pin-row .w4cpa-pin-status {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .w4cpa-pin-row input.text.w4cpa-pin-note {
+    max-width: none;
+  }
+}

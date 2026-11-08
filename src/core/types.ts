@@ -118,6 +118,48 @@ export interface ShapeOptions {
   skinProtect: boolean;
   /** Mindestbreite: schmalste Stelle eines geschnittenen Teils (Dreieck, Kantenschnitt, Teilstein) in mm */
   minPieceMm: number;
+  /**
+   * Schnitte außerhalb markierter Bereiche (1 = viele … 6 = wenige): Gibt es mindestens einen Gesichts- oder
+   * Detailbereich, wird der Schnittaufwand λ jeder Zelle außerhalb ALLER Bereiche mit diesem Faktor multipliziert;
+   * über 1 gibt es dort außerdem keine feineren Steine (k×k) mehr. Ohne Bereiche ohne Wirkung. Fehlt = 1 – ältere
+   * Projekte und ihr Berechnungsschlüssel bleiben unverändert (Feld nur setzen, wenn ≠ 1).
+   */
+  bgCutFactor?: number;
+  /**
+   * Konturen durchgehend schneiden: Kantenschnitte, deren Linie über die Fuge in den bereits gewählten Kantenschnitt
+   * des linken/oberen Nachbarn weiterläuft, werden bevorzugt (gleiche 15°-Winkel, gleiches 0,5-mm-Versatzraster).
+   * Fehlt/false = aus (Feld nur setzen, wenn true).
+   */
+  contourContinuity?: boolean;
+}
+
+/**
+ * Formoptionen, die nur gesetzt werden, wenn sie vom Standard abweichen (fehlt = Standard). „Änderungen verwerfen“
+ * entfernt sie, wenn der Berechnungsschlüssel sie nicht enthält.
+ */
+export const OPTIONAL_SHAPE_FIELDS = ['bgCutFactor', 'contourContinuity'] as const;
+
+/**
+ * Formoptionen ändern. Die nur bei Abweichung gespeicherten Felder (bgCutFactor > 1, contourContinuity = true) werden
+ * beim Standardwert entfernt – so bleibt der Berechnungsschlüssel älterer Projekte Zeichen für Zeichen gleich.
+ */
+export function withShapeOption(sh: ShapeOptions, patch: Partial<ShapeOptions>): ShapeOptions {
+  const next: ShapeOptions = { ...sh, ...patch };
+  if (!(typeof next.bgCutFactor === 'number' && Number.isFinite(next.bgCutFactor) && next.bgCutFactor > 1)) delete next.bgCutFactor;
+  if (next.contourContinuity !== true) delete next.contourContinuity;
+  return next;
+}
+
+/** Größter Wert für ShapeOptions.bgCutFactor („wenige Schnitte“) */
+export const BG_CUT_FACTOR_MAX = 6;
+/** Voreinstellung „Schnitte auf Gesicht konzentrieren“ */
+export const BG_CUT_FACTOR_FOCUS = 3;
+
+/** Wirksamer Faktor für Schnitte außerhalb markierter Bereiche (1 … BG_CUT_FACTOR_MAX; fehlt/ungültig = 1). */
+export function bgCutFactorOf(shapes: Pick<ShapeOptions, 'bgCutFactor'>): number {
+  const f = shapes.bgCutFactor;
+  if (typeof f !== 'number' || !Number.isFinite(f)) return 1;
+  return Math.max(1, Math.min(BG_CUT_FACTOR_MAX, f));
 }
 
 export interface Region {
@@ -174,7 +216,12 @@ export interface ProjectSettings {
   surface: 'glass' | 'ceramic';
   /** Fugentiefe in mm für die Fugenmassen-Schätzung */
   groutDepthMm: number;
-  /** Vom Benutzer bestätigte Akzentfarben, die in die Palette sollen. Vertrag für Welle 4 – noch ungenutzt. */
+  /**
+   * Pflichtfarben (vom Benutzer bestätigte Akzentfarben, z. B. Schwarz für Pupillen): In den Modi „Automatisch aus dem
+   * Foto“ und „Meine Steine – begrenzte Farbanzahl“ kommen sie unverändert in die Palette (K-Means bestimmt nur die
+   * übrigen Farben; bei Materialien das nächste Material). Bekommt eine Pflichtfarbe keinen Stein, fällt sie weg.
+   * `name` ist nur eine Notiz für die Liste. Fehlt/leer = keine (Berechnungsschlüssel älterer Projekte unverändert).
+   */
   pinnedColors?: { hex: string; name?: string }[];
 }
 

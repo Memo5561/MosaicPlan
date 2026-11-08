@@ -178,6 +178,8 @@ export function computeKey(r: ProjectRecord): string {
     de: s.deltaE,
     mi: s.paletteMode === 'materials' || s.paletteMode === 'auto-snap' ? s.materialIds : [],
     cp: s.paletteMode === 'custom' ? r.palette.map((p) => p.hex) : [],
+    // Pflichtfarben (nur Automatik-Modi). Ohne Pflichtfarben fehlt der Eintrag – ältere Schlüssel bleiben gleich.
+    pc: (s.paletteMode === 'auto' || s.paletteMode === 'auto-snap') && s.pinnedColors?.length ? s.pinnedColors.map((p) => p.hex.toUpperCase()) : undefined,
     a: r.adjust,
     rg: r.regions,
     // Identität des Fotos. Ohne imageRev (ältere Projekte) lässt JSON.stringify den Eintrag weg,

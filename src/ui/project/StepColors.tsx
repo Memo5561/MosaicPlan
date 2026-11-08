@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS, type Material, type MosaicData, type PaletteColor, ty
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import { computedDeltaE } from './staleReasons';
+import { AccentsPanel, PinnedColorsEditor } from './AccentColors';
 import type { ProjectApi } from './useProject';
 import '../css/w1-mosaic-core.css';
 import '../css/w2-colour-honesty.css';
@@ -131,6 +132,8 @@ export function StepColors({ api, materials }: { api: ProjectApi; materials: Mat
           </div>
         </Field>
       )}
+      {/* Pflichtfarben: wirken in den Automatik-Modi; sonst nur ein Hinweis, dass welche gespeichert sind */}
+      <PinnedColorsEditor api={api} materials={materials} />
       {usesMaterials && (
         <Field label={t('colors.materials')}>
           {materials.length === 0 ? (
@@ -428,6 +431,7 @@ export function PaletteEditor({ api, materials }: { api: ProjectApi; materials: 
           totalPieces={statsOk ? stats.pieces : palette.every((p) => p.matchDeltaE) ? palette.reduce((s, p) => s + p.matchDeltaE!.pieces, 0) : undefined}
         />
       )}
+      {api.computed && <AccentsPanel api={api} d={rec.diagnostics} formula={resultDE} stale={api.stale} testId="colors-accents" />}
       {notice && (
         <div className="w1mc-notice" role="status" data-testid="palette-notice">
           <span>{notice}</span>

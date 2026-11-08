@@ -7,6 +7,7 @@
  */
 import type { TFunc } from '../../i18n';
 import type { ProjectRecord } from '../../storage/db';
+import { OPTIONAL_SHAPE_FIELDS } from '../../core/types';
 
 /** Geparster Berechnungsschlüssel (siehe computeKey in useProject.ts) */
 interface KeyObj {
@@ -18,6 +19,8 @@ interface KeyObj {
   de?: unknown;
   mi?: unknown;
   cp?: unknown;
+  /** Pflichtfarben (HEX, nur Automatik-Modi; fehlt = keine) */
+  pc?: unknown;
   a?: Record<string, unknown>;
   rg?: unknown;
   im?: unknown;
@@ -34,6 +37,7 @@ export type StaleGroup =
   | 'paletteMode'
   | 'colorCount'
   | 'customPalette'
+  | 'pinned'
   | 'materials'
   | 'dither'
   | 'deltaE'
@@ -52,7 +56,7 @@ export interface StaleReason {
 }
 
 /** Diese Gruppen kann „Änderungen verwerfen“ exakt wiederherstellen. Foto und eigene Palette nicht. */
-export const RESTORABLE: readonly StaleGroup[] = ['size', 'tile', 'joint', 'edge', 'minCut', 'layout', 'shapes', 'paletteMode', 'colorCount', 'materials', 'dither', 'deltaE', 'adjust', 'regions'];
+export const RESTORABLE: readonly StaleGroup[] = ['size', 'tile', 'joint', 'edge', 'minCut', 'layout', 'shapes', 'paletteMode', 'colorCount', 'pinned', 'materials', 'dither', 'deltaE', 'adjust', 'regions'];
 
 /** Felder der Fotobearbeitung in der Reihenfolge der Oberfläche */
 export const ADJUST_FIELDS = ['crop', 'rotation', 'fineRotate', 'flipH', 'brightness', 'contrast', 'saturation', 'sharpen', 'detailBoost', 'bgSimplify', 'autoLevels', 'whiteBalance'] as const;
@@ -119,6 +123,7 @@ export function staleReasons(computedWith: string | undefined, currentKey: strin
     out.push(ca !== undefined && cb !== undefined ? { group: 'colorCount', from: ca, to: cb } : { group: 'colorCount' });
   }
   if (!same(a.cp, b.cp)) out.push({ group: 'customPalette' });
+  if (!same(a.pc, b.pc)) out.push({ group: 'pinned' });
   if (!same(a.mi, b.mi)) out.push({ group: 'materials' });
   if (!same(a.di, b.di)) {
     const da = num(a.di);
@@ -210,10 +215,22 @@ export function restoreComputedSettings(rec: ProjectRecord): ProjectRecord | nul
     const lay = settings as unknown as Record<string, unknown>;
     for (const f of LAYOUT_FIELDS) if (f in k.l) lay[f] = k.l[f];
   }
-  // Neuere Formoptionen, die der alte Schlüssel nicht kennt, bleiben erhalten
-  if (isObj(k.sh)) settings.shapes = { ...rec.settings.shapes, ...(k.sh as Partial<ProjectRecord['settings']['shapes']>) };
+  // Neuere Formoptionen, die der alte Schlüssel nicht kennt, bleiben erhalten – außer den nur bei Abweichung gesetzten
+  // (fehlen sie im Schlüssel, galt bei der Berechnung ihr Standard)
+  if (isObj(k.sh)) {
+    const sh = { ...rec.settings.shapes, ...(k.sh as Partial<ProjectRecord['settings']['shapes']>) };
+    for (const f of OPTIONAL_SHAPE_FIELDS) if (!(f in k.sh)) delete sh[f];
+    settings.shapes = sh;
+  }
   if (k.pm === 'auto' || k.pm === 'auto-snap' || k.pm === 'materials' || k.pm === 'custom') settings.paletteMode = k.pm;
   if (num(k.cc) !== undefined) settings.colorCount = k.cc as number;
+  // Pflichtfarben stehen nur bei den Automatik-Modi im Schlüssel (fehlt = keine); Notizen gleicher HEX-Werte bleiben
+  if (k.pm === 'auto' || k.pm === 'auto-snap') {
+    const hexes = Array.isArray(k.pc) ? (k.pc as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    const notes = new Map((rec.settings.pinnedColors ?? []).map((p) => [p.hex.toUpperCase(), p.name]));
+    if (hexes.length) settings.pinnedColors = hexes.map((hex) => (notes.get(hex) ? { hex, name: notes.get(hex) } : { hex }));
+    else delete settings.pinnedColors;
+  }
   if (num(k.di) !== undefined) settings.dither = k.di as number;
   if (k.de === '2000' || k.de === '76') settings.deltaE = k.de;
   // Materialauswahl steht nur bei Material-Modi im Schlüssel; sonst ist sie für die Berechnung ohne Bedeutung
@@ -285,6 +302,8 @@ export function staleReasonLabels(reasons: StaleReason[], t: TFunc, n: (v: numbe
         return t('w2ws.reason.paletteMode');
       case 'customPalette':
         return t('w2ws.reason.customPalette');
+      case 'pinned':
+        return t('w4cpa.reason.pinned');
       case 'materials':
         return t('w2ws.reason.materials');
       case 'regions':

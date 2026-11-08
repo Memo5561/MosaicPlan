@@ -7,7 +7,7 @@ import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
 import { renderFull } from '../../core/render';
 import { packMosaic, unpackMosaic, type MosaicDataWithRev } from '../../core/serialize';
 import { popcount, progressOf, type Stats } from '../../core/stats';
-import type { ImageAdjust, Material, MosaicData, PaletteColor, ProjectSettings, Region } from '../../core/types';
+import { DEFAULT_ADJUST, type ImageAdjust, type Material, type MosaicData, type PaletteColor, type ProjectSettings, type Region } from '../../core/types';
 import {
   commitComputed,
   DELETED,
@@ -20,6 +20,7 @@ import {
   PALETTE_CHANGED,
   resolveComputedPalette,
   saveProjectState,
+  txMulti,
   uid,
   type ComputeFields,
   type ImageRecord,
@@ -31,11 +32,76 @@ import {
 import { beginCompute, isComputing, onComputeLock } from '../../storage/computeLock';
 import { buildProjectExport, duplicateProject } from '../../storage/projects';
 import { cancelChannel, runWorker } from '../../workers/client';
-import { canvasToJpeg, canvasToRaw, fitCrop, loadBitmap, renderCropped, renderRotated, rotatedSize, workingSize } from './imagePrep';
+import {
+  canvasToJpeg,
+  canvasToRaw,
+  fitCrop,
+  loadBitmap,
+  loadWorkingBitmap,
+  needsFullResolution,
+  PhotoSaveError,
+  renderCropped,
+  renderRotated,
+  rotatedSize,
+  workingSize,
+  type WorkingBitmap,
+} from './imagePrep';
 import type { Lang } from '../../i18n';
 
 export function layoutParamsOf(s: ProjectSettings): LayoutParams {
   return { widthMm: s.widthMm, heightMm: s.heightMm, tileW: s.tileW, tileH: s.tileH, joint: s.joint, edgeMode: s.edgeMode, minCutMm: s.minCutMm };
+}
+
+/**
+ * Feste Palette als Eingabe der Berechnung (reine Funktion, von compute() verwendet):
+ * 'materials'/'auto-snap' → Materialfarben (Auswahl oder alle), 'custom' → eigene Palette MIT Farbnummer
+ * (Nummern bleiben über Neuberechnungen erhalten, auch Lücken nach dem Entfernen), 'auto' → keine.
+ * Wirft 'no-materials' / 'no-palette', wenn die nötige Liste leer ist.
+ */
+export function buildFixedPalette(s: Pick<ProjectSettings, 'paletteMode' | 'materialIds'>, palette: readonly PaletteColor[], materials: readonly Material[]): FixedColor[] | undefined {
+  if (s.paletteMode === 'materials' || s.paletteMode === 'auto-snap') {
+    const pool = materials.filter((m) => s.materialIds.length === 0 || s.materialIds.includes(m.id));
+    const fixed = pool.map((m) => ({ lab: hexToLab(m.hex), hex: m.hex.toUpperCase(), name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(), materialId: m.id }));
+    if (!fixed.length) throw new Error('no-materials');
+    return fixed;
+  }
+  if (s.paletteMode === 'custom') {
+    const fixed = palette.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, code: p.code }));
+    if (!fixed.length) throw new Error('no-palette');
+    return fixed;
+  }
+  return undefined;
+}
+
+/** Pixelmaße des Originalfotos (nach EXIF-Ausrichtung) und ob die Arbeitskopie verkleinert ist. */
+export interface SourceSize {
+  w: number;
+  h: number;
+  reduced: boolean;
+}
+
+/**
+ * Neues Projekt für ein anderes Foto auf Basis des aktuellen (reine Funktion): übernimmt alle Einstellungen
+ * (Breite, Steine, Fuge, Farben, Formen, Abschnitte, Material) und bei eigener Palette die Palette; die Höhe
+ * folgt dem Seitenverhältnis des neuen Fotos. Bereiche, Zuschnitt/Bildoptimierung, Berechnung und
+ * Fortschritt gehören zum alten Foto und werden nicht übernommen.
+ */
+export function projectFromPhoto(r: ProjectRecord, id: string, name: string, aspect: number, now: number, imageRev: string): ProjectRecord {
+  const s = r.settings;
+  const heightMm = Number.isFinite(aspect) && aspect > 0 ? Math.round((s.widthMm / aspect) * 10) / 10 : s.heightMm;
+  return {
+    meta: { id, name, createdAt: now, updatedAt: now, computed: false },
+    settings: { ...s, shapes: { ...s.shapes }, materialIds: [...s.materialIds], heightMm },
+    adjust: { ...DEFAULT_ADJUST },
+    regions: [],
+    palette: s.paletteMode === 'custom' ? r.palette.map((p) => ({ ...p })) : [],
+    imageRev,
+  };
+}
+
+/** Projektname aus einem Dateinamen („IMG_2041.jpg“ → „IMG_2041“). */
+export function nameFromFile(fileName: string, fallback: string): string {
+  return fileName.replace(/\.[^.]+$/, '').trim() || fallback;
 }
 
 export function computeKey(r: ProjectRecord): string {
@@ -158,7 +224,12 @@ function packWithoutProgress(d: MosaicData, rev: string | undefined): { mosaic: 
 export function useProject(id: string, materials: Material[], lang: Lang) {
   const [rec, setRecState] = useState<ProjectRecord | null>(null);
   const [image, setImageState] = useState<ImageRecord | null>(null);
+  /** Arbeitskopie des Fotos (bei großen Fotos verkleinert, siehe loadWorkingBitmap) */
   const [bitmap, setBitmap] = useState<ImageBitmap | null>(null);
+  /** Pixelmaße des Originalfotos; gilt für Zuschnitt, Seitenverhältnis und Arbeitsauflösung */
+  const [sourceSize, setSourceSize] = useState<SourceSize | null>(null);
+  /** 'unreadable': gespeichertes Foto konnte nicht gelesen werden (neu auswählen) */
+  const [imageError, setImageError] = useState<'unreadable' | null>(null);
   const [computed, setComputedState] = useState<ComputedState | null>(null);
   const [version, setVersion] = useState(0);
   const [progressVersion, setProgressVersion] = useState(0);
@@ -438,11 +509,15 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         imageRef.current = st.image;
         setImageState(st.image);
         try {
-          const bmp = await loadBitmap(st.image.original);
-          if (alive) setBitmap(bmp);
-          else bmp.close();
-        } catch {
-          /* Bild nicht lesbar */
+          const wb = await loadWorkingBitmap(st.image.original);
+          if (alive) {
+            setBitmap(wb.bitmap);
+            setSourceSize({ w: wb.srcW, h: wb.srcH, reduced: wb.reduced });
+          } else wb.bitmap.close();
+        } catch (e) {
+          // nicht still verschlucken: Schritt 1 bittet darum, das Foto neu auszuwählen
+          console.warn('Gespeichertes Foto konnte nicht gelesen werden', e);
+          if (alive) setImageError('unreadable');
         }
       }
       if (!alive) return;
@@ -577,32 +652,71 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, [markDirty]);
 
   // ---------- Foto
+  /**
+   * Ersetzt das Foto dieses Projekts. Wirft, wenn das Foto nicht gelesen werden kann – dann bleibt das
+   * bisherige Foto samt Zuschnitt unverändert. `clearRegions`: Gesichts-/Detailbereiche (gehören zum alten
+   * Foto) löschen. `prepared`: bereits gelesene Arbeitskopie (wird übernommen und später freigegeben).
+   * Liefert `saved: false`, wenn Foto/Projekt nicht sofort gespeichert werden konnten (der Speicherstatus
+   * zeigt den Fehler, Speichern wird automatisch wiederholt).
+   */
   const setPhoto = useCallback(
-    async (blob: Blob, name: string) => {
-      const bmp = await loadBitmap(blob);
+    async (blob: Blob, name: string, opts: { clearRegions?: boolean; prepared?: WorkingBitmap } = {}): Promise<{ saved: boolean }> => {
+      const wb = opts.prepared ?? (await loadWorkingBitmap(blob));
       if (!mounted.current) {
-        bmp.close();
-        return;
+        wb.bitmap.close();
+        return { saved: false };
       }
       const img = { original: blob, name };
       imageRef.current = img;
       setImageState(img);
-      setBitmap(bmp);
+      setBitmap(wb.bitmap);
+      setSourceSize({ w: wb.srcW, h: wb.srcH, reduced: wb.reduced });
+      setImageError(null);
       sv.current.pendingImage = img;
       update((r) => {
         // Projektseitenverhältnis an Foto anpassen, wenn noch nichts berechnet wurde
-        const aspect = bmp.width / bmp.height;
+        const aspect = wb.srcW / wb.srcH;
         const s = r.settings;
         const settings = r.computedWith ? s : { ...s, heightMm: Math.round((s.widthMm / aspect) * 10) / 10 };
         // neue Foto-Identität: eine vorhandene Berechnung gilt damit als veraltet
-        return { ...r, imageRev: uid(), settings, adjust: { ...r.adjust, crop: null, rotation: 0, fineRotate: 0, flipH: false } };
+        const next: ProjectRecord = { ...r, imageRev: uid(), settings, adjust: { ...r.adjust, crop: null, rotation: 0, fineRotate: 0, flipH: false } };
+        if (opts.clearRegions) next.regions = [];
+        return next;
       });
       markDirty('image');
-      // Foto und Projekt sofort gemeinsam speichern; Fehler erscheinen im Speicherstatus
-      await persistRef.current('normal').catch(() => {});
+      // Foto und Projekt sofort gemeinsam speichern; Fehler erscheinen zusätzlich im Speicherstatus
+      try {
+        await persistRef.current('normal');
+        return { saved: true };
+      } catch {
+        return { saved: false };
+      }
     },
     [markDirty, update],
   );
+
+  /**
+   * Legt für ein anderes Foto ein NEUES Projekt an (Einstellungen wie dieses, siehe projectFromPhoto);
+   * dieses Projekt bleibt unverändert. Projekt und Foto werden in einer Transaktion gespeichert.
+   * Wirft PhotoSaveError, wenn nichts gespeichert werden konnte. Liefert die neue Projekt-ID.
+   */
+  const createProjectFromPhoto = useCallback(async (blob: Blob, fileName: string, src: { w: number; h: number }, fallbackName: string): Promise<string> => {
+    const r = recRef.current;
+    if (!r) throw new Error('Projekt nicht geladen');
+    const nid = uid();
+    const next = projectFromPhoto(r, nid, nameFromFile(fileName, fallbackName), src.w / src.h, Date.now(), uid());
+    const image: ImageRecord = { original: blob, name: fileName || 'foto' };
+    try {
+      await txMulti<void>(['projects', 'images'], 'readwrite', (ctx) => {
+        ctx.store('projects').put(next, nid);
+        ctx.store('images').put(image, nid);
+        ctx.commit();
+      });
+    } catch (e) {
+      throw new PhotoSaveError(e);
+    }
+    return nid;
+  }, []);
 
   // ---------- abgeleitete Werte
   const layoutInfo = useMemo(() => {
@@ -631,11 +745,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   }, [computed, sections, version, progressVersion]);
 
   /** Effektiver Zuschnitt (normiert) passend zum Seitenverhältnis der fertigen Mosaikfläche. */
+  // Maße des Originals (nicht der evtl. verkleinerten Arbeitskopie): Zuschnitt und Arbeitsauflösung wie bei voller Dekodierung
+  const srcW = sourceSize?.w ?? bitmap?.width ?? 0;
+  const srcH = sourceSize?.h ?? bitmap?.height ?? 0;
   const effectiveCrop = useMemo(() => {
-    if (!rec || !bitmap || !layoutInfo.layout) return null;
-    const { w, h } = rotatedSize(bitmap.width, bitmap.height, rec.adjust);
+    if (!rec || !bitmap || !layoutInfo.layout || !srcW || !srcH) return null;
+    const { w, h } = rotatedSize(srcW, srcH, rec.adjust);
     return fitCrop(rec.adjust.crop, w, h, layoutInfo.layout.finishedW / layoutInfo.layout.finishedH);
-  }, [rec, bitmap, layoutInfo.layout]);
+  }, [rec, bitmap, srcW, srcH, layoutInfo.layout]);
 
   // ---------- Statistik (im Worker)
   const statsReq = useRef(0);
@@ -679,6 +796,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     // Momentaufnahme NUR für die Eingaben der Berechnung; das Ergebnis wird später in den neuesten Stand übernommen
     const r = recRef.current;
     if (!r || !bitmap || !layoutInfo.layout) return false;
+    // Foto zum Zeitpunkt des Starts (ein Fotowechsel während der Berechnung macht das Ergebnis „veraltet“)
+    const original = imageRef.current?.original ?? null;
+    const reduced = !!sourceSize?.reduced;
+    const sw = srcW || bitmap.width;
+    const sh = srcH || bitmap.height;
     setComputeError(null);
     setComputing({ phase: 'prepare', fraction: 0 });
     // Palette sperren (auch für andere Ansichten/Tabs), bis das Ergebnis gespeichert oder verworfen ist
@@ -686,22 +808,31 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     try {
       const layout = layoutInfo.layout;
       const lp = layoutParamsOf(r.settings);
-      const { w: rw, h: rh } = rotatedSize(bitmap.width, bitmap.height, r.adjust);
+      // Zuschnitt und Arbeitsauflösung aus den Maßen des ORIGINALS – genau wie bei voller Dekodierung
+      const { w: rw, h: rh } = rotatedSize(sw, sh, r.adjust);
       const crop = fitCrop(r.adjust.crop, rw, rh, layout.finishedW / layout.finishedH);
       const ws = workingSize(layout.cols * layout.rows, layout.finishedW / layout.finishedH, crop.w * rw * crop.h * rh);
-      const canvas = renderCropped(bitmap, r.adjust, crop, ws.w, ws.h);
-      const raw = canvasToRaw(canvas);
-      const s = r.settings;
-      let fixed: FixedColor[] | undefined;
-      if (s.paletteMode === 'materials' || s.paletteMode === 'auto-snap') {
-        const pool = materials.filter((m) => s.materialIds.length === 0 || s.materialIds.includes(m.id));
-        fixed = pool.map((m) => ({ lab: hexToLab(m.hex), hex: m.hex.toUpperCase(), name: m.colorName || `${m.manufacturer} ${m.colorNumber}`.trim(), materialId: m.id }));
-        if (!fixed.length) throw new Error('no-materials');
-      } else if (s.paletteMode === 'custom') {
-        // mit Farbnummer: eigene Paletten behalten ihre Nummern (auch Lücken nach dem Entfernen einer Farbe)
-        fixed = r.palette.map((p) => ({ lab: p.lab, hex: p.hex, name: p.name, materialId: p.materialId, code: p.code }));
-        if (!fixed.length) throw new Error('no-palette');
+      // Hat die verkleinerte Arbeitskopie im Zuschnitt zu wenig Pixel, wird das Original vorübergehend voll gelesen
+      const { w: bw, h: bh } = rotatedSize(bitmap.width, bitmap.height, r.adjust);
+      let full: ImageBitmap | null = null;
+      if (original && needsFullResolution(reduced, crop, bw, bh, ws)) {
+        try {
+          full = await loadBitmap(original);
+        } catch (e) {
+          // z. B. zu wenig Speicher: mit der Arbeitskopie rechnen (gleiche Pixelzahl, etwas weniger Bilddetail)
+          console.warn('Original konnte nicht voll gelesen werden – Berechnung mit der Arbeitskopie', e);
+        }
       }
+      const raw = (() => {
+        try {
+          return canvasToRaw(renderCropped(full ?? bitmap, r.adjust, crop, ws.w, ws.h));
+        } finally {
+          full?.close(); // volle Auflösung nur für diesen einen Zuschnitt im Speicher halten
+        }
+      })();
+      const s = r.settings;
+      // mit Farbnummer: eigene Paletten behalten ihre Nummern (auch Lücken nach dem Entfernen einer Farbe)
+      const fixed = buildFixedPalette(s, r.palette, materials);
       const res = await runWorker<'compute'>(
         'compute',
         {
@@ -816,7 +947,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       endLock();
       setComputing(null);
     }
-  }, [bitmap, layoutInfo.layout, materials, id, lang, discardGrid, markDirty, setError, setRecBoth, setComputedBoth]);
+  }, [bitmap, sourceSize, srcW, srcH, layoutInfo.layout, materials, id, lang, discardGrid, markDirty, setError, setRecBoth, setComputedBoth]);
 
   const cancelCompute = useCallback(() => cancelChannel('compute'), []);
 
@@ -852,7 +983,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     loaded,
     rec,
     image,
+    /** Arbeitskopie des Fotos (kann kleiner als das Original sein – Maße des Originals: sourceSize) */
     bitmap,
+    /** Pixelmaße des Originalfotos (nach EXIF-Ausrichtung) und ob die Arbeitskopie verkleinert ist */
+    sourceSize,
+    /** 'unreadable': gespeichertes Foto konnte nicht gelesen werden */
+    imageError,
     layout: layoutInfo.layout,
     layoutError: layoutInfo.error,
     computed,
@@ -888,6 +1024,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     setRegions,
     setPalette,
     setPhoto,
+    createProjectFromPhoto,
     touchMosaic,
     touchProgress,
     compute,

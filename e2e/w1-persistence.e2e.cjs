@@ -321,6 +321,8 @@ async function layTaps(page, n) {
     const staleBefore = await page.isVisible('.ws-head .badge-warn');
     const s0 = await summary(page, animal);
     await page.setInputFiles('.step-body input[type="file"]', path.join(__dirname, '..', 'public', 'samples', 'landscape.png'));
+    // seit w2-photo-intake: nach einer Berechnung fragt ein Dialog (neues Projekt / ersetzen / abbrechen)
+    await page.waitForSelector('[data-testid="replace-in-project"]', { timeout: 5000 }).then(() => page.click('[data-testid="replace-in-project"]'), () => {});
     await poll(async () => (await summary(page, animal)).imageRev !== s0.imageRev, 5000);
     await page.waitForTimeout(300);
     const s1 = await summary(page, animal);

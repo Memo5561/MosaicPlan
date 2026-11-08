@@ -156,7 +156,7 @@ export function App() {
           ) : route === 'project' && parts[1] ? (
             <Workspace key={parts[1]} id={parts[1]} initialStep={parts[2]} materials={materials} onBack={() => go('#/projects')} />
           ) : route === 'projects' ? (
-            <Projects go={go} />
+            <Projects go={go} onMaterialsChanged={reloadMaterials} />
           ) : route === 'materials' ? (
             <Materials materials={materials} reload={reloadMaterials} />
           ) : route === 'settings' ? (

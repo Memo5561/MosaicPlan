@@ -1,0 +1,103 @@
+/* Meine Projekte: Rückmeldung nach dem Projektimport (Materialien angelegt/zugeordnet/abweichend/fehlend) */
+.w3pp-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line, #e2ddd3);
+  border-left-width: 5px;
+  background: var(--panel, #fff);
+  color: var(--ink, #1d2a3a);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  max-width: 100%;
+}
+.w3pp-summary.w3pp-ok {
+  border-left-color: var(--ok, #177535);
+}
+.w3pp-summary.w3pp-attn {
+  border-left-color: var(--warn, #8a5200);
+  background: #fffaf0;
+}
+.w3pp-icon {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #fff;
+  background: var(--ok, #177535);
+}
+.w3pp-attn .w3pp-icon {
+  background: var(--warn, #8a5200);
+}
+.w3pp-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.w3pp-body p {
+  margin: 0 0 4px;
+}
+.w3pp-sub {
+  color: var(--ink-soft, #4a5566);
+  font-size: 0.86rem;
+}
+.w3pp-warn {
+  color: var(--warn, #8a5200);
+  margin: 4px 0;
+}
+.w3pp-warn .w3pp-sub {
+  color: var(--ink-soft, #4a5566);
+}
+.w3pp-details {
+  margin: 6px 0 2px;
+}
+.w3pp-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 32px;
+  display: list-item;
+  padding: 4px 0;
+}
+.w3pp-details ul {
+  margin: 4px 0 6px;
+  padding-left: 1.2em;
+}
+.w3pp-details li {
+  margin: 2px 0 6px;
+}
+.w3pp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.w3pp-actions .btn {
+  min-height: 40px;
+}
+.w3pp-close {
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 40px;
+}
+/* frisch importiertes Projekt in der Liste hervorheben */
+.project-row.w3pp-imported {
+  border-color: var(--ok, #177535);
+  box-shadow: 0 0 0 2px rgba(23, 117, 53, 0.18);
+}
+@media (max-width: 600px) {
+  .w3pp-summary {
+    padding: 10px;
+    gap: 8px;
+  }
+  .w3pp-actions .btn {
+    flex: 1 1 auto;
+  }
+}

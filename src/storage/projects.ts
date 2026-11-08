@@ -1,5 +1,31 @@
-import { DEFAULT_ADJUST, DEFAULT_SETTINGS, type ProjectSettings, type Region } from '../core/types';
-import { db, deleteProject, loadProjectState, txMulti, uid, type AppSettings, type ImageRecord, type ProjectRecord, type StoredMosaicNoProgress } from './db';
+import {
+  danglingMaterialRefs,
+  mappingChangesIds,
+  planProjectMaterialImport,
+  referencedMaterialIds,
+  remapComputeKey,
+  remapIdList,
+  remapMaterialRefsDeep,
+  remapPaletteMaterials,
+  remapPaletteSig,
+  selectMaterials,
+  type MaterialImportNote,
+  type ProjectMaterialImportPlan,
+} from '../core/materialImport';
+import { DEFAULT_ADJUST, DEFAULT_SETTINGS, type Material, type ProjectSettings, type Region } from '../core/types';
+import {
+  db,
+  deleteProject,
+  listMaterials,
+  loadProjectState,
+  PROJECT_STORES,
+  txMulti,
+  uid,
+  type AppSettings,
+  type ImageRecord,
+  type ProjectRecord,
+  type StoredMosaicNoProgress,
+} from './db';
 
 export async function createProject(
   name: string,
@@ -84,23 +110,69 @@ const TYPED: Record<string, new (b: ArrayBuffer) => ArrayBufferView> = {
   rec: Uint8Array,
 };
 
+
+/** Kennung der Projektdatei (*.mosaicplan.json). */
+export const PROJECT_FILE_FORMAT = 'mosaicplan-project';
+/**
+ * Formatversion der Projektdatei:
+ *  1: Projekt, Foto, Raster, Fortschritt.
+ *  2: zusätzlich `materials` – die Materialien, auf die das Projekt verweist (Palettenfarben, Materialauswahl) –
+ *     und bei der Auswahl „alle Materialien“ `materialPool` (Anzahl der Materialien auf dem Quellgerät).
+ * Ältere App-Versionen lesen Version-2-Dateien weiterhin (sie prüfen nur `format` und übergehen die Materialien).
+ */
+export const PROJECT_FILE_VERSION = 2;
+
+/** Projekt rechnet mit „allen Materialien“ des Geräts (Materialmodus ohne ausdrückliche Auswahl). */
+function usesAllMaterials(s: Partial<ProjectSettings> | undefined): boolean {
+  return !!s && (s.paletteMode === 'materials' || s.paletteMode === 'auto-snap') && (!Array.isArray(s.materialIds) || s.materialIds.length === 0);
+}
+
+/** Materialien dieses Geräts für die Projektdatei; null, wenn sie nicht lesbar sind (Datei dann ohne Materialliste). */
+async function loadMaterialsForExport(): Promise<Material[] | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Notfall-Sicherung bei Speicherfehlern: nie auf eine hängende Datenbank warten
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 4000);
+    });
+    return await Promise.race([listMaterials(), timeout]);
+  } catch {
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /**
  * Baut die Projektdatei aus einem gegebenen Stand. Wird sowohl für den gespeicherten Stand
  * (exportProject) als auch für den Stand im Arbeitsspeicher genutzt (Notfall-Sicherung, wenn
  * das Speichern auf dem Gerät fehlschlägt). Die Revisionen von Projekt und Raster werden
  * mitgeschrieben, damit die Zusammengehörigkeit nach dem Import prüfbar bleibt.
+ *
+ * Mitgenommen werden nur die Materialien, auf die das Projekt verweist (Palettenfarben und eine nicht
+ * leere Materialauswahl), nie der ganze Katalog. `materials`: alle Materialien dieses Geräts; ohne Angabe
+ * werden sie aus der Datenbank gelesen, `null` = nicht verfügbar (Datei dann ohne Materialliste).
  */
-export async function buildProjectExport(rec: ProjectRecord, image: ImageRecord | null | undefined, mosaic: StoredMosaicNoProgress | null | undefined, progress: Uint16Array | null | undefined): Promise<Blob> {
+export async function buildProjectExport(
+  rec: ProjectRecord,
+  image: ImageRecord | null | undefined,
+  mosaic: StoredMosaicNoProgress | null | undefined,
+  progress: Uint16Array | null | undefined,
+  materials?: readonly Material[] | null,
+): Promise<Blob> {
+  const all = materials === undefined ? await loadMaterialsForExport() : materials;
   const m: Record<string, unknown> | null = mosaic
     ? Object.fromEntries(Object.entries(mosaic).map(([k, v]) => [k, ArrayBuffer.isView(v) ? { $b64: b64(viewBytes(v)) } : v]))
     : null;
   const payload = {
-    format: 'mosaicplan-project',
-    version: 1,
+    format: PROJECT_FILE_FORMAT,
+    version: PROJECT_FILE_VERSION,
     record: rec,
     image: image ? { name: image.name, type: image.original.type, data: b64(await image.original.arrayBuffer()) } : null,
     mosaic: m,
     progress: progress ? b64(viewBytes(progress)) : null,
+    ...(all ? { materials: selectMaterials(referencedMaterialIds(rec.palette, rec.settings?.materialIds), all) } : {}),
+    ...(all && usesAllMaterials(rec.settings) ? { materialPool: { count: all.length } } : {}),
   };
   return new Blob([JSON.stringify(payload)], { type: 'application/json' });
 }
@@ -111,35 +183,211 @@ export async function exportProject(id: string): Promise<Blob> {
   return buildProjectExport(st.rec, st.image, st.mosaic, st.progress);
 }
 
-export async function importProject(file: Blob): Promise<string> {
-  const payload = JSON.parse(await file.text());
-  if (payload?.format !== 'mosaicplan-project') throw new Error('Keine MosaicPlan-Projektdatei');
-  const id = uid();
-  const rec = payload.record as ProjectRecord;
-  rec.meta = { ...rec.meta, id, updatedAt: Date.now() };
-  const image: ImageRecord | null = payload.image ? { name: payload.image.name, original: new Blob([unb64(payload.image.data) as Uint8Array<ArrayBuffer>], { type: payload.image.type }) } : null;
-  let mosaic: StoredMosaicNoProgress | null = null;
-  if (payload.mosaic) {
-    const m: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(payload.mosaic as Record<string, unknown>)) {
-      if (v && typeof v === 'object' && '$b64' in (v as object)) {
-        const bytes = unb64((v as { $b64: string }).$b64);
-        const C = TYPED[k] ?? Uint8Array;
-        m[k] = new C(bytes.buffer as ArrayBuffer);
-      } else m[k] = v;
-    }
-    mosaic = m as StoredMosaicNoProgress;
+// ---------- Import
+
+/** 'not-project': keine MosaicPlan-Projektdatei · 'invalid': Projektdatei unvollständig oder beschädigt */
+export class ProjectFileError extends Error {
+  readonly code: 'not-project' | 'invalid';
+  constructor(code: 'not-project' | 'invalid', message: string) {
+    super(message);
+    this.name = 'ProjectFileError';
+    this.code = code;
   }
-  const progress = payload.progress ? new Uint16Array(unb64(payload.progress).buffer as ArrayBuffer) : null;
-  // alles oder nichts: kein halb importiertes Projekt
-  await txMulti<void>(['projects', 'images', 'mosaics', 'progress'], 'readwrite', (ctx) => {
-    ctx.store('projects').put(rec, id);
-    if (image) ctx.store('images').put(image, id);
-    if (mosaic) ctx.store('mosaics').put(mosaic, id);
-    if (progress) ctx.store('progress').put(progress, id);
-    ctx.commit();
+}
+
+/** Gelesene, geprüfte Projektdatei (noch nichts gespeichert). */
+export interface ParsedProjectFile {
+  version: number;
+  record: ProjectRecord;
+  image: { name: string; type: string; bytes: Uint8Array } | null;
+  mosaic: StoredMosaicNoProgress | null;
+  progress: Uint16Array | null;
+  /** Materialliste der Datei; null = die Datei enthält keine (Version 1 oder beim Export nicht lesbar) */
+  materials: unknown[] | null;
+  /** Auswahl „alle Materialien“: Anzahl der Materialien auf dem Quellgerät (falls bekannt) */
+  materialPool: number | null;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** Liest und prüft eine Projektdatei (rein, ohne Datenbank). Wirft ProjectFileError. */
+export function parseProjectFile(text: string): ParsedProjectFile {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new ProjectFileError('not-project', 'Keine MosaicPlan-Projektdatei');
+  }
+  if (!isObj(payload) || payload.format !== PROJECT_FILE_FORMAT) throw new ProjectFileError('not-project', 'Keine MosaicPlan-Projektdatei');
+  const r = payload.record;
+  if (!isObj(r) || !isObj(r.meta) || !isObj(r.settings) || (r.palette !== undefined && !Array.isArray(r.palette))) {
+    throw new ProjectFileError('invalid', 'Projektdatei unvollständig');
+  }
+  try {
+    const settings = { ...(r.settings as unknown as ProjectSettings) };
+    if (!Array.isArray(settings.materialIds)) settings.materialIds = [];
+    const record = {
+      ...(r as unknown as ProjectRecord),
+      meta: { ...(r.meta as unknown as ProjectRecord['meta']), name: typeof r.meta.name === 'string' ? r.meta.name : '' },
+      settings,
+      adjust: isObj(r.adjust) ? (r.adjust as unknown as ProjectRecord['adjust']) : { ...DEFAULT_ADJUST },
+      regions: Array.isArray(r.regions) ? (r.regions as Region[]) : [],
+      palette: Array.isArray(r.palette) ? (r.palette as ProjectRecord['palette']) : [],
+    } as ProjectRecord;
+    const img = payload.image;
+    const image = isObj(img) && typeof img.data === 'string' ? { name: typeof img.name === 'string' ? img.name : 'foto', type: typeof img.type === 'string' ? img.type : '', bytes: unb64(img.data) } : null;
+    let mosaic: StoredMosaicNoProgress | null = null;
+    if (isObj(payload.mosaic)) {
+      const m: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(payload.mosaic)) {
+        if (v && typeof v === 'object' && '$b64' in (v as object)) {
+          const bytes = unb64((v as { $b64: string }).$b64);
+          const C = TYPED[k] ?? Uint8Array;
+          m[k] = new C(bytes.buffer as ArrayBuffer);
+        } else m[k] = v;
+      }
+      mosaic = m as StoredMosaicNoProgress;
+    }
+    const progress = typeof payload.progress === 'string' ? new Uint16Array(unb64(payload.progress).buffer as ArrayBuffer) : null;
+    const pool = payload.materialPool;
+    return {
+      version: typeof payload.version === 'number' && Number.isFinite(payload.version) ? payload.version : 1,
+      record,
+      image,
+      mosaic,
+      progress,
+      materials: Array.isArray(payload.materials) ? payload.materials : null,
+      materialPool: isObj(pool) && typeof pool.count === 'number' && Number.isFinite(pool.count) ? pool.count : null,
+    };
+  } catch (e) {
+    // z. B. beschädigte Base64-Daten oder ein Raster mit falscher Bytelänge
+    throw new ProjectFileError('invalid', `Projektdatei beschädigt (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
+/**
+ * Eindeutiger Name für ein importiertes Projekt: unverändert, wenn noch kein Projekt so heißt, sonst mit
+ * Zusatz („Porträt (Import)“, „Porträt (Import 2)“ …). Vergleich ohne Groß-/Kleinschreibung und Randleerzeichen.
+ */
+export function uniqueImportName(name: string, existing: readonly string[], suffix = '(Import)'): string {
+  const key = (s: string) => s.trim().toLowerCase();
+  const taken = new Set(existing.map(key));
+  if (!taken.has(key(name))) return name;
+  const base = name.trim();
+  const sfx = suffix.trim() || '(Import)';
+  const numbered = (i: number) => {
+    if (i === 1) return `${base} ${sfx}`.trim();
+    return (sfx.endsWith(')') ? `${base} ${sfx.slice(0, -1)} ${i})` : `${base} ${sfx} ${i}`).trim();
+  };
+  let i = 1;
+  while (taken.has(key(numbered(i)))) i++;
+  return numbered(i);
+}
+
+/** Ergebnis eines Projektimports (für die Rückmeldung in „Meine Projekte“). */
+export interface ProjectImportSummary {
+  id: string;
+  name: string;
+  /** Name in der Datei */
+  originalName: string;
+  /** Zusatz angehängt, weil schon ein Projekt so heißt */
+  renamed: boolean;
+  /** Formatversion der Datei */
+  version: number;
+  /** Datei aus einer neueren App-Version */
+  newer: boolean;
+  /** Datei enthält eine Materialliste (ab Version 2) */
+  materialsInFile: boolean;
+  /** X neu angelegt, Y vorhandenen zugeordnet, Z davon mit abweichenden Daten */
+  materials: ProjectMaterialImportPlan['counts'];
+  notes: MaterialImportNote[];
+  /** Verweise des Projekts auf Materialien: Palettenfarben mit Material bzw. Einträge der Materialauswahl */
+  refs: { colors: number; selected: number };
+  /** davon ohne Material nach dem Import */
+  missing: { colors: number; selected: number };
+  /** Auswahl „alle Materialien“: Anzahl auf dem Quellgerät und hier (nach dem Import); null = nicht betroffen/unbekannt */
+  pool: { source: number; here: number } | null;
+}
+
+/**
+ * Bereitet den Import vor (rein, schreibt nichts): Abgleich der Materialien (planProjectMaterialImport),
+ * Umschreiben der Material-Verweise im Projekt, eindeutiger Name und Rückmeldung.
+ */
+export function prepareProjectImport(
+  parsed: ParsedProjectFile,
+  local: readonly Material[],
+  existingNames: readonly string[],
+  opts: { id: string; now: number; nameSuffix?: string },
+): { rec: ProjectRecord; inserts: Material[]; summary: ProjectImportSummary } {
+  const plan = planProjectMaterialImport(parsed.materials ?? [], local);
+  const src = parsed.record;
+  let rec: ProjectRecord = structuredClone(src);
+  if (mappingChangesIds(plan.mapping)) {
+    // Verweise auf die zugeordneten Materialien dieses Geräts umschreiben – auch im Berechnungsschlüssel und im
+    // Paletten-Fingerabdruck, damit das Projekt nicht fälschlich als „geändert“ bzw. „bearbeitet“ gilt
+    rec = {
+      ...rec,
+      palette: remapPaletteMaterials(rec.palette, plan.mapping),
+      settings: { ...rec.settings, materialIds: remapIdList(rec.settings.materialIds, plan.mapping) },
+      ...(rec.computedWith !== undefined ? { computedWith: remapComputeKey(rec.computedWith, plan.mapping) } : {}),
+      ...(rec.computedPaletteSig !== undefined ? { computedPaletteSig: remapPaletteSig(rec.computedPaletteSig, plan.mapping) } : {}),
+      ...(rec.diagnostics !== undefined ? { diagnostics: remapMaterialRefsDeep(rec.diagnostics, plan.mapping) } : {}),
+    };
+  }
+  const originalName = src.meta.name;
+  const name = uniqueImportName(originalName, existingNames, opts.nameSuffix);
+  rec.meta = { ...rec.meta, id: opts.id, name, updatedAt: opts.now };
+  const available = new Set([...local.map((m) => m.id), ...plan.inserts.map((m) => m.id)]);
+  const pool = parsed.materialPool !== null && usesAllMaterials(rec.settings) ? { source: parsed.materialPool, here: available.size } : null;
+  return {
+    rec,
+    inserts: plan.inserts,
+    summary: {
+      id: opts.id,
+      name,
+      originalName,
+      renamed: name !== originalName,
+      version: parsed.version,
+      newer: parsed.version > PROJECT_FILE_VERSION,
+      materialsInFile: parsed.materials !== null,
+      materials: plan.counts,
+      notes: plan.notes,
+      refs: {
+        colors: rec.palette.filter((p) => typeof p?.materialId === 'string' && p.materialId !== '').length,
+        selected: rec.settings.materialIds.length,
+      },
+      missing: danglingMaterialRefs(rec.palette, rec.settings.materialIds, available),
+      pool,
+    },
+  };
+}
+
+/**
+ * Importiert eine Projektdatei als neues Projekt. Die Materialien der Datei werden vorhandenen zugeordnet
+ * oder angelegt (siehe materialImport.ts) – vorhandene Materialien werden nie überschrieben. Alles in EINER
+ * Transaktion: kein halb importiertes Projekt und kein Abgleich gegen einen inzwischen geänderten Bestand.
+ * `nameSuffix`: Zusatz für den Namen, falls schon ein Projekt so heißt (Standard „(Import)“).
+ */
+export async function importProject(file: Blob, opts: { nameSuffix?: string } = {}): Promise<ProjectImportSummary> {
+  const parsed = parseProjectFile(await file.text());
+  const id = uid();
+  const now = Date.now();
+  const image: ImageRecord | null = parsed.image ? { name: parsed.image.name, original: new Blob([parsed.image.bytes as Uint8Array<ArrayBuffer>], { type: parsed.image.type }) } : null;
+  return txMulti<ProjectImportSummary>([...PROJECT_STORES, 'materials'], 'readwrite', (ctx) => {
+    ctx.on(ctx.store('materials').getAll() as IDBRequest<Material[]>, (local) => {
+      ctx.on(ctx.store('projects').getAll() as IDBRequest<ProjectRecord[]>, (projects) => {
+        const names = projects.map((p) => (typeof p?.meta?.name === 'string' ? p.meta.name : ''));
+        const prep = prepareProjectImport(parsed, local, names, { id, now, nameSuffix: opts.nameSuffix });
+        for (const m of prep.inserts) ctx.store('materials').put(m, m.id);
+        ctx.store('projects').put(prep.rec, id);
+        if (image) ctx.store('images').put(image, id);
+        if (parsed.mosaic) ctx.store('mosaics').put(parsed.mosaic, id);
+        if (parsed.progress) ctx.store('progress').put(parsed.progress, id);
+        ctx.commit();
+        ctx.done(prep.summary);
+      });
+    });
   });
-  return id;
 }
 
 export { deleteProject, db };

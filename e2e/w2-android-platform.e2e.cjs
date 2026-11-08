@@ -281,6 +281,15 @@ function collectErrors(page, errors) {
   await page.click('[data-testid="sample-animal"]');
   await page.waitForSelector('[data-testid="compute-btn"]', { timeout: 30000 });
   const projectUrl = page.url();
+  // Integration mit w2-workspace-shell (Schritte im Verlauf): Zurück führt zum vorigen Schritt im Projekt
+  await page.click('[data-testid="step-size"]');
+  await page.waitForTimeout(250);
+  await page.click('[data-testid="step-tiles"]');
+  await page.waitForTimeout(250);
+  await page.evaluate(() => window.__fake.back(true));
+  await page.waitForTimeout(400);
+  const stepBack = await page.evaluate(() => ({ hash: location.hash, cur: document.querySelector('[data-testid="step-size"]')?.getAttribute('aria-current') || '' }));
+  check('Zurück im Projekt führt zum vorigen Schritt (Steine → Bildgröße)', /\/size$/.test(stepBack.hash) && stepBack.cur === 'step', JSON.stringify(stepBack));
   await page.goto(`${BASE}#/projects`);
   await page.waitForSelector('[data-testid="project-export"]');
   await page.click('[data-testid="project-export"] >> nth=0');

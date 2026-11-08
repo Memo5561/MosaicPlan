@@ -405,7 +405,7 @@ describe('Abweichung je Farbe vom Foto (matchDeltaE) und angefordert/verwendet',
     expect(res.diagnostics.mergedColors).toBeUndefined();
   });
 
-  it('„Meine Steine – begrenzte Farbanzahl“ mit 336 Katalogfarben: zusammengelegt, Kennzahlen vollständig', () => {
+  it('„Meine Steine – begrenzte Farbanzahl“ mit 336 Katalogfarben: Kennzahlen vollständig (seit w3-colour-quality: angeforderte Anzahl)', () => {
     // Katalog: 7 Stufen je sRGB-Kanal (gleichmäßig im Farbraum), die ersten 336 Farben
     const steps = [0, 42, 85, 128, 170, 213, 255];
     const cat: FixedColor[] = [];
@@ -419,14 +419,15 @@ describe('Abweichung je Farbe vom Foto (matchDeltaE) und angefordert/verwendet',
     expect(d.paletteMode).toBe('auto-snap');
     expect(d.requestedColors).toBe(32);
     expect(d.usedColors).toBe(res.palette.length);
-    expect(d.usedColors!).toBeLessThan(d.requestedColors!);
+    // Auswahl direkt aus dem Bestand (w3-colour-quality): die angeforderte Anzahl, obwohl Bildfarben zusammenfallen
+    expect(d.usedColors!).toBe(d.requestedColors!);
     expect(d.mergedColors!).toBeGreaterThan(0);
-    // jede verwendete Materialfarbe nennt, wie viele Bildfarben auf sie fielen
-    expect(res.palette.every((p) => (p.mergedFrom ?? 0) >= 1)).toBe(true);
+    // jede Materialfarbe nennt, wie viele Bildfarben ihr am nächsten liegen (0 = ergänzt für Zwischentöne)
+    expect(res.palette.every((p) => (p.mergedFrom ?? -1) >= 0)).toBe(true);
     expect(res.palette.some((p) => p.mergedFrom! > 1)).toBe(true);
     const sumMerged = res.palette.reduce((s, p) => s + p.mergedFrom!, 0);
     expect(sumMerged).toBeLessThanOrEqual(d.imageColors!);
-    expect(d.imageColors! - d.mergedColors!).toBeGreaterThanOrEqual(d.usedColors!);
+    expect(d.imageColors! - d.mergedColors!).toBeLessThanOrEqual(d.usedColors!);
     // Materialnamen bleiben, kein automatischer Schlüssel
     expect(res.palette.every((p) => p.nameKey === undefined && p.name.startsWith('Kat '))).toBe(true);
   });

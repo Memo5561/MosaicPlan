@@ -141,7 +141,8 @@ describe('Was hat sich seit der Berechnung geändert?', () => {
     };
     const rs = staleReasons(r.computedWith, computeKey(changed));
     expect(rs.map((x) => x.group)).toEqual(['shapes', 'colorCount', 'dither', 'deltaE', 'regions', 'photo']);
-    expect(staleReasonLabels(rs, t, n)).toEqual(['Steinformen', 'Farbanzahl 24 → 8', 'Farbmischung 0 → 40 %', 'Farbabstand (ΔE-Formel) CIEDE2000 → CIE76', 'Gesichts-/Detailbereiche', 'Foto ersetzt']);
+    // Ausgangswert = Standard-Farbmischung neuer Projekte (seit w3-colour-quality 50 %)
+    expect(staleReasonLabels(rs, t, n)).toEqual(['Steinformen', 'Farbanzahl 24 → 8', `Farbmischung ${DEFAULT_SETTINGS.dither * 100} → 40 %`, 'Farbabstand (ΔE-Formel) CIEDE2000 → CIE76', 'Gesichts-/Detailbereiche', 'Foto ersetzt']);
     expect(rs.filter((x) => !isRestorable(x)).map((x) => x.group)).toEqual(['photo']);
   });
 

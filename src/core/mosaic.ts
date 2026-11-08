@@ -5,7 +5,7 @@
  *
  * Die Berechnung läuft kachelweise (64×64 Zellen) und meldet Fortschritt.
  */
-import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, type Lab, type ColorNameLang } from './color';
+import { deltaE2000, deltaE76, labToHex, NearestColorMatcher, rgbToLabInto, type ColorNameLang, type DeltaEFormula, type Lab } from './color';
 import { nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
 import { regionMask, detailMap, type RGBAImage } from './imageOps';
 import { kmeansLab } from './kmeans';
@@ -24,7 +24,10 @@ export interface FixedColor {
    * ganze Zahlen, bleiben sie bei der Berechnung erhalten, sonst wird fortlaufend 1…n vergeben.
    */
   code?: number;
-  /** Bestand des Materials in Stück (nur Materialmodi; Vertrag für Welle 3 – die Berechnung nutzt ihn noch nicht) */
+  /**
+   * Bestand des Materials in Stück (nur Materialmodi). „Automatisch → eigene Materialien“ bevorzugt bei fast gleicher
+   * Eignung Materialien mit Bestand > 0 (nur bei der Auswahl der Palette, nie bei der Zuordnung der Steine).
+   */
   stock?: number;
   /** Schlüssel eines automatischen Namens (Modus 'custom'): der Name bleibt automatisch und folgt der UI-Sprache */
   nameKey?: string;
@@ -38,7 +41,10 @@ export interface ComputeParams {
   shapes: ShapeOptions;
   paletteMode: PaletteMode;
   colorCount: number;
-  /** 0 = aus, 1 = volles Floyd-Steinberg */
+  /**
+   * Farbübergänge mischen: 0 = aus, 1 = volles Floyd-Steinberg – auf ähnliche Farben beschränkt (je Stein nur Farben,
+   * die seiner Bildfarbe höchstens DITHER_TOLERANCE ferner liegen als die nächste; nur ganze Steine).
+   */
   dither: number;
   deltaE: '2000' | '76';
   /** Materialfarben (für 'materials' und 'auto-snap') bzw. eigene Palette ('custom') */
@@ -46,6 +52,63 @@ export interface ComputeParams {
   regions: Region[];
   lang?: ColorNameLang;
   seed?: number;
+  /**
+   * Vom Benutzer bestätigte Akzentfarben, die in die Palette sollen. Vertrag für Welle 4 – die Berechnung nutzt sie
+   * noch nicht.
+   */
+  pinnedColors?: FixedColor[];
+  /**
+   * „Automatisch → eigene Materialien“: 'select' (Standard) wählt die Materialien direkt aus dem Bestand
+   * (selectMaterials), 'nearest' ist das frühere Verfahren (jede Bildfarbe → nächstes Material, Doppelte
+   * zusammengelegt) – nur für Vergleiche und Tests.
+   */
+  snapMethod?: 'select' | 'nearest';
+}
+
+/**
+ * Bildfarbe, die keines der angebotenen Materialien gut trifft (Modi mit eigenen Materialien): eine Zielfarbe zum
+ * Nachkaufen – ein Farbton, kein Produkt.
+ */
+export interface MissingColor {
+  /** Zielfarbe: typische Fotofarbe (K-Means-Zentrum) */
+  hex: string;
+  lab: Lab;
+  /** Steine, deren Fotofarbe dieser Bildfarbe am nächsten liegt (exakt gezählt, jeder Stein genau einmal) */
+  stones: number;
+  /** nächstes angebotenes Material (über alle angebotenen, nicht nur die gewählten) */
+  nearestMaterialId?: string;
+  nearestHex: string;
+  nearestName: string;
+  /** ΔE (Formel der Berechnung) zwischen Zielfarbe und nächstem Material */
+  deltaE: number;
+  /** mittleres ΔE dieser Steine zu der Farbe, die sie tatsächlich erhalten haben (gemessen bei der Berechnung) */
+  assignedDeltaE: number;
+}
+
+/** Kennzahlen der Materialauswahl („Automatisch → eigene Materialien“, selectMaterials) */
+export interface SnapSelectionInfo {
+  /** Verfahren: 'select' = direkte Auswahl, 'nearest' = früheres Verfahren (nur Vergleich) */
+  method: 'select' | 'nearest';
+  /** Anzahl Materialien, die das frühere Verfahren (Bildfarbe → nächstes Material) ergeben hätte – Startmenge */
+  snapColors: number;
+  /** gewählte Materialien (vor dem Entfernen von Farben ohne Steine) */
+  selected: number;
+  /** durch Tausch verbesserte Wahl (Anzahl Tausche) */
+  swaps: number;
+  /** aus den Steinfarben ergänzte bzw. gegen ein Material ohne Steine getauschte Materialien */
+  filled: number;
+  /** wegen Bestand bevorzugte Materialien (je höchstens ΔE 0,5 schlechter im Mittel ihrer Steine) */
+  stockSwaps: number;
+  /** Rechenbudget der Tauschdurchgänge erreicht (Auswahl gut, aber evtl. nicht weiter verbessert) */
+  budgetHit: boolean;
+  /** Schutz hat gegriffen: die Auswahl wäre teurer gewesen, es gilt die Startmenge (früheres Verfahren) */
+  fallback?: boolean;
+  /**
+   * Schätzung auf der Stichprobe der Steinfarben (gemessen wie die Zuordnung): mittleres ΔE mit der Startmenge bzw. der
+   * gewählten Menge. Fehlt beim früheren Verfahren.
+   */
+  costSnap?: number;
+  costSelected?: number;
 }
 
 export interface ComputeDiagnostics {
@@ -70,6 +133,23 @@ export interface ComputeDiagnostics {
   imageColors?: number;
   /** „Automatisch → eigene Materialien“: Bildfarben, die auf ein bereits gewähltes Material fielen (zusammengelegt) */
   mergedColors?: number;
+  /** Modi mit eigenen Materialien: Anzahl der angebotenen Materialfarben */
+  poolColors?: number;
+  /** „Automatisch → eigene Materialien“: Kennzahlen der Materialauswahl */
+  snapSelection?: SnapSelectionInfo;
+  /**
+   * Modi mit eigenen Materialien: Bildfarben, die kein angebotenes Material auf ΔE ≤ missingThreshold trifft
+   * (absteigend nach Steinen). Leer = alle untersuchten Bildfarben werden getroffen.
+   */
+  missingColors?: MissingColor[];
+  /** Grenze für missingColors (ΔE der Projektformel) */
+  missingThreshold?: number;
+  /** Anzahl der dafür untersuchten Bildfarben (K-Means-Zentren) */
+  missingChecked?: number;
+  /** Farbmischung: größter ΔE-Abstand eines Steins zwischen erhaltener und nächster Farbe (zu seiner Bildfarbe) */
+  ditherExcessMax?: number;
+  /** Farbmischung: Steine, deren erhaltene Farbe um mehr als ΔE 5 schlechter passt als die nächste */
+  ditherExcessOver5?: number;
 }
 
 export interface ComputeResult {
@@ -449,15 +529,21 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   // ---------------- Palette
   onProgress?.('palette', 0);
   const fromQ = (arr: Uint8Array, i: number): Lab => [arr[i * 3] / 2.55, arr[i * 3 + 1] - 128, arr[i * 3 + 2] - 128];
+  const formula: DeltaEFormula = params.deltaE === '76' ? '76' : '2000';
+  const dE = formula === '76' ? deltaE76 : deltaE2000;
 
   let paletteLab: Lab[] = [];
   let paletteMeta: { hex?: string; name?: string; materialId?: string; code?: number; nameKey?: string; nameSuffix?: NameSuffix; userNamed?: boolean; mergedFrom?: number }[] = [];
   const fixed = params.fixedPalette ?? [];
+  const materialMode = params.paletteMode === 'auto-snap' || params.paletteMode === 'materials';
   let imageColors: number | undefined;
   let mergedColors: number | undefined;
+  let snapSelection: SnapSelectionInfo | undefined;
+  /** Bildfarben (K-Means-Zentren) für „Fehlende Farben“ (Modi mit eigenen Materialien) */
+  let imageCentres: Lab[] = [];
 
-  if (params.paletteMode === 'auto' || params.paletteMode === 'auto-snap') {
-    // Stichprobe der tatsächlichen Steinfarben (gewichtet nach Fläche und Region)
+  /** Stichprobe der tatsächlichen Steinfarben (gewichtet nach Fläche und Region) */
+  const buildSamples = () => {
     const MAXS = 60000;
     let total = 0;
     for (let i = 0; i < N; i++) total += data.kind[i] === CellKind.SUB ? (subLab.get(i)!.length / 3) : data.kind[i] === CellKind.FULL ? 1 : 2;
@@ -482,34 +568,67 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         push(fromQ(c2Lab, i), weight[i] / 2);
       }
     }
-    const km = kmeansLab(new Float32Array(pts), new Float32Array(ws), Math.max(1, params.colorCount), 30, params.seed ?? 7);
+    return { pts: new Float32Array(pts), ws: new Float32Array(ws) };
+  };
+
+  if (params.paletteMode === 'auto' || params.paletteMode === 'auto-snap') {
+    const { pts, ws } = buildSamples();
+    const km = kmeansLab(pts, ws, Math.max(1, params.colorCount), 30, params.seed ?? 7);
     imageColors = km.centers.length;
     if (params.paletteMode === 'auto') {
       paletteLab = km.centers;
       paletteMeta = km.centers.map(() => ({}));
     } else {
       if (!fixed.length) throw new Error('Keine Materialfarben vorhanden.');
-      // Jede Bildfarbe (K-Means-Zentrum) → nächstes Material (exakt über alle Materialien, Formel der
-      // Projekteinstellung). Mehrere Zentren können auf dasselbe Material fallen: zusammengelegt (mergedFrom).
-      const snapDE = params.deltaE === '76' ? deltaE76 : deltaE2000;
-      const used = new Map<number, number>();
+      imageCentres = km.centers;
+      const k = Math.max(1, params.colorCount);
+      // Startmenge (früheres Verfahren): jede Bildfarbe → nächstes Material (exakt über alle Materialien, Formel der
+      // Projekteinstellung); mehrere Bildfarben können auf dasselbe Material fallen.
+      const snapSet: number[] = [];
+      for (const c of km.centers) {
+        const m = nearestFixed(fixed, c, dE).index;
+        if (!snapSet.includes(m)) snapSet.push(m);
+      }
+      let chosen = snapSet;
+      if (params.snapMethod === 'nearest') {
+        snapSelection = { method: 'nearest', snapColors: snapSet.length, selected: snapSet.length, swaps: 0, filled: 0, stockSwaps: 0, budgetHit: false };
+      } else {
+        // Direkte Auswahl aus dem Bestand auf einer Zusammenfassung der Steinfarben (bis 256 gewichtete Zentren)
+        const sum = kmeansLab(pts, ws, Math.min(Math.max(SNAP_SUMMARY_K, 2 * k), ws.length), SNAP_SUMMARY_ITER, (params.seed ?? 7) + 1);
+        const sel = selectMaterials(sum.centers, sum.weights, fixed, k, formula, snapSet, { pts, ws });
+        chosen = sel.chosen;
+        snapSelection = {
+          method: 'select',
+          snapColors: snapSet.length,
+          selected: chosen.length,
+          swaps: sel.swaps,
+          filled: sel.filled,
+          stockSwaps: sel.stockSwaps,
+          budgetHit: sel.budgetHit,
+          ...(sel.fallback ? { fallback: true } : {}),
+          costSnap: round2(sel.costSnap),
+          costSelected: round2(sel.costSelected),
+        };
+      }
+      // „aus n Bildfarben“: wie viele Bildfarben dieses gewählte Material als nächstes haben (Summe = Bildfarben)
+      const from = new Array<number>(chosen.length).fill(0);
       for (const c of km.centers) {
         let best = 0;
         let bd = Infinity;
-        fixed.forEach((f, i) => {
-          const d = snapDE(c[0], c[1], c[2], f.lab[0], f.lab[1], f.lab[2]);
+        chosen.forEach((m, q) => {
+          const d = dE(c[0], c[1], c[2], fixed[m].lab[0], fixed[m].lab[1], fixed[m].lab[2]);
           if (d < bd) {
             bd = d;
-            best = i;
+            best = q;
           }
         });
-        used.set(best, (used.get(best) ?? 0) + 1);
+        from[best]++;
       }
-      mergedColors = km.centers.length - used.size;
-      for (const [i, centres] of used) {
-        paletteLab.push(fixed[i].lab);
-        paletteMeta.push({ hex: fixed[i].hex, name: fixed[i].name, materialId: fixed[i].materialId, mergedFrom: centres });
-      }
+      mergedColors = km.centers.length - from.filter((x) => x > 0).length;
+      chosen.forEach((m, q) => {
+        paletteLab.push(fixed[m].lab);
+        paletteMeta.push({ hex: fixed[m].hex, name: fixed[m].name, materialId: fixed[m].materialId, mergedFrom: from[q] });
+      });
     }
   } else {
     if (!fixed.length) throw new Error('Die Palette ist leer.');
@@ -526,18 +645,24 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         ...(f.nameKey ? { nameKey: f.nameKey, nameSuffix: f.nameSuffix } : f.userNamed ? { userNamed: true } : {}),
       };
     });
+    if (params.paletteMode === 'materials') {
+      // Nur für „Fehlende Farben“: typische Fotofarben, gegen die der Bestand geprüft wird
+      const { pts, ws } = buildSamples();
+      imageCentres = kmeansLab(pts, ws, MISSING_IMAGE_COLORS, 30, params.seed ?? 7).centers;
+    }
   }
   onProgress?.('palette', 1);
 
   // ---------------- Zuordnung
-  const matcher = new NearestColorMatcher(paletteLab, params.deltaE);
-  const dE = params.deltaE === '76' ? deltaE76 : deltaE2000;
+  const matcher = new NearestColorMatcher(paletteLab, formula);
   const dither = Math.max(0, Math.min(1, params.dither));
   let errCur = new Float32Array((cols + 2) * 3);
   let errNext = new Float32Array((cols + 2) * 3);
   let sumDE = 0;
   let maxDE = 0;
   let cntDE = 0;
+  let ditherExcessMax = 0;
+  let ditherExcessOver5 = 0;
   const hist = new Uint32Array(101);
   // je Palettenindex: Stückzahl, ΔE-Summe, max. ΔE, Steine über 5 und über 10 (Bild-Lab je Stein gegen zugeordnete Farbe)
   const nPal = paletteLab.length;
@@ -546,10 +671,15 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const pcMax = new Float64Array(nPal);
   const pcOver5 = new Uint32Array(nPal);
   const pcOver10 = new Uint32Array(nPal);
+  // je Bildfarbe (nur Modi mit eigenen Materialien): Steine, deren Fotofarbe ihr am nächsten liegt, und deren ΔE-Summe
+  const centreMatcher = materialMode && imageCentres.length ? new NearestColorMatcher(imageCentres, formula) : null;
+  const icCnt = new Uint32Array(imageCentres.length);
+  const icSum = new Float64Array(imageCentres.length);
   // gemessen gegen die Palettenfarbe, wie sie gespeichert wird (Lab auf 0,01 gerundet) – so ergibt eine erneute
   // Berechnung mit der gespeicherten Palette dieselben Werte
   const storedLab: Lab[] = paletteLab.map((l) => [round2(l[0]), round2(l[1]), round2(l[2])]);
-  const track = (l: Lab, pi: number) => {
+  /** `onGrid`: Farbe liegt auf dem gespeicherten Raster (ganze Steine, Zweiteiler) – dann ist der Zwischenspeicher exakt */
+  const track = (l: Lab, pi: number, onGrid: boolean) => {
     const p = storedLab[pi];
     const d = dE(l[0], l[1], l[2], p[0], p[1], p[2]);
     sumDE += d;
@@ -561,6 +691,11 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     if (d > pcMax[pi]) pcMax[pi] = d;
     if (d > 5) pcOver5[pi]++;
     if (d > 10) pcOver10[pi]++;
+    if (centreMatcher) {
+      const ci = onGrid ? centreMatcher.nearest(l[0], l[1], l[2]) : centreMatcher.nearestExact(l[0], l[1], l[2]);
+      icCnt[ci]++;
+      icSum[ci] += d;
+    }
   };
   const matchOf = (pi: number): MatchDeltaE => ({
     pieces: pcCnt[pi],
@@ -575,31 +710,56 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       const kind = data.kind[idx];
       if (kind === CellKind.FULL) {
         const l = fromQ(c1Lab, idx);
-        const e = (col + 1) * 3;
-        const tl = l[0] + errCur[e];
-        const ta = l[1] + errCur[e + 1];
-        const tb = l[2] + errCur[e + 2];
-        const pi = dither > 0 ? matcher.nearestExact(tl, ta, tb) : matcher.nearest(tl, ta, tb);
-        data.c1[idx] = pi;
-        track(l, pi);
+        let pi: number;
         if (dither > 0) {
+          // Floyd-Steinberg, auf ähnliche Farben beschränkt: Kandidaten sind die nächste Palettenfarbe der eigenen
+          // (unvermischten) Bildfarbe und jede, die ihr höchstens DITHER_TOLERANCE ferner liegt. Unter ihnen gewinnt
+          // die Farbe, die dem Ziel (Bildfarbe + verteilter Fehler) am nächsten kommt.
+          const e = (col + 1) * 3;
+          const tl = l[0] + errCur[e];
+          const ta = l[1] + errCur[e + 1];
+          const tb = l[2] + errCur[e + 2];
+          const cand = matcher.candidates(l[0], l[1], l[2]);
+          let ci = 0;
+          if (cand.idx.length > 1) {
+            let p = paletteLab[cand.idx[0]];
+            let bd = dE(tl, ta, tb, p[0], p[1], p[2]);
+            for (let q = 1; q < cand.idx.length; q++) {
+              p = paletteLab[cand.idx[q]];
+              const d = dE(tl, ta, tb, p[0], p[1], p[2]);
+              if (d < bd) {
+                bd = d;
+                ci = q;
+              }
+            }
+          }
+          pi = cand.idx[ci];
+          const excess = cand.d[ci] - cand.d[0];
+          if (excess > ditherExcessMax) ditherExcessMax = excess;
+          if (excess > 5) ditherExcessOver5++;
           const p = paletteLab[pi];
-          // Fehler begrenzen, damit keine Artefakte entstehen
-          const lim = (v: number) => Math.max(-25, Math.min(25, v * dither));
-          const el = lim(tl - p[0]);
-          const ea = lim(ta - p[1]);
-          const eb = lim(tb - p[2]);
-          const add = (buf: Float32Array, c: number, f: number) => {
-            const o = (c + 1) * 3;
-            buf[o] += el * f;
-            buf[o + 1] += ea * f;
-            buf[o + 2] += eb * f;
-          };
-          add(errCur, col + 1, 7 / 16);
-          add(errNext, col - 1, 3 / 16);
-          add(errNext, col, 5 / 16);
-          add(errNext, col + 1, 1 / 16);
-        }
+          // Rest wie bisher verteilen (7/16 rechts, 3/16 unten links, 5/16 unten, 1/16 unten rechts), je Kanal auf
+          // ±25 begrenzt, damit keine Artefakte entstehen
+          const el = Math.max(-25, Math.min(25, (tl - p[0]) * dither));
+          const ea = Math.max(-25, Math.min(25, (ta - p[1]) * dither));
+          const eb = Math.max(-25, Math.min(25, (tb - p[2]) * dither));
+          const oR = e + 3; // Spalte col + 1
+          errCur[oR] += el * (7 / 16);
+          errCur[oR + 1] += ea * (7 / 16);
+          errCur[oR + 2] += eb * (7 / 16);
+          const oL = e - 3; // Spalte col − 1
+          errNext[oL] += el * (3 / 16);
+          errNext[oL + 1] += ea * (3 / 16);
+          errNext[oL + 2] += eb * (3 / 16);
+          errNext[e] += el * (5 / 16);
+          errNext[e + 1] += ea * (5 / 16);
+          errNext[e + 2] += eb * (5 / 16);
+          errNext[oR] += el * (1 / 16);
+          errNext[oR + 1] += ea * (1 / 16);
+          errNext[oR + 2] += eb * (1 / 16);
+        } else pi = matcher.nearest(l[0], l[1], l[2]);
+        data.c1[idx] = pi;
+        track(l, pi, true);
       } else if (kind === CellKind.SUB) {
         const s = subLab.get(idx)!;
         const k2 = s.length / 3;
@@ -607,7 +767,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         for (let q = 0; q < k2; q++) {
           const l: Lab = [s[q * 3], s[q * 3 + 1], s[q * 3 + 2]];
           out[q] = matcher.nearest(l[0], l[1], l[2]);
-          track(l, out[q]);
+          track(l, out[q], false);
         }
         data.sub.set(idx, out);
         data.c1[idx] = out[0];
@@ -616,8 +776,8 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
         const l2 = fromQ(c2Lab, idx);
         data.c1[idx] = matcher.nearest(l1[0], l1[1], l1[2]);
         data.c2[idx] = matcher.nearest(l2[0], l2[1], l2[2]);
-        track(l1, data.c1[idx]);
-        track(l2, data.c2[idx]);
+        track(l1, data.c1[idx], true);
+        track(l2, data.c2[idx], true);
       }
     }
     const tmp = errCur;
@@ -627,6 +787,29 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     if (row % 64 === 0) onProgress?.('assign', row / rows);
   }
   onProgress?.('assign', 1);
+
+  // ---------------- Fehlende Farben (Modi mit eigenen Materialien)
+  let missingColors: MissingColor[] | undefined;
+  if (centreMatcher) {
+    const list: MissingColor[] = [];
+    imageCentres.forEach((c, ci) => {
+      const nf = nearestFixed(fixed, c, dE);
+      if (nf.d <= MISSING_DELTA_E || icCnt[ci] === 0) return;
+      const f = fixed[nf.index];
+      list.push({
+        hex: labToHex(c[0], c[1], c[2]),
+        lab: [round2(c[0]), round2(c[1]), round2(c[2])],
+        stones: icCnt[ci],
+        ...(f.materialId !== undefined ? { nearestMaterialId: f.materialId } : {}),
+        nearestHex: f.hex,
+        nearestName: f.name,
+        deltaE: round2(nf.d),
+        assignedDeltaE: round2(icSum[ci] / icCnt[ci]),
+      });
+    });
+    list.sort((p, q) => q.stones - p.stones || p.lab[0] - q.lab[0]);
+    missingColors = list;
+  }
 
   // ---------------- Palette abschließen
   let palette: PaletteColor[];
@@ -725,10 +908,399 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       usedColors: palette.filter((p) => (p.matchDeltaE?.pieces ?? 0) > 0).length,
       ...(imageColors !== undefined ? { imageColors } : {}),
       ...(mergedColors !== undefined ? { mergedColors } : {}),
+      ...(materialMode ? { poolColors: fixed.length } : {}),
+      ...(snapSelection ? { snapSelection } : {}),
+      ...(missingColors ? { missingColors, missingThreshold: MISSING_DELTA_E, missingChecked: imageCentres.length } : {}),
+      ...(dither > 0 ? { ditherExcessMax: round2(ditherExcessMax), ditherExcessOver5 } : {}),
     },
   };
 }
 
 function round2(v: number): number {
   return Math.round(v * 100) / 100;
+}
+
+// ---------------------------------------------------------------- Materialauswahl („Automatisch → eigene Materialien“)
+
+/** Zusammenfassung der Steinfarben für die Auswahl: so viele gewichtete K-Means-Zentren (mindestens 256, bei vielen Farben 2·k) */
+export const SNAP_SUMMARY_K = 256;
+/** Lloyd-Iterationen der Zusammenfassung (sie muss nicht konvergieren, nur die Verteilung abbilden) */
+export const SNAP_SUMMARY_ITER = 10;
+/** höchstens so viele Tauschdurchgänge (FastPAM) nach der gierigen Auswahl */
+export const SNAP_SWAP_PASSES = 2;
+/**
+ * Rechenbudget der Tauschdurchgänge in Abstandsauswertungen (≈ 1,5 s auf einem Handy). Bewusst ein Zähler statt einer
+ * Uhr: das Ergebnis bleibt bei gleichem Seed auf jedem Gerät gleich.
+ */
+export const SNAP_SWAP_BUDGET = 150_000_000;
+/** Bestand bevorzugen: ein Material mit Bestand > 0 ersetzt ein gewähltes ohne, wenn dessen Steine im Mittel höchstens so viel schlechter passen */
+export const SNAP_STOCK_BONUS = 0.5;
+/** „Fehlende Farben“: Bildfarben, deren nächstes Material weiter als dieses ΔE entfernt ist */
+export const MISSING_DELTA_E = 5;
+/** „Meine Steine – alle Farben“: so viele typische Fotofarben werden für „Fehlende Farben“ untersucht */
+export const MISSING_IMAGE_COLORS = 32;
+
+type DEFn = (l1: number, a1: number, b1: number, l2: number, a2: number, b2: number) => number;
+
+/** Nächste Farbe einer festen Liste (exakt, Vergleich mit jeder Farbe; bei Gleichstand die niedrigere Position). */
+export function nearestFixed(list: readonly FixedColor[], c: Lab, dE: DEFn): { index: number; d: number } {
+  let index = 0;
+  let d = Infinity;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i].lab;
+    const di = dE(c[0], c[1], c[2], f[0], f[1], f[2]);
+    if (di < d) {
+      d = di;
+      index = i;
+    }
+  }
+  return { index, d };
+}
+
+export interface MaterialSelection {
+  /** gewählte Indizes in `materials` */
+  chosen: number[];
+  swaps: number;
+  /** aus den Steinfarben ergänzte bzw. gegen ein Material ohne Steine getauschte Materialien */
+  filled: number;
+  stockSwaps: number;
+  budgetHit: boolean;
+  /** Schutz hat gegriffen: es gilt die Startmenge (früheres Verfahren) */
+  fallback?: boolean;
+  /** mittleres ΔE (je Gewicht, wie bei der Zuordnung gemessen) der Stichprobe mit der Startmenge bzw. der Wahl – eine Schätzung, nicht das Ergebnis */
+  costSnap: number;
+  costSelected: number;
+}
+
+/**
+ * Wählt bis zu `k` Materialien, die die Steinfarben zusammen am besten treffen (gewichtetes k-Medoids über dem
+ * Materialbestand). `X`/`w`: Zusammenfassung der Steinfarben (Zentren und Gewichte); `samples`: die gewichtete
+ * Stichprobe der Steinfarben selbst. Kosten = Σ Gewicht · ΔE zum nächsten gewählten Material, mit der Formel der
+ * Berechnung.
+ * 1. Start mit `seed` (dem früheren Verfahren: jede Bildfarbe → nächstes Material), dann gierig das Material mit dem
+ *    größten Gewinn ergänzen, bis `k` erreicht ist oder keines mehr etwas verbessert.
+ * 2. Höchstens SNAP_SWAP_PASSES Tauschdurchgänge (FastPAM1 mit Zwischenspeicher der nächsten/zweitnächsten Wahl),
+ *    nur bei echter Verbesserung, innerhalb von SNAP_SWAP_BUDGET.
+ * 3. Auffüllen aus der Stichprobe: Solange weniger als `k` gewählt sind oder ein gewähltes Material keiner Steinfarbe am
+ *    nächsten liegt (es bekäme keine Steine), wird das Material ergänzt, das Steinfarben als ihr nächstes Material des
+ *    ganzen Bestands am meisten verbessert. So hat die Palette min(k, Materialien, die überhaupt Steine bekämen) Farben.
+ * 4. Bestand bevorzugen (nur, wenn manche Materialien Bestand > 0 haben und andere nicht): ein gewähltes Material
+ *    ohne Bestand wird durch eines mit Bestand ersetzt, wenn dessen Steine im Mittel höchstens SNAP_STOCK_BONUS ΔE
+ *    schlechter passen. Die Zuordnung der Steine bleibt rein nach Farbabstand.
+ * 5. Schutz: Mit demselben Zuordner wie bei der Berechnung auf der Stichprobe gemessen, darf die Wahl nicht teurer
+ *    sein als die Startmenge – sonst gilt die nächstbeste Stufe (ohne Bestandsvorzug, ohne Tausch, Startmenge).
+ * Deterministisch (keine Zufallszahlen, kein Zeitlimit nach Uhr).
+ */
+export function selectMaterials(
+  X: readonly Lab[],
+  w: readonly number[],
+  materials: readonly FixedColor[],
+  k: number,
+  formula: DeltaEFormula,
+  seed: readonly number[],
+  samples?: { pts: Float32Array; ws: Float32Array },
+): MaterialSelection {
+  const J = X.length;
+  const M = materials.length;
+  const de: DEFn = formula === '76' ? deltaE76 : deltaE2000;
+  const D = new Float64Array(J * M);
+  let W = 0;
+  for (let j = 0; j < J; j++) {
+    W += w[j];
+    const x = X[j];
+    for (let m = 0; m < M; m++) {
+      const f = materials[m].lab;
+      D[j * M + m] = de(x[0], x[1], x[2], f[0], f[1], f[2]);
+    }
+  }
+  const eps = 1e-9 * Math.max(W, 1e-12);
+  const target = Math.min(Math.max(1, k), M);
+  const seedSet = [...new Set(seed)].filter((m) => m >= 0 && m < M).slice(0, target);
+
+  // ---- 1. gierig ergänzen (Zusammenfassung)
+  const greedy = (start: readonly number[]): number[] => {
+    const S = start.slice();
+    const inS = new Uint8Array(M);
+    for (const m of S) inS[m] = 1;
+    const cur = new Float64Array(J).fill(S.length ? Infinity : 1e9);
+    for (let j = 0; j < J; j++) for (const m of S) cur[j] = Math.min(cur[j], D[j * M + m]);
+    while (S.length < target) {
+      let bestM = -1;
+      let bestG = 0;
+      for (let m = 0; m < M; m++) {
+        if (inS[m]) continue;
+        let g = 0;
+        for (let j = 0; j < J; j++) {
+          const diff = cur[j] - D[j * M + m];
+          if (diff > 0) g += w[j] * diff;
+        }
+        if (g > bestG) {
+          bestG = g;
+          bestM = m;
+        }
+      }
+      if (bestM < 0 || bestG <= eps) break;
+      S.push(bestM);
+      inS[bestM] = 1;
+      for (let j = 0; j < J; j++) cur[j] = Math.min(cur[j], D[j * M + bestM]);
+    }
+    return S;
+  };
+
+  // nächste (Platz in S) und zweitnächste Wahl je Zentrum der Zusammenfassung
+  const n1 = new Int32Array(J);
+  const d1 = new Float64Array(J);
+  const d2 = new Float64Array(J);
+  const nearestTwo = (S: readonly number[]) => {
+    for (let j = 0; j < J; j++) {
+      let a = Infinity;
+      let b = Infinity;
+      let ia = 0;
+      for (let q = 0; q < S.length; q++) {
+        const d = D[j * M + S[q]];
+        if (d < a) {
+          b = a;
+          a = d;
+          ia = q;
+        } else if (d < b) b = d;
+      }
+      n1[j] = ia;
+      d1[j] = a;
+      d2[j] = b;
+    }
+  };
+
+  // ---- 2. Tauschdurchgänge (FastPAM1, sofort tauschen)
+  const swap = (start: readonly number[]) => {
+    const S = start.slice();
+    const inS = new Uint8Array(M);
+    for (const m of S) inS[m] = 1;
+    let swaps = 0;
+    let budgetHit = false;
+    let ops = 0;
+    if (S.length > 0 && S.length < M) {
+      nearestTwo(S);
+      const loss = new Float64Array(S.length);
+      for (let pass = 0; pass < SNAP_SWAP_PASSES && !budgetHit; pass++) {
+        let improved = false;
+        for (let m = 0; m < M; m++) {
+          if (inS[m]) continue;
+          if (ops > SNAP_SWAP_BUDGET) {
+            budgetHit = true;
+            break;
+          }
+          let shared = 0;
+          loss.fill(0);
+          for (let j = 0; j < J; j++) {
+            const dm = D[j * M + m];
+            const dj = d1[j];
+            if (dm < dj) shared += w[j] * (dm - dj);
+            else loss[n1[j]] += w[j] * (Math.min(dm, d2[j]) - dj);
+          }
+          ops += J + S.length;
+          let bi = 0;
+          for (let q = 1; q < S.length; q++) if (loss[q] < loss[bi]) bi = q;
+          if (shared + loss[bi] < -eps) {
+            inS[S[bi]] = 0;
+            S[bi] = m;
+            inS[m] = 1;
+            nearestTwo(S);
+            ops += J * S.length;
+            swaps++;
+            improved = true;
+          }
+        }
+        if (!improved) break;
+      }
+    }
+    return { S, swaps, budgetHit };
+  };
+
+  // ---- 3. Auffüllen aus der Stichprobe der Steinfarben
+  const n = samples ? samples.ws.length : 0;
+  let poolNearest: { idx: Int32Array; d: Float64Array } | null = null;
+  const pool = () => {
+    if (!poolNearest && samples) {
+      const pm = new NearestColorMatcher(materials.map((f) => f.lab), formula);
+      const idx = new Int32Array(n);
+      const d = new Float64Array(n);
+      const p = samples.pts;
+      for (let i = 0; i < n; i++) {
+        const m = pm.nearest(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+        const f = materials[m].lab;
+        idx[i] = m;
+        d[i] = de(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], f[0], f[1], f[2]);
+      }
+      poolNearest = { idx, d };
+    }
+    return poolNearest!;
+  };
+  const fill = (start: readonly number[]) => {
+    if (!samples || !n || !start.length) return { S: start.slice(), filled: 0 };
+    const { idx: nIdx, d: dn } = pool();
+    const p = samples.pts;
+    const ws = samples.ws;
+    const S = start.slice();
+    const inS = new Uint8Array(M);
+    for (const m of S) inS[m] = 1;
+    const sm = new NearestColorMatcher(S.map((m) => materials[m].lab), formula);
+    const slot = new Int32Array(n);
+    const cur = new Float64Array(n);
+    const served = new Uint32Array(M);
+    let open: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = S[sm.nearest(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])];
+      const f = materials[m].lab;
+      slot[i] = m;
+      cur[i] = de(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], f[0], f[1], f[2]);
+      served[m]++;
+      if (!inS[nIdx[i]] && cur[i] > dn[i]) open.push(i);
+    }
+    let filled = 0;
+    const gains = new Float64Array(M);
+    for (let guard = 0; guard < target + M; guard++) {
+      gains.fill(0);
+      for (const i of open) gains[nIdx[i]] += ws[i] * (cur[i] - dn[i]);
+      let bestM = -1;
+      let bestG = 0;
+      for (let m = 0; m < M; m++)
+        if (!inS[m] && gains[m] > bestG) {
+          bestG = gains[m];
+          bestM = m;
+        }
+      if (bestM < 0 || bestG <= 0) break;
+      if (S.length < target) S.push(bestM);
+      else {
+        // voll: nur ein Material ersetzen, das keiner Steinfarbe am nächsten liegt (es bekäme keine Steine)
+        const q = S.findIndex((m) => served[m] === 0);
+        if (q < 0) break;
+        inS[S[q]] = 0;
+        S[q] = bestM;
+      }
+      inS[bestM] = 1;
+      filled++;
+      const f = materials[bestM].lab;
+      const next: number[] = [];
+      for (const i of open) {
+        const d = de(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], f[0], f[1], f[2]);
+        if (d < cur[i]) {
+          served[slot[i]]--;
+          slot[i] = bestM;
+          cur[i] = d;
+          served[bestM]++;
+        }
+        if (!inS[nIdx[i]] && cur[i] > dn[i]) next.push(i);
+      }
+      open = next;
+    }
+    return { S, filled };
+  };
+
+  // ---- 4. Bestand bevorzugen (bei fast gleicher Eignung, auf der Zusammenfassung)
+  const stocked = (m: number) => (materials[m].stock ?? 0) > 0;
+  let anyStock = false;
+  let anyOther = false;
+  for (let m = 0; m < M; m++) {
+    if (stocked(m)) anyStock = true;
+    else anyOther = true;
+  }
+  const preferStock = (start: readonly number[]) => {
+    const S = start.slice();
+    let stockSwaps = 0;
+    if (!anyStock || !anyOther || !S.length) return { S, stockSwaps };
+    const inS = new Uint8Array(M);
+    for (const m of S) inS[m] = 1;
+    for (let q = 0; q < S.length; q++) {
+      if (stocked(S[q])) continue;
+      nearestTwo(S);
+      let served = 0;
+      let base = 0;
+      for (let j = 0; j < J; j++) {
+        base += w[j] * d1[j];
+        if (n1[j] === q) served += w[j];
+      }
+      if (served <= 0) continue;
+      let bestM = -1;
+      let bestInc = Infinity;
+      for (let m = 0; m < M; m++) {
+        if (inS[m] || !stocked(m)) continue;
+        // Kosten, wenn S[q] durch m ersetzt wird (m muss danach selbst Steine erhalten)
+        let c = 0;
+        let servesM = 0;
+        for (let j = 0; j < J; j++) {
+          const dm = D[j * M + m];
+          const rest = n1[j] === q ? d2[j] : d1[j];
+          if (dm < rest) {
+            c += w[j] * dm;
+            servesM += w[j];
+          } else c += w[j] * rest;
+        }
+        const inc = c - base;
+        if (servesM > 0 && inc < bestInc) {
+          bestInc = inc;
+          bestM = m;
+        }
+      }
+      if (bestM >= 0 && bestInc <= SNAP_STOCK_BONUS * served) {
+        inS[S[q]] = 0;
+        S[q] = bestM;
+        inS[bestM] = 1;
+        stockSwaps++;
+      }
+    }
+    return { S, stockSwaps };
+  };
+
+  // ---- 5. Schutz: gemessen wie die Zuordnung (NearestColorMatcher, Formel der Berechnung)
+  const cost = (S: readonly number[]): number => {
+    if (!S.length) return Infinity;
+    if (!samples || !n) {
+      let c = 0;
+      for (let j = 0; j < J; j++) {
+        let b = Infinity;
+        for (const m of S) b = Math.min(b, D[j * M + m]);
+        c += w[j] * b;
+      }
+      return W > 0 ? c / W : 0;
+    }
+    const sm = new NearestColorMatcher(S.map((m) => materials[m].lab), formula);
+    const p = samples.pts;
+    let c = 0;
+    let ww = 0;
+    for (let i = 0; i < n; i++) {
+      const f = materials[S[sm.nearest(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])]].lab;
+      c += samples.ws[i] * de(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], f[0], f[1], f[2]);
+      ww += samples.ws[i];
+    }
+    return ww > 0 ? c / ww : 0;
+  };
+
+  const g = greedy(seedSet);
+  const sw = swap(g);
+  const fl = fill(sw.S);
+  const st = preferStock(fl.S);
+  const costSnap = cost(seedSet);
+  const tol = 1e-9 * Math.max(1, costSnap);
+  const result = (S: number[], swaps: number, filled: number, stockSwaps: number): MaterialSelection => ({
+    chosen: S,
+    swaps,
+    filled,
+    stockSwaps,
+    budgetHit: sw.budgetHit,
+    costSnap,
+    costSelected: cost(S),
+  });
+  let r = result(st.S, sw.swaps, fl.filled, st.stockSwaps);
+  if (r.costSelected <= costSnap + tol) return r;
+  if (st.stockSwaps > 0) {
+    r = result(fl.S, sw.swaps, fl.filled, 0);
+    if (r.costSelected <= costSnap + tol) return r;
+  }
+  const noSwap = fill(g);
+  r = result(noSwap.S, 0, noSwap.filled, 0);
+  if (r.costSelected <= costSnap + tol) return r;
+  // nur gierig ergänzt: Obermenge der Startmenge
+  r = result(g, 0, 0, 0);
+  if (r.costSelected <= costSnap + tol) return r;
+  return { ...result(seedSet, 0, 0, 0), fallback: true };
 }

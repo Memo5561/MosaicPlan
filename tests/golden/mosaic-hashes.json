@@ -61,18 +61,18 @@
   "portrait/auto-snap": {
    "cells": 5628,
    "kind": "a491d655cc4ca5158bd4",
-   "c1": "e17a2d0da70582dc9052",
-   "c2": "f13bb6ebebb81fea0a4e",
+   "c1": "dfc2d2fb9435c811587a",
+   "c2": "a6ac3974e923eb091bd2",
    "rec": "660b974630c79796bc3d",
-   "sub": "250a602469fe04b6d005",
+   "sub": "556c3dd45a537bab638b",
    "line": "eee4e365225f921ddbad",
    "free": "e3b0c44298fc1c149afb",
-   "palette": "8dd8e966e9b2f2347ec1"
+   "palette": "3d3b916c7aca34cfaa41"
   },
   "portrait/dither-cie76": {
    "cells": 5628,
    "kind": "a491d655cc4ca5158bd4",
-   "c1": "2f8fb61ed91064faa1b7",
+   "c1": "d02ad4c1bb2eeab7204f",
    "c2": "c927fd68218e3015e3f6",
    "rec": "660b974630c79796bc3d",
    "sub": "551722225c1dd95fb8c2",

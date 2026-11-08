@@ -1,0 +1,132 @@
+/* w3-colour-quality: „Fehlende Farben – Farbton zum Nachkaufen (Zielwert)“ in Schritt 5 (Farben) */
+
+details.w3cq-missing {
+  margin: 6px 0 12px;
+  padding: 2px 12px;
+  border: 1px solid #f0c98a;
+  border-radius: 10px;
+  background: #fff8ec;
+}
+details.w3cq-missing > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 9px 0;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+}
+details.w3cq-missing > summary::-webkit-details-marker {
+  display: none;
+}
+details.w3cq-missing > summary::before {
+  content: '▸';
+  color: var(--warn);
+  transition: transform 0.15s;
+}
+details.w3cq-missing[open] > summary::before {
+  transform: rotate(90deg);
+}
+details.w3cq-missing[open] {
+  padding-bottom: 6px;
+}
+.w3cq-missing-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--warn);
+}
+.w3cq-missing-sum {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+details.w3cq-missing .table-wrap {
+  background: var(--panel);
+}
+table.data.w3cq-missing-table td {
+  vertical-align: middle;
+}
+table.data.w3cq-missing-table th,
+table.data.w3cq-missing-table td.num {
+  white-space: nowrap;
+}
+.w3cq-target,
+.w3cq-near {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.w3cq-target > span,
+.w3cq-near > span {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.w3cq-near > span {
+  display: inline;
+}
+.w3cq-lab {
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.w3cq-de {
+  color: var(--warn);
+  white-space: nowrap;
+}
+.w3cq-missing-none {
+  margin: 6px 0 10px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: #edf7ef;
+  color: var(--ok);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.w3cq-got-inline,
+.w3cq-stones-label {
+  display: none;
+}
+
+/* Handy: jede Fehlfarbe als Karte (Zielfarbe | Steine, darunter Material und „Erhalten“) – passt in die
+   Bildschirmbreite, kein seitliches Blättern */
+@media (max-width: 600px) {
+  details.w3cq-missing {
+    padding: 2px 8px;
+  }
+  table.data.w3cq-missing-table thead {
+    display: none;
+  }
+  table.data.w3cq-missing-table,
+  table.data.w3cq-missing-table tbody {
+    display: block;
+    min-width: 0;
+  }
+  table.data.w3cq-missing-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.data.w3cq-missing-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  table.data.w3cq-missing-table td[data-col='nearest'] {
+    grid-column: 1 / -1;
+    padding-left: 30px;
+  }
+  table.data.w3cq-missing-table .w3cq-got-col {
+    display: none;
+  }
+  .w3cq-got-inline,
+  .w3cq-stones-label {
+    display: inline;
+  }
+  .w3cq-got-inline {
+    display: block;
+    margin-top: 2px;
+  }
+}

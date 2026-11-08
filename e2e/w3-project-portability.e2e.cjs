@@ -121,7 +121,8 @@ async function readStone(page, name) {
 async function readCalc(page, name) {
   await page.click('[data-testid="step-plan"]');
   await page.waitForSelector('[data-testid="progress-pct"]');
-  await page.locator('aside.side .segmented button', { hasText: /^Material$/ }).click();
+  // w4-laying-workbench: „Material & Einkauf“ ist eine eigene Ansicht über dem Viewer (nicht mehr in der Seitenleiste)
+  await page.locator('[data-testid="plan-view"] button', { hasText: /^Material/ }).click();
   await page.waitForSelector('[data-testid="material-calc"] [data-testid="mc-pieces"]', { timeout: 30000 });
   await page.waitForTimeout(1500); // Statistik-Worker
   const calc = await page.evaluate(() => {

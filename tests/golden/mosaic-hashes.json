@@ -4,10 +4,10 @@
   "portrait": {
    "cells": 5628,
    "kind": "a491d655cc4ca5158bd4",
-   "c1": "5ee60d7ca68fb7d5ae20",
-   "c2": "06beefab8193356460fd",
+   "c1": "37fb3f3f06a3b399100f",
+   "c2": "130e6265a8cf5d5e4c15",
    "rec": "660b974630c79796bc3d",
-   "sub": "18d2724f0cf397c5bdf9",
+   "sub": "96d885c631505145e710",
    "line": "eee4e365225f921ddbad",
    "free": "e3b0c44298fc1c149afb",
    "palette": "33bea0c9a70a2d169edc"
@@ -15,10 +15,10 @@
   "landscape": {
    "cells": 10795,
    "kind": "dd8e34586e96ef1c81fb",
-   "c1": "a89363c901c1dd5e0048",
-   "c2": "4c2d0b9af1ab562c23ad",
+   "c1": "426d9fd3d974e90b7be0",
+   "c2": "e9b2f7a7060ffdc31ba9",
    "rec": "88289481fc86c99bb97b",
-   "sub": "5448e1357d21310f446f",
+   "sub": "d9f8c7a4a71d84c66b60",
    "line": "0ee2c7562db36ed2540c",
    "free": "e3b0c44298fc1c149afb",
    "palette": "f506d327f251c1e6633e"
@@ -26,8 +26,8 @@
   "animal": {
    "cells": 5184,
    "kind": "e7fd9b44f243fc4dddd0",
-   "c1": "d4a748c2becaa56fe831",
-   "c2": "2406a0712e6f86c2da79",
+   "c1": "a98dcdbe33c1d357f8bd",
+   "c2": "1183f95f60bb81ece5c4",
    "rec": "523862a510945f2c2fd5",
    "sub": "f15915e03c7df7efc6c0",
    "line": "960f8c8e930c6fea5423",
@@ -50,10 +50,10 @@
   "portrait/materials": {
    "cells": 5628,
    "kind": "a491d655cc4ca5158bd4",
-   "c1": "cb0143bb7706e0bdd25c",
-   "c2": "c9916c807b70ba87b3de",
+   "c1": "dfc2d2fb9435c811587a",
+   "c2": "6f574b9561734326f264",
    "rec": "660b974630c79796bc3d",
-   "sub": "df2dcfef737d9fd04ecf",
+   "sub": "556c3dd45a537bab638b",
    "line": "eee4e365225f921ddbad",
    "free": "e3b0c44298fc1c149afb",
    "palette": "3d3b916c7aca34cfaa41"
@@ -61,10 +61,10 @@
   "portrait/auto-snap": {
    "cells": 5628,
    "kind": "a491d655cc4ca5158bd4",
-   "c1": "5121941f1e0e2cc03743",
-   "c2": "c81f09f33b2e7022617c",
+   "c1": "e17a2d0da70582dc9052",
+   "c2": "f13bb6ebebb81fea0a4e",
    "rec": "660b974630c79796bc3d",
-   "sub": "15e18711f08bb1aabc6e",
+   "sub": "250a602469fe04b6d005",
    "line": "eee4e365225f921ddbad",
    "free": "e3b0c44298fc1c149afb",
    "palette": "8dd8e966e9b2f2347ec1"
@@ -83,7 +83,7 @@
   "city/detail-k3": {
    "cells": 18704,
    "kind": "48997ddd11a24b51d1a8",
-   "c1": "1477b76aa6041b083d93",
+   "c1": "7b6e1cf3594b359d7b21",
    "c2": "39f4ef00d8b6f60f4eda",
    "rec": "5ad849ba138bf8ac338d",
    "sub": "b7073c03a12a1f908c9b",
@@ -94,7 +94,7 @@
   "animal/no-shapes": {
    "cells": 5184,
    "kind": "523862a510945f2c2fd5",
-   "c1": "0e939b425b507ce07c71",
+   "c1": "3dc30ca80c69496c6054",
    "c2": "c9d22e355bbaae2da3ff",
    "rec": "ad27d9f464ed99cfddf3",
    "sub": "e3b0c44298fc1c149afb",

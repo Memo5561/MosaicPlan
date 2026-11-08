@@ -1,0 +1,190 @@
+/* w2-colour-honesty: „Erweitert“-Bereich, angefordert/verwendet, Farblegende (Spalten, Abweichung je Farbe), Vorschau-Legende */
+
+/* ---- Erweitert (Farbabstand, Farbübergänge) */
+details.w2ch-advanced {
+  margin: 12px 0;
+  padding: 2px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfaf7;
+}
+details.w2ch-advanced > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 9px 0;
+  min-height: 40px;
+  cursor: pointer;
+  list-style: none;
+}
+details.w2ch-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+details.w2ch-advanced > summary::before {
+  content: '▸';
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+details.w2ch-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+details.w2ch-advanced .w2ch-adv-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+details.w2ch-advanced .w2ch-adv-values {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+details.w2ch-advanced[open] {
+  padding-bottom: 8px;
+}
+
+/* ---- angefordert / verwendet */
+.w2ch-counts {
+  margin: 6px 0 8px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: #eef3f8;
+  color: #2b4f78;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+.w2ch-counts.warn-box {
+  background: #fff4e0;
+  color: #7a4a00;
+}
+
+/* ---- Farblegende */
+table.w2ch-palette td.num,
+table.w2ch-palette td.mono,
+table.w2ch-palette th {
+  white-space: nowrap;
+}
+table.w2ch-palette td[data-col='stones'] {
+  line-height: 1.25;
+}
+.w2ch-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.w2ch-code input[type='color'] {
+  width: 34px;
+  height: 28px;
+  padding: 0 2px;
+}
+/* erste Spalte bleibt beim waagerechten Blättern stehen */
+table.w2ch-palette .w2ch-sticky {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--panel);
+}
+table.w2ch-palette thead .w2ch-sticky {
+  z-index: 2;
+  background: #faf8f4;
+}
+table.w2ch-palette tr.w1mc-unused > td.w2ch-sticky {
+  background: #faf8f4;
+}
+.w2ch-de {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.w2ch-de.bad {
+  color: var(--err);
+}
+.w2ch-de.stale {
+  font-style: italic;
+}
+.w2ch-over {
+  color: var(--warn);
+}
+.w2ch-de.bad .w2ch-over {
+  color: inherit;
+}
+td.w2ch-mat select {
+  max-width: 220px;
+}
+td.w2ch-mat select.w2ch-missing {
+  border-color: var(--warn);
+}
+.w2ch-mat-de {
+  display: block;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.w2ch-missing-badge {
+  display: table;
+  margin: 3px 0 0;
+  white-space: nowrap;
+}
+td.w2ch-hexlab {
+  color: var(--ink-soft);
+}
+
+/* Handy: Steine und Bedarf passen neben den Namen in die erste Bildschirmbreite */
+@media (max-width: 600px) {
+  table.w2ch-palette th,
+  table.w2ch-palette td {
+    padding: 5px 5px;
+  }
+  table.w2ch-palette input.text {
+    min-width: 0;
+    width: 128px;
+    padding: 6px 6px;
+  }
+  /* Bedarf: Einheit unter die Zahl, damit die Spalte schmal bleibt */
+  table.w2ch-palette .w2ch-unit {
+    display: block;
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  /* Abweichung kurz (Ø), Maximum und Ausreißer stehen im Tooltip und auf breiteren Bildschirmen */
+  .w2ch-de .w2ch-max,
+  .w2ch-de .w2ch-over {
+    display: none;
+  }
+  table.w2ch-palette td[data-col='need'] {
+    font-size: 0.74rem;
+  }
+  .w2ch-code {
+    gap: 4px;
+  }
+  .w2ch-code input[type='color'] {
+    width: 26px;
+    height: 26px;
+  }
+  td.w2ch-mat select {
+    max-width: 150px;
+  }
+}
+
+/* ---- Vorschau-Legende: Name + Material (Hersteller, Farbnummer) */
+.w2ch-legend-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.w2ch-legend-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w2ch-legend-mat {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w2ch-legend-mat.missing {
+  color: var(--warn);
+  font-weight: 600;
+}

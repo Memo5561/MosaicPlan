@@ -1,6 +1,7 @@
 import type { Lab } from './color';
 import type { EdgeMode } from './layout';
 import type { Pt } from './geometry';
+import type { NameSuffix } from './colorNames';
 
 /** Zellarten im Raster. */
 export const CellKind = {
@@ -48,14 +49,45 @@ export interface MosaicData {
   rec: Uint8Array;
 }
 
+/**
+ * Abweichung der Steine einer Farbe vom Foto, gemessen bei der Berechnung: je Stein das (unvermischte)
+ * Bild-Lab des Steins gegen die zugeordnete Palettenfarbe, mit der Formel der Projekteinstellung.
+ * Gilt für den Stand der Berechnung; manuelle Änderungen (Farbe entfernen, HEX ändern) löschen den Wert.
+ */
+export interface MatchDeltaE {
+  /** Anzahl Steine (Teilstücke) dieser Farbe bei der Berechnung */
+  pieces: number;
+  /** mittleres ΔE (auf 0,01 gerundet) */
+  mean: number;
+  /** größtes ΔE (auf 0,01 gerundet) */
+  max: number;
+  /** Steine mit ΔE > 5 */
+  over5: number;
+  /** Steine mit ΔE > 10 */
+  over10: number;
+}
+
 export interface PaletteColor {
   /** eindeutige, stabile Farbnummer im Projekt (01, 02, …) */
   code: number;
+  /** gespeicherter Name (bei automatischen Namen in der Sprache der letzten Benennung) */
   name: string;
   hex: string;
   lab: Lab;
   materialId?: string;
-  /** ΔE zur Ursprungsfarbe des Bildes (bei Materialabgleich) */
+  /**
+   * Nur bei automatisch erzeugten Namen: sprachneutraler Schlüssel (src/core/colorNames.ts). Der Name folgt
+   * dann der UI-Sprache (paletteDisplayName) und wird bei einer HEX-Änderung neu gebildet. Fehlt bei
+   * Material- und Benutzernamen – die werden nie verändert.
+   */
+  nameKey?: string;
+  /** Zusatz eines automatischen Namens zur Unterscheidung gleichnamiger Farben: hell/mittel/dunkel oder Nummer */
+  nameSuffix?: NameSuffix;
+  /** Abweichung der Steine dieser Farbe vom Foto bei der Berechnung (siehe MatchDeltaE) */
+  matchDeltaE?: MatchDeltaE;
+  /** Nur „Automatisch → eigene Materialien“: Anzahl der Bildfarben (K-Means), die auf dieses Material zusammengelegt wurden */
+  mergedFrom?: number;
+  /** @deprecated nie gesetzt – siehe matchDeltaE */
   deltaE?: number;
 }
 

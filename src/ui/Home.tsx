@@ -4,6 +4,7 @@ import { useI18n } from '../i18n';
 import { listProjects, type AppSettings, type ProjectRecord } from '../storage/db';
 import { createProject } from '../storage/projects';
 import { createFromPhoto, createFromSample, fetchAppBlob, pickDroppedFile, projectNameFromFile, type HomePhotoErrorKind } from './homeIntake';
+import { LaidProgress } from './LaidProgress';
 import { loadBitmap } from './project/imagePrep';
 
 export const SAMPLES: { key: string; file: string; w: number; tile: number; joint: number; colors: number; regions?: Region[] }[] = [
@@ -217,12 +218,13 @@ export function Home({ app, go }: { app: AppSettings; go: (hash: string) => void
           <h2>{t('home.recent')}</h2>
           <div className="project-cards">
             {recent.map((p) => (
-              <button key={p.meta.id} className="project-card" onClick={() => go(`#/project/${p.meta.id}`)}>
+              <button key={p.meta.id} className="project-card" onClick={() => go(`#/project/${p.meta.id}`)} data-testid="recent-card" data-project={p.meta.id}>
                 {p.meta.thumb ? <img src={p.meta.thumb} alt="" /> : <div className="thumb-empty">🧩</div>}
                 <b>{p.meta.name}</b>
                 <small className="muted">
                   {n(p.settings.widthMm / 10, 1)} × {n(p.settings.heightMm / 10, 1)} cm · {n(p.settings.tileW, 1)} mm
                 </small>
+                <LaidProgress rec={p} compact />
               </button>
             ))}
           </div>

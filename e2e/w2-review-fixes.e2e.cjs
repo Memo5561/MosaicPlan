@@ -206,8 +206,9 @@ async function setLang(page, label) {
   const afterApply = await dbGet(page, 'projects', portrait);
   const placedApplied = await placedNow(page);
   check(
-    'Sicherungskopie + übernehmen: Kopie angelegt, neues Ergebnis gespeichert, Fortschritt (wie angekündigt) zurückgesetzt',
-    /50 als verlegt markierte Steine/.test(pendingText2) && !!notice && /vor Übernahme/.test((await notice.textContent()) || '') && afterApply.mosaicRev !== rev0 && placedApplied === 0,
+    // seit w4-progress-engine: gleiche Einstellungen → nachweislich gleiche Steine bleiben verlegt (hier alle 50)
+    'Sicherungskopie + übernehmen: Kopie angelegt, neues Ergebnis gespeichert, nachweislich gleiche Steine bleiben verlegt',
+    /50 als verlegt markierte Steine/.test(pendingText2) && !!notice && /vor Übernahme/.test((await notice.textContent()) || '') && afterApply.mosaicRev !== rev0 && placedApplied === 50,
     pendingText2.slice(0, 90),
   );
   // die Kopie enthält alle 50 Steine

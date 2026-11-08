@@ -11,6 +11,7 @@
  */
 import type { StoredMosaic } from '../core/serialize';
 import type { ComputeDiagnostics } from '../core/mosaic';
+import type { CarryOverReport } from '../core/progressCarry';
 import type { PdfOptions } from '../core/pdfOptions';
 import type { ImageAdjust, Material, PaletteColor, ProjectMeta, ProjectSettings, Region } from '../core/types';
 
@@ -20,9 +21,35 @@ const STORES = ['projects', 'images', 'mosaics', 'progress', 'materials', 'kv'];
 /** Stores, die je Projekt einen Eintrag unter der Projekt-ID haben */
 export const PROJECT_STORES = ['projects', 'images', 'mosaics', 'progress'] as const;
 
+/**
+ * Verlegefortschritt eines Projekts für Listen („Meine Projekte“, Startseite), ohne das Raster zu laden. Wird mit
+ * jedem Speichern des Fortschritts bzw. Rasters geschrieben und bei jeder Berechnung neu gesetzt; `rev` ist die
+ * Revision des Rasters, zu dem die Zahlen gehören (passt sie nicht zu `mosaicRev`, wird nichts angezeigt).
+ * Fehlt bei älteren Projekten, bis sie geöffnet werden.
+ */
+export interface ProgressSummary {
+  /** als verlegt markierte Steine */
+  placed: number;
+  /** Steine im Mosaik */
+  total: number;
+  rev?: string;
+}
+
 export interface ProjectRecordMeta extends ProjectMeta {
   /** Anzahl manueller Änderungen am Raster seit der letzten Berechnung (Steinfarbe/-form, Farbe entfernt) */
   manualEdits?: number;
+  /** Verlegefortschritt für Projektlisten (siehe ProgressSummary) */
+  progressSummary?: ProgressSummary;
+}
+
+/**
+ * Was die letzte Berechnung mit dem Verlegefortschritt des vorherigen Rasters gemacht hat (siehe
+ * core/progressCarry.ts): gleiches Raster → nachweislich gleiche Steine bleiben verlegt, sonst nichts übertragbar.
+ * Wird einmal angezeigt, bis der Benutzer den Hinweis schließt oder neu berechnet; `rev` = Raster, zu dem er gehört.
+ */
+export interface CarryOverInfo extends CarryOverReport {
+  rev: string;
+  at: number;
 }
 
 export interface ProjectRecord {
@@ -57,6 +84,32 @@ export interface ProjectRecord {
    * ergeben. Fehlt bei älteren Projekten und in den anderen Modi.
    */
   computedMaterialSig?: string;
+  /** Übernahme des Verlegefortschritts bei der letzten Berechnung (fehlt: nichts zu melden) */
+  lastCarryOver?: CarryOverInfo;
+}
+
+/**
+ * Verlegefortschritt zum Anzeigen in Listen – nur, wenn er zum gespeicherten Raster gehört und plausibel ist
+ * (ganze Zahlen, 0 ≤ verlegt ≤ gesamt, gesamt > 0). Sonst null: dann wird nichts angezeigt, nie geschätzt.
+ */
+export function listProgressOf(r: Pick<ProjectRecord, 'meta' | 'mosaicRev'>): { placed: number; total: number } | null {
+  const ps = r.meta.progressSummary;
+  if (!ps || !r.meta.computed) return null;
+  if ((ps.rev ?? null) !== (r.mosaicRev ?? null)) return null;
+  const { placed, total } = ps;
+  if (!Number.isInteger(placed) || !Number.isInteger(total) || total <= 0 || placed < 0 || placed > total) return null;
+  return { placed, total };
+}
+
+/**
+ * Ganzzahliger Prozentwert für „NN % verlegt“: abgerundet, damit „100 %“ nur erscheint, wenn alles verlegt ist;
+ * ein einzelner verlegter Stein ergibt nie „0 %“ (dann `lessThanOne`).
+ */
+export function laidPercent(placed: number, total: number): { pct: number; lessThanOne: boolean } {
+  if (total <= 0 || placed <= 0) return { pct: 0, lessThanOne: false };
+  if (placed >= total) return { pct: 100, lessThanOne: false };
+  const pct = Math.min(99, Math.floor((placed * 100) / total));
+  return { pct, lessThanOne: pct === 0 };
 }
 
 export interface ImageRecord {
@@ -378,6 +431,10 @@ export interface ComputeFields {
   customInput?: PaletteColor[];
   /** Fingerabdruck der angebotenen Materialien (siehe ProjectRecord.computedMaterialSig) */
   computedMaterialSig?: string;
+  /** Verlegefortschritt des neuen Rasters (fehlt: unbekannt → wird in Listen nicht angezeigt) */
+  progressSummary?: ProgressSummary;
+  /** Übernahme des Verlegefortschritts (fehlt: nichts zu melden) */
+  carryOver?: CarryOverInfo;
 }
 
 /** Fehlertext: die eigene Palette wurde während der Berechnung so geändert, dass das Ergebnis nicht mehr passt. */
@@ -467,7 +524,9 @@ export function mergeComputeFields(latest: ProjectRecord, f: ComputeFields): Pro
     // Palette, wie diese Berechnung sie festschreibt (bei eigener Palette ggf. mit den Ergänzungen des Benutzers)
     computedPaletteSig: paletteSignature(pal.palette),
     computedMaterialSig: f.computedMaterialSig,
-    meta: dropUndefined({ ...latest.meta, computed: true, thumb: f.thumb ?? latest.meta.thumb, updatedAt: f.updatedAt, manualEdits: 0 }),
+    // gehören zum neuen Raster: ohne Angabe entfernt (nie Zahlen des ersetzten Rasters weiterzeigen)
+    lastCarryOver: f.carryOver,
+    meta: dropUndefined({ ...latest.meta, computed: true, thumb: f.thumb ?? latest.meta.thumb, updatedAt: f.updatedAt, manualEdits: 0, progressSummary: f.progressSummary }),
   });
 }
 
@@ -506,8 +565,25 @@ export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectReco
     computedImageRev: stored.computedImageRev,
     computedPaletteSig: stored.computedPaletteSig,
     computedMaterialSig: stored.computedMaterialSig,
-    meta: dropUndefined({ ...mine.meta, computed: stored.meta.computed, thumb: stored.meta.thumb, manualEdits: stored.meta.manualEdits }),
+    lastCarryOver: stored.lastCarryOver,
+    meta: dropUndefined({ ...mine.meta, computed: stored.meta.computed, thumb: stored.meta.thumb, manualEdits: stored.meta.manualEdits, progressSummary: stored.meta.progressSummary }),
   });
+}
+
+/**
+ * Fortschritt beim Festschreiben einer Berechnung aus dem ersetzten Raster übernehmen (siehe core/progressCarry.ts).
+ * `baseRev`: Revision des Stands, den der Aufrufer im Arbeitsspeicher hat (geöffnete Ansicht, mit den neuesten
+ * Markierungen); null = keiner. Stimmt sie mit dem gespeicherten Raster überein, ruft die Transaktion `run(palette,
+ * null)` auf; sonst liest sie Raster und Fortschritt aus dem Speicher (in derselben Transaktion) und übergibt sie –
+ * so wird nie gegen ein anderes Raster verglichen. `palette` ist die Palette, die mit dem neuen Raster gespeichert
+ * wird. `run` liefert den zu schreibenden Fortschritt und die Felder zur Übernahme (progressSummary, carryOver).
+ */
+export interface CommitCarry {
+  baseRev: string | undefined | null;
+  run(palette: PaletteColor[], stored: { rec: ProjectRecord; mosaic?: StoredMosaicNoProgress; progress?: Uint16Array } | null): {
+    progress: Uint16Array;
+    fields: Pick<ComputeFields, 'progressSummary' | 'carryOver'>;
+  };
 }
 
 /**
@@ -516,20 +592,47 @@ export function keepStoredComputeFields(mine: ProjectRecord, stored: ProjectReco
  * (mit neuer Revision) und Fortschritt gemeinsam. Wurde das Projekt inzwischen gelöscht,
  * wird nichts geschrieben und mit Error('deleted') abgelehnt; passt die inzwischen geänderte
  * eigene Palette nicht mehr zum Ergebnis, ebenso nichts und Error('palette-changed').
+ * Mit `carry` wird der Fortschritt des ersetzten Rasters übernommen, wo es nachweislich dieselben Steine sind.
  */
-export function commitComputed(id: string, fields: ComputeFields, mosaic: StoredMosaicNoProgress, progress: Uint16Array, source?: string): Promise<ProjectRecord> {
+export function commitComputed(id: string, fields: ComputeFields, mosaic: StoredMosaicNoProgress, progress: Uint16Array, source?: string, carry?: CommitCarry): Promise<ProjectRecord> {
   return txMulti<ProjectRecord>(['projects', 'mosaics', 'progress'], 'readwrite', (ctx) => {
     ctx.on(ctx.store('projects').get(id) as IDBRequest<ProjectRecord | undefined>, (latest) => {
       if (!latest) {
         ctx.abort(new Error(DELETED));
         return;
       }
-      const next = mergeComputeFields(latest, fields);
-      ctx.store('projects').put(next, id);
-      ctx.store('mosaics').put({ ...mosaic, rev: fields.mosaicRev }, id);
-      ctx.store('progress').put(progress, id);
-      ctx.commit();
-      ctx.done(next);
+      const write = (prog: Uint16Array, f: ComputeFields) => {
+        const next = mergeComputeFields(latest, f);
+        ctx.store('projects').put(next, id);
+        ctx.store('mosaics').put({ ...mosaic, rev: fields.mosaicRev }, id);
+        ctx.store('progress').put(prog, id);
+        ctx.commit();
+        ctx.done(next);
+      };
+      if (!carry) {
+        write(progress, fields);
+        return;
+      }
+      // Palette, die mit dem neuen Raster gespeichert wird (wirft bei verkürzter eigener Palette – nichts geschrieben)
+      const pal = resolveComputedPalette(latest.palette, fields);
+      if (!pal) throw new Error(PALETTE_CHANGED);
+      const finish = (stored: { rec: ProjectRecord; mosaic?: StoredMosaicNoProgress; progress?: Uint16Array } | null) => {
+        const r = carry.run(pal.palette, stored);
+        write(r.progress, { ...fields, ...r.fields });
+      };
+      if (carry.baseRev !== null && (latest.mosaicRev ?? null) === (carry.baseRev ?? null)) {
+        finish(null);
+        return;
+      }
+      // Stand im Arbeitsspeicher gehört nicht zum gespeicherten Raster (oder es gibt keinen): gespeicherten lesen
+      const stored: { rec: ProjectRecord; mosaic?: StoredMosaicNoProgress; progress?: Uint16Array } = { rec: latest };
+      ctx.on(ctx.store('mosaics').get(id) as IDBRequest<StoredMosaicNoProgress | undefined>, (m) => {
+        stored.mosaic = m;
+        ctx.on(ctx.store('progress').get(id) as IDBRequest<Uint16Array | undefined>, (p) => {
+          stored.progress = p;
+          finish(stored);
+        });
+      });
     });
   }).then((next) => {
     emit({ type: 'computed', id, mosaicRev: fields.mosaicRev, source });

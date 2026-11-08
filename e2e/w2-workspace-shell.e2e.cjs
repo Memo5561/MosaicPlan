@@ -181,6 +181,11 @@ async function placedCount(page) {
   const placedAfterCancel = await placedCount(page);
   check('Abbrechen: keine Berechnung, Fortschritt unverändert', !computingAfterCancel && placedAfterCancel === placed, `${de(placedAfterCancel)} verlegt`);
 
+  // Raster ändern (Fuge): Seit w4-progress-engine bleiben bei gleichem Raster nachweislich gleiche Steine verlegt;
+  // mit anderem Raster ist der Fortschritt nicht übertragbar und wird wie angekündigt zurückgesetzt
+  await page.click('[data-testid="step-joint"]');
+  await page.click('[data-testid="joint-presets"] button:has-text("1,5 mm")');
+  await page.waitForTimeout(300);
   await page.click('[data-testid="step-compute"]');
   await page.click('[data-testid="compute-btn"]');
   await page.waitForSelector('[data-testid="recompute-guard"]');

@@ -6,6 +6,7 @@ import { timestampedName, type SaveResult } from '../platform';
 import { listProjects, type ProjectRecord } from '../storage/db';
 import { deleteProject, duplicateProject, exportProject, importProject, ProjectFileError, type ProjectImportSummary } from '../storage/projects';
 import { downloadBlob, safeFileName } from './components';
+import { LaidProgress } from './LaidProgress';
 import { SaveResultNote } from './SaveResultNote';
 import './css/w3-project-portability.css';
 
@@ -318,6 +319,8 @@ export function Projects({ go, onMaterialsChanged }: { go: (h: string) => void; 
                   <br />
                   {t('projects.updated')}: {new Date(p.meta.updatedAt).toLocaleString()} · {p.meta.computed ? t('projects.computed') : t('projects.notComputed')}
                 </div>
+                {/* Verlegefortschritt – nur mit gespeicherten Zahlen zum aktuellen Raster (ältere Projekte: nach dem Öffnen) */}
+                <LaidProgress rec={p} />
               </div>
               <div className="btn-row wrap">
                 <button

@@ -315,8 +315,12 @@ describe('Seitenplan: planPdfPages().total = Seiten des PDFs', () => {
             facts.templateGroups,
           );
           expect(est.sheets, where).toBe(plan.sheets);
-          expect(est.templates, where).toBe(plan.templates);
-          expect(est.coords, where).toBe(plan.coords);
+          // Welle 5: Vorlagen-Kastenhöhen und die kompakte Koordinatenliste hängen vom Inhalt ab – ohne Messwerte
+          // geschätzt und als „geschätzt“ gekennzeichnet (mit Messwerten exakt, siehe oben)
+          if (opts.includeTemplates && facts.templateGroups > 0) expect(est.estimated, where).toContain('templates');
+          else expect(est.templates, where).toBe(plan.templates);
+          if (opts.includeCoords) expect(est.estimated, where).toContain('coords');
+          else expect(est.coords, where).toBe(plan.coords);
           expect(est.estimated, where).toContain('front');
         }
     }, 300000);

@@ -345,7 +345,7 @@ describe('PDF-Verlegeplan', () => {
   }, 120000);
 });
 
-describe('Koordinatenliste: Kürzung wird genau dort gemeldet, wo ein Stein fehlt', () => {
+describe('Koordinatenliste je Stein (coordMode perStone): Kürzung wird genau dort gemeldet, wo ein Stein fehlt', () => {
   const coordRows = (p: ParsedPdf) => {
     let n = 0;
     for (let i = 1; i <= p.pages.length; i++) n += (p.pageText(i).match(/^[A-Z]{1,2}\d{3}(-\d)?$/gm) ?? []).length;
@@ -361,7 +361,7 @@ describe('Koordinatenliste: Kürzung wird genau dort gemeldet, wo ein Stein fehl
     const pieces = computeStats(layout, data, palette, [], { reservePct: 0, groutDepthMm: 3 }).pieces;
     const raw = makeRawSizeFn(layout, palette, []);
     const coordLimit = limit(pieces, sections, (i) => countStones(layout, data, raw, sections.sections[i]));
-    const pdf = await generatePdf(baseInput(layout, data, palette, sections), { ...lean, includeCoords: true, coordLimit });
+    const pdf = await generatePdf(baseInput(layout, data, palette, sections), { ...lean, includeCoords: true, coordMode: 'perStone', coordLimit });
     return { p: parsePdf(pdf), pieces, sections, coordLimit };
   };
 

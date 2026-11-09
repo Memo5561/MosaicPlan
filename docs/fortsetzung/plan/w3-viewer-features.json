@@ -1,0 +1,214 @@
+{
+ "wave": 3,
+ "waveName": "Wave 3 – Mosaic colour quality, live preview, freeform, face guidance, viewer features, PDF foundations, portability",
+ "package": {
+  "id": "w3-viewer-features",
+  "title": "Rulers, section focus, paint/rectangle modes and photo comparison in the viewer",
+  "goal": "The viewer has row/column rulers that match the stone IDs and the PDF. It can dim everything outside a section or colour. It supports brush and rectangle selection, long-press and hover inspection, and an exact photo-vs-mosaic comparison slider.",
+  "findingIds": [
+   "ux-desktop#6",
+   "spec-gaps#5",
+   "spec-gaps#10",
+   "ux-desktop#13"
+  ],
+  "ownedFiles": [
+   "src/core/render.ts",
+   "src/ui/project/Viewer.tsx",
+   "src/ui/project/StepPreview.tsx"
+  ],
+  "newFiles": [
+   "tests/w3-viewer-features.test.ts",
+   "src/ui/css/w3-viewer-features.css",
+   "src/i18n/ext/w3-viewer-features.ts"
+  ],
+  "steps": [
+   "render.ts:\n- RenderOptions.rulers: an 18 px top and left band with col+1 and rowLabel(row) for the visible range. Use the same label-skipping rule as the PDF labelStep (every label at ≥14 px, then every 5th or 10th). Highlight the selected row and column.\n- focusRange: a semi-opaque overlay outside the range in both the detailed and the overview path.\n- focusColor dims other colours with a grey wash, so they cannot be confused with the laid-stone tint.",
+   "Viewer props:\n- focusRange plus onOutsideTap(section hint): taps outside the range never pick.\n- mode 'tap' | 'paint' | 'rect':\n  - paint: one-pointer drag calls onPaint({idx,piece}[], set) with the target state taken from the first piece;\n  - rect: drag a cell-snapped rectangle and call onRect(range);\n  - in both modes, two fingers, Space or the middle mouse button pan; the cursor is a crosshair.\n- onLongPick(row, col, piece) after 500 ms.\n- flash?: {idx, piece} for about 600 ms.\n- On desktop, a hover status line with pieceId and X/Y in mm.",
+   "Viewer comparison: compareImage?: CanvasImageSource and compareSplit?: number. After renderMosaic, draw the image clipped into the world rectangle (0, 0, finishedW, finishedH) with the same transform, plus a handle line. The image lines up exactly because the photo is sampled on that rectangle.",
+   "Viewer height: at ≥981 px use clamp(420px, calc(100dvh - 200px), 1100px); keep 62vh below that.",
+   "StepPreview:\n- Turn rulers on.\n- Add a 'Vergleich Foto/Mosaik' toggle with a range slider and a press-and-hold 'Foto zeigen' button, using api.processed.\n- Move the processed-photo thumbnail above the legend.\n- Show 'originalAfterCompute' only when nothing has been computed; when computed but no reference is in memory, show 'Referenz nach Neuladen nicht verfügbar – wird in Kürze gespeichert'. Wave 5 persists the reference."
+  ],
+  "acceptance": [
+   "Unit tests for the pure helpers: label step and visible label indices for several pitches; ruler labels equal cellId row/col parts; focus-overlay rectangles cover exactly the outside area.",
+   "Existing e2e/run-e2e.cjs and e2e/w1-touch-input-safety.e2e.cjs still pass.",
+   "e2e preview: rulers show 'A' and '1' at fit zoom. The comparison slider at 50 % shows photo pixels on the left half: the canvas pixel at 25 % width matches the processed image within 10 RGB levels."
+  ],
+  "risk": "Effort M-L. The new modes must not change default tap behaviour. Consumers in StepPlan are wired up in wave 4."
+ },
+ "findings": [
+  {
+   "title": "Laying mode has no row/column orientation and no bulk marking; progress is only per tap or whole section",
+   "kind": "ux",
+   "problem": "While laying, the user has to find 'row AI, column 34' on the screen, but the viewer draws only section labels and colour codes, with no row letters, column numbers or ruler. In Verlegemodus, dragging pans instead of marking, so a 40×50 cm portrait (5,969 stones) needs thousands of taps unless a whole 30×30 cm section is marked at once. 'Meine Projekte' does not show laying progress.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-desktop/journey6.out: 'placed after 6 clicks: 6 | after drag across ~11 stones: 6', 'canvas cursor in lay mode: grab'. Screenshot shots/j6-01-laymode.png (no row/col labels). src/core/render.ts only calls fillText for section ids (l.274) and colour codes (l.312). Project list shows only 'berechnet', no %: shots/j3-14-projects.png, src/ui/Projects.tsx:57-59.",
+   "proposal": "1) In Viewer.tsx, add sticky top/left gutter overlays (spreadsheet-style) that print column numbers and row letters from layout.colX/rowY for the visible range, shown once stones are at least about 12 px. Add a matching 'Gehe zu' field in the plan step. 2) Lay mode: pointer-drag paints 'verlegt' on every touched piece (Space or two fingers to pan); Shift-drag a rectangle uses the existing setRangePlaced(). Add 'Reihe bis hier verlegt' and 'nächster offener Stein' buttons. 3) Make laid stones clearly visible (desaturated plus check mark). 4) Show '% verlegt' and a mini progress bar per project in Projects.tsx and the home recent cards; progressOf() already exists.",
+   "files": [
+    "src/ui/project/Viewer.tsx",
+    "src/core/render.ts",
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/Projects.tsx",
+    "src/ui/Home.tsx"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "ux-desktop",
+   "id": "ux-desktop#6",
+   "corrected": [
+    "1) Row and column labels on screen. In Viewer.tsx, add a thin top and left gutter (about 18 px), drawn in renderMosaic after the cells or as a separate overlay canvas. Use visibleRange(layout, view) to get the visible rows and columns. Print rowLabel(row) at rowY[row]+rowH[row]/2 and col+1 at colX[col]+colW[col]/2, with the same label-skipping rule the PDF uses (labelStep in pdf.ts:605, applied to pitchPx): every label when pitch is at least 14 px, every 5th or 10th when smaller, none in overview mode. This keeps the screen and PDF labels identical. Also highlight the row and column of the selected stone in the gutter.\n\n2) 'Find stone' in the plan step. Move the parseCellId form from StepPreview.tsx:62-77 into a shared component and use it in StepPlan as well. It should centre the stone and highlight it, and in laying mode it should not toggle it.\n\n3) Bulk marking as an explicit choice. Add a Segmented control next to the 'Verlegemodus' toggle with three options: Tippen (current behaviour), Pinsel (paint) and Rechteck (rectangle).\n- Pinsel: a one-pointer drag sets laid=true on every piece it touches, or laid=false if the first piece touched was already laid. Use setCellPlaced or a per-piece set, not a toggle, so going over a stone twice does not undo it.\n- Rechteck: a drag draws a rectangle, then calls setRangePlaced(layout, data, {r0,r1,c0,c1}, true) for the cells it covers.\n- In both modes, two fingers (touch) or Space / middle button (desktop) pan the view, and the cursor changes to crosshair.\n- Keep one step of undo: snapshot data.progress before each stroke and show an 'Rückgängig' button.\n- In StoneDialog, add 'Reihe in diesem Abschnitt verlegt' and 'Spalte in diesem Abschnitt verlegt'. Use setRangePlaced with {r0:row,r1:row+1,c0:sec.c0,c1:sec.c1} (and the matching column range).\n- Add a 'Nächster offener Stein' button: scan data.progress from the start of the selected section, then centre and highlight the first piece that is not laid.\n\n4) Progress in Meine Projekte and on Home. Do not call progressOf() in the list. In useProject.touchProgress and the compute save, write meta.progressPlaced and meta.progressTotal from the progress memo that already exists (useProject.ts:224) and save the record with saveProject. Projects.tsx and the Home cards then show 'NN % verlegt' and a small ProgressBar from these two numbers. If the fields are missing (older projects), show nothing until the project is next opened.\n\nLeave out the original sub-proposal on making laid stones visible: drawPlaced in render.ts already does this. At most, make the check mark appear from 6 px instead of 10 px.",
+    "1) Rulers on screen (S-M). Add a 'rulers' option to RenderOptions in src/core/render.ts and turn it on in StepPlan/StepPreview.\n- Draw a top band and a left band of about 18 px.\n- Put column numbers (col+1) at layout.colX[col]+colW/2 and row labels from rowLabel(row) at rowY+rowH/2, only for the visibleRange.\n- When the pitch is under about 14 px, label only every 5th or 10th index so labels do not overlap.\n- Use exactly the same labels as cellId() and pdf.ts:617.\n- On desktop, add a small status line under the viewer: the hovered stone's pieceId plus X/Y in mm from the existing origin. Compute it with the same indexAt and pointInPolygon logic as onUp.\n- Move the existing 'find stone' field (parseCellId, StepPreview.tsx:66-73) into a shared component. Use it in StepPlan too, so it centres and highlights the stone.\n\n2) Faster marking (M). Under the Verlegemodus toggle, add a mode switch: Tippen | Malen | Rechteck.\n- In Malen, one-finger or mouse drag sets every piece it touches to the state opposite to the first touched piece. Two fingers (or Space/middle mouse) pan and zoom.\n- In Rechteck, drag a cell-snapped rectangle, show 'N Steine als verlegt markieren?', then call setRangePlaced().\n- Snapshot data.progress (a Uint16Array copy) before each gesture and add a 'Rückgängig' button with a short history of 10-20 steps.\n- During a gesture, call only draw(). Call api.touchProgress() once on pointerup so progressOf over all sections does not run on every move.\n- Add 'Nächster offener Stein': in the selected section, or globally, row-major, find the first piece whose progress bit is 0, then centre and highlight it with its ID.\n- Drop 'Reihe bis hier verlegt' for now because what it should do is unclear.\n\n3) Visibility of laid stones (S). Keep the existing tick (it already works). Replace the white wash with a desaturating grey or green tint, which also shows on white or light stones. In the overview path (pitch under 3 px), draw a second 1-pixel-per-cell progress overlay so progress is visible on large projects when the whole mosaic is shown.\n\n4) Progress in the project list (S). Do not load mosaics in Projects.tsx. Add an optional field to ProjectMeta: progressSummary {placed, total}.\n- Update it wherever progress is saved (the touchProgress save callback and the save after compute in useProject.ts) using progressOf(), and save it with the project.\n- Clear it on recompute.\n- In Projects.tsx and the Home recent cards, show 'x % verlegt' with a mini ProgressBar only when the field exists. Otherwise show nothing rather than an estimate."
+   ]
+  },
+  {
+   "title": "No guided laying or section workbench: laying mode only toggles single taps on the full mosaic",
+   "kind": "missing-feature",
+   "problem": "Requirements 10 and 14 (edit sections separately; laid, open and remaining stones) are met only minimally. Laying mode toggles the tapped piece and nothing else. The Plan viewer has no colour filter, although Viewer and render support focusColor. Selecting a section only zooms; the rest of the mosaic stays visible and tappable. There is no laying order, no 'next stone', no 'whole row laid' and no phone-friendly card. These are what a person at the workbench actually needs.",
+   "evidence": "src/ui/project/StepPlan.tsx:98-101: layMode → togglePiecePlaced on the tapped piece only. focusColor is passed only in src/ui/project/StepPreview.tsx:53, not in StepPlan. Section click → viewer.current?.zoomTo(x) (StepPlan.tsx:158), with no clipping. Screenshot /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/shots/b1-plan.png.",
+   "proposal": "Add a 'Verlegen' workbench in StepPlan. 1) Choose a section; render only its Range (r0..r1, c0..c1) and grey out the rest. Restrict taps and edits to that range. 2) Colour chips from the existing per-section stats (sectionStats or SectionLegend), with counters such as '06: 37 von 112 offen in B2'. Pass focusColor to the Viewer. 3) A 'Nächster Stein' button computes the next unplaced piece in a chosen order: by colour, then serpentine by row. This uses only existing data, with no new geometry. Show a large card with ID, code, size and cut instruction (cutInstruction). Buttons: 'verlegt ✓ & weiter', 'zurück', 'ganze Reihe verlegt'. 4) Keep the screen on with navigator.wakeLock where supported. 5) Add 'Abschnitt drucken', which calls the existing PDF worker with sectionIds:[id], and 'CSV Abschnitt'.",
+   "files": [
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/Viewer.tsx",
+    "src/core/render.ts",
+    "src/core/stats.ts"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#5",
+   "corrected": [
+    "Add a 'Verlegen' workbench in StepPlan.tsx. It uses only existing data, with no new geometry. Order of value:\n\n1) Section focus (S-M):\n- Add `focusRange?: Range | null` to RenderOptions in render.ts and to ViewerProps.\n- After the cell and overview pass, paint a semi-opaque overlay over the four rectangles outside the range. Base them on the section's x/y/w/h ± joint/2. This also covers the overview path (pitchPx<3).\n- In Viewer onUp, drop picks where row/col fall outside the range.\n- In StepPlan, pass focusRange={layMode && sec ? sec : null}. Add a 'Nur Abschnitt' toggle so the user can still see the whole picture.\n\n2) Colour filter in Plan (S):\n- Render clickable chips from api.sectionStats.get(sec.id).perColor, or from api.stats when no section is selected. This data already holds pieces and placed per colour.\n- Label them like '06 · 37/112 offen'. Pass focusColor to the Viewer.\n- Change render.ts so out-of-focus pieces use a grey dim (e.g. rgba(128,128,128,0.7)) instead of the same white wash used for 'placed'. Otherwise laid pieces cannot be told apart under the filter.\n\n3) Row actions (S):\n- In laying mode, a long-press on a stone, or a 'Reihe verlegt' button for the currently picked row, calls setRangePlaced(layout, data, {r0:row, r1:row+1, c0:sec.c0, c1:sec.c1}, true). Then call api.touchProgress().\n- Ask for confirmation, as the existing reset button does.\n\n4) 'Nächster Stein' card (M):\n- Add a pure helper in edits.ts: nextUnplaced(layout, data, range, {color?, order:'serpentine'}) → {row, col, piece}|null. It scans the range row by row (alternating direction), checks data.progress bits against cellPieceCount, and optionally filters by piece colour.\n- Unit-test it in tests/.\n- Show a large bottom card (sticky on mobile) with:\n  - the pieceId\n  - the colour code and swatch\n  - the size\n  - the cut lines, taken from a component extracted from StoneDialog's existing analyzeCut-based cut list (do not re-derive the dimensions)\n- Card buttons:\n  - '✓ verlegt & weiter': togglePiecePlaced, then touchProgress, then nextUnplaced, then viewer.center()\n  - 'zurück': keep a small history stack\n  - 'Details': opens StoneDialog\n\n5) Optional: keep the screen awake only through feature detection ('wakeLock' in navigator). Plan for a Capacitor keep-awake plugin for the APK, because the Android WebView may not expose the API.\n\nDrop 'CSV Abschnitt'; it already exists at StepPlan.tsx:226. Replace 'Abschnitt drucken' with a link that switches to step 10 with opts.sectionIds=[sec.id] pre-selected (StepPdf.tsx:131-144 already supports it).\n\nFiles: src/ui/project/StepPlan.tsx, src/ui/project/Viewer.tsx, src/core/render.ts, src/core/edits.ts (nextUnplaced), src/ui/project/StoneDialog.tsx (extract the cut list), the i18n de/en/tr files, and tests/.",
+    "Build a \"Verlegen\" workbench in StepPlan, using only existing data.\n\n1) Section focus and protected taps (the biggest win)\n- Add `focusRange?: Range` to RenderOptions. In renderMosaic, after drawing the cells, paint `rgba(255,255,255,0.7)` over the four rectangles outside the range. Put the sections overlay on top.\n- StepPlan passes `focusRange={sec}` while a section is selected.\n- In lay mode, onPick ignores taps outside sec (r < sec.r0 || r >= sec.r1 || c < sec.c0 || c >= sec.c1). Show a short note instead: \"Stein gehört zu Abschnitt X – Abschnitt wechseln?\".\n- Also ignore toggles when the tapped stone is smaller than about 8 px on screen. Instead, zoom in with center(x, y, minScale) so the stone becomes tappable.\n- Add an undo stack in StepPlan: up to 100 entries of {idx, prevMask}, set for every progress change, including setRangePlaced on whole rows. Add a \"Rückgängig\" button. Call api.touchProgress() after each change.\n\n2) Colour filter with live counters\n- Add `progressByColor(layout, data, range)` to src/core/stats.ts. It works like progressOf, with no geometry:\n  - FULL → c1\n  - SUB → data.sub\n  - FREE → data.free[i].color\n  - DIAG/LINE → c1 or c2 for piece 0 or 1\n  - The placed bit is `(progress[idx] >> i) & 1`.\n- It returns Map<color, {placed, total}> and is computed in a useMemo on [sec, version, progressVersion].\n- Show swatch chips with \"06 · 37 / 112 offen\". A tap sets `focusColor` on the Viewer; tap again to clear.\n- Do not use the debounced worker sectionStats for these counters.\n- Test: the totals summed over all colours equal progressOf(range) for every section of all four sample projects.\n\n3) \"Nächster Stein\" card\n- From the section's cells, build an ordered list of (idx, piece) pairs. Two orders, chosen by toggle:\n  - \"Reihe für Reihe\": serpentine row order, pieces in index order\n  - \"Farbe für Farbe\": colours by code, then serpentine row order inside each colour\n  - If a colour filter is active, use only that colour.\n- Rebuild the list when `version` changes, after mosaic edits. Do not store the cursor: it is always the first unplaced entry, or the next one after the current entry.\n- The card content must come from the same helpers as StoneDialog, so the text matches the dialog, PDF and CSV:\n  - ID from cellId plus \"-n\" for split pieces\n  - colour code and swatch\n  - size from analyzeCut(...).w/h\n  - the exported cutInstruction(info, ...)\n  - If info.fits is false, show the existing cut.notFit message. Never show an invented cut.\n- Highlight the stone with the existing `highlight` prop and center it with viewer.center(x, y, 12).\n- Buttons:\n  - \"verlegt ✓ & weiter\"\n  - \"zurück\"\n  - \"überspringen\"\n  - \"Reihe fertig\", only in row order: setRangePlaced on {r0: row, r1: row+1, c0: sec.c0, c1: sec.c1}\n  - \"Rückgängig\"\n- On a phone, the card is a sticky bar at the bottom of the screen.\n- Save the chosen section and order with the project (settings or kv) so work resumes there.\n- Test: the order generator visits every piece in the range exactly once, and its length equals progressOf(range).total.\n\n4) Keep the screen on\n- When \"Verlegen\" is active, request the screen wake lock (`'wakeLock' in navigator` → request('screen')). Re-request it on visibilitychange.\n- If it is unsupported, do nothing; there is no error. In the Android WebView it may not be available. If it is not, add the keep-awake Capacitor plugin later.\n\n5) Shortcuts only\n- \"Abschnitt als PDF\" opens step 10 with sectionIds=[sec.id] already set.\n- Drop \"CSV Abschnitt\" from the proposal; it already exists (StepPlan.tsx:226).\n\nE2E check: select B2, turn on lay mode, tap in A1 → placed-count stays the same. Then \"verlegt & weiter\" three times followed by \"Rückgängig\" → placed-count = 2."
+   ]
+  },
+  {
+   "title": "No original-vs-mosaic comparison; the reference image disappears after a reload; no map of where the mosaic deviates",
+   "kind": "ux",
+   "problem": "Judging realism and spotting distorted faces (requirement 6) needs a precise comparison. The preview shows only a small side thumbnail of the processed photo. That canvas exists only in memory, so after a reload it is gone and the label wrongly says it will appear after calculation, although the mosaic is already calculated. Per-stone ΔE is calculated during colour assignment but thrown away, so the user cannot find the stones that most need manual correction.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/b3.cjs output: 'orig-thumb canvases before reload: 1, after reload: 0, text after reload: \"Wird nach der Berechnung angezeigt.\"'; 'range inputs on preview step: 0'. b1.cjs found no compare control. src/ui/project/StepPreview.tsx:22-30 and :93-94; api.processed is set only inside compute() in useProject.ts. ΔE per piece is computed in track() in the assignment loop of src/core/mosaic.ts, and only the aggregates are kept.",
+   "proposal": "1) Rebuild the processed image on load, using renderCropped(bitmap, adjust, effectiveCrop) plus applyAdjustments in the worker, or store it as a JPEG in IndexedDB at compute time. 2) Add a compare slider in Viewer. Draw the processed image into world rectangle (0,0,finishedW,finishedH) with the same view transform, clipped to x < split. Registration is exact because the processed image is cropped to the mosaic field's aspect ratio. 3) Store per-cell ΔE (Uint8, maximum over the cell's pieces) from the assignment loop and add an 'Abweichung' heatmap overlay. Add a 'größte Abweichungen' list that jumps to the stone with Viewer.center().",
+   "files": [
+    "src/ui/project/StepPreview.tsx",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/useProject.ts",
+    "src/core/mosaic.ts",
+    "src/core/render.ts"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#10",
+   "corrected": [
+    "1) Persist the processed image at compute time.\n- In useProject.compute() (around useProject.ts:321-346), downscale `proc` to at most about 2048 px on the long side.\n- Encode it with canvasToJpeg(…, 0.85) and save it in IndexedDB next to the mosaic. Either add a new key in the store used by saveMosaic/loadMosaic, or add a field `processedJpeg` on the image record. Do this in the same Promise.all.\n- In the load effect (useProject.ts:85-98), after setComputed, decode it into a canvas and call setProcessed.\n- For projects computed before this change, offer a \"Foto für Vergleich neu erzeugen\" action. It runs renderCropped plus worker applyAdjustments using the adjust, regions and layout parsed from rec.computedWith, not the current rec.adjust.\n- Fix StepPreview.tsx:94. Show 'originalAfterCompute' only when !api.computed. When the mosaic is computed but no image is stored, show a distinct \"not stored, regenerate\" message.\n\n2) Compare view in Viewer.\n- Add an optional `compareImage?: CanvasImageSource` and `compareSplit?: number` (0..1 of finishedW) prop.\n- In draw() after renderMosaic: ctx.save(); clip a rect from (ox, oy) of width split*finishedW*scale and height finishedH*scale; drawImage(compareImage, ox, oy, finishedW*scale, finishedH*scale); draw a 1px divider line; ctx.restore().\n- Add a range slider and a \"hold to show photo\" button in StepPreview.\n- Move the thumbnail above the legend, or drop it once the slider exists.\n\n3) Deviation map that stays correct after manual edits.\n- Persist the per-cell target colour instead of a frozen ΔE. Store c1Lab, and c2Lab when shapes are on; both are already quantized Uint8 arrays in computeMosaic. For SUB cells, store the per-piece target from subLab.\n- Compute ΔE for each cell on demand against the stone's current palette colour, recomputing on `version` changes. Use the max over the cell's pieces, with the same deltaE metric as the settings.\n- Render it as an overlay toggle \"Abweichung Bild ↔ Stein (ΔE)\" with the existing ΔE thresholds from compute.deHint as the legend.\n- Add a \"größte Abweichungen\" list that jumps via viewer.center(colX, rowY, 12) and opens StoneDialog.\n- If settings.dither > 0, show a note that dithering intentionally creates local deviations.\n- Never compute these values from current settings that differ from computedWith. While api.stale is true, show the existing stale badge on the overlay.\n\nEffort M (each part S to M); impact 3.",
+    "A) Keep the reference image (S).\n- In useProject.compute(), after the worker returns, also write a JPEG of res.processed, downscaled to at most 2048 px on the long side (canvasToJpeg(proc, 0.9)). Store it in the project's image record, e.g. ImageRecord.processedJpeg, or in a separate 'reference' key in db.ts.\n- In the load effect, decode it into the `processed` canvas.\n- For projects computed before this change, offer a button \"Referenz neu erzeugen\" when !stale. It runs renderCropped + applyAdjustments exactly as compute() does, but without computeMosaic and without touching the mosaic or progress.\n- Copy and backup must carry the new field: projects.ts:43 (copy) and projects.ts:112 (import).\n- Fix the placeholder text. When no reference exists and the project is computed, show \"Referenzbild nicht gespeichert – ohne Neuberechnung wiederherstellen\". When stale, label the image \"Stand der letzten Berechnung\".\n\nB) Compare slider in Viewer (S).\n- Add a prop `reference?: CanvasImageSource` and `compareSplit?: number` (0..1 of the canvas width).\n- In draw(), after renderMosaic(), call ctx.save(); clip to rect(0, 0, split*view.width, view.height); ctx.drawImage(reference, ox, oy, finishedW*scale, finishedH*scale); then draw a vertical handle line.\n- Add a \"Vergleich Foto/Mosaik\" toggle and an input[type=range] in StepPreview. Also offer a 50% opacity \"Überblenden\" mode.\n- Move the \"Bearbeitetes Foto\" thumbnail above the legend, or drop it once the slider exists.\n\nC) Deviation map that stays correct after edits (M). Do not store compute-time ΔE.\n- Persist each piece's photo target colour instead. computeMosaic already builds it as quantised Lab: c1Lab and c2Lab are 3 bytes each, and subLab exists for SUB cells. Return these in ComputeResult and add optional fields to StoredMosaic (tLab1, tLab2, tSubLab), handled in pack/unpack.\n- Compute deviation live as ΔE(target, palette[current colour]), using the project's ΔE formula, in the stats worker or lazily on the main thread. A manual stone change or a palette edit then updates it automatically.\n- Free-form pieces, and projects without stored targets, are shown as \"keine Fotoreferenz\" (hatched). Never estimate a value for them.\n- Show the map as a toggle \"Abweichung zum Foto (ΔE)\" with a fixed legend (<2, 2-5, 5-10, >10). When dither > 0, add the note \"Rasterung (Dithering) erhöht die Einzelabweichung absichtlich\".\n- Add a list \"Größte Abweichungen\" (top 50 stones by ΔE, with stone ID) that uses Viewer.center() and opens StoneDialog.\n- In StoneDialog, show \"Fotofarbe [swatch] vs. Steinfarbe [swatch], ΔE x.x\" and the nearest better palette colour as a suggestion.\n- Purely visual and read-only: no change to layout, pieces, counts, stats or PDF.\n- Tests: deviation for an unedited mosaic equals the diagnostics mean and max within quantisation (<0.5 ΔE); after an edited stone its deviation is recomputed; pack/unpack round-trips the target fields."
+   ]
+  },
+  {
+   "title": "Visual hierarchy and contrast: weak primary actions, look-alike primary/danger colours, low-contrast hints, chrome eats 28% of the screen",
+   "kind": "ux",
+   "problem": "Home shows five equal tiles: 'Neues Projekt' (without a photo it is a dead end) and 'Foto hochladen' have the same weight as tiles that only repeat the top navigation, and the hero has no call to action. In step 1, 'Anderes Foto' is a filled primary button that competes with 'Weiter'. Important warnings (e.g. 'Neu berechnen ersetzt … Verlegefortschritt') are in .muted.small text. Muted grey fails WCAG AA, and so does white text on the terracotta primary. The terracotta accent is close to the danger red. In the workspace, the canvas starts at y = 253 of 900 px because of title, intro and stepper.",
+   "evidence": "Screenshots shots/j1-01-home-full.png, shots/j1-04-photo-loaded.png ('Anderes Foto' filled), shots/j1-07-preview.png (canvas top at 253, viewer 62vh per Viewer.tsx:273). Contrast computed from styles.css tokens: --muted #7a8291 on --bg #f4f1ec = 3.43:1, on white = 3.87:1; white on --accent #d4573b = 4.02:1 (all below 4.5:1). --accent #d4573b vs --err #c0262d (styles.css:8,13). 54 muted-text usages in src/ui. Code: src/ui/Home.tsx:68-104, src/ui/project/StepPhoto.tsx:119 (PhotoInput is rendered as 'btn primary').",
+   "proposal": "Home: turn the hero into one drop zone with the primary CTA 'Foto auswählen und loslegen' and a secondary 'Beispiel ansehen'. Remove the tiles that duplicate the nav, or render them as a small secondary row. Rename 'Testprojekte' to 'Beispiele'. Give PhotoInput a variant prop and render 'Anderes Foto' as a secondary .btn. Change tokens: --muted to about #5f6675 (≥4.5:1 on both backgrounds), --accent to about #b6452b for ≥4.5:1 with white, and a distinct danger style (red outline plus trash icon). Show warnings like compute.overwriteWarn as <Badge kind=\"warn\">. In the workspace, merge the step title and intro into one line, collapse the intro into an info tooltip, and size the viewer to calc(100vh - header) so the mosaic gets the space.",
+   "files": [
+    "src/ui/Home.tsx",
+    "src/ui/styles.css",
+    "src/ui/project/StepPhoto.tsx",
+    "src/ui/project/Workspace.tsx",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/StepCompute.tsx"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "ux-desktop",
+   "id": "ux-desktop#13",
+   "corrected": [
+    "1) Tokens in styles.css :root.\n- Change --muted to #5f6675 (5.12:1 on --bg, 5.76:1 on white).\n- Darken --accent to at least #c24e33 (4.74:1 with white). Use #b6452b (5.42:1) for more margin, and keep the hover colour a step darker.\n- Darken --warn to about #8a5200 (6.39:1 on white, 5.73:1 on the #fff1d9 badge background) so warning text and badges pass AA.\n- Leave .btn.danger as it is; it is already an outline style. Adding a trash icon to delete buttons is optional.\n\n2) Recompute data loss (StepCompute.tsx:66-78).\n- Render overwriteWarn as <p className=\"warn small\"> instead of muted, and only when there are laid stones or manual edits.\n- When there are laid stones or manual edits, wrap api.compute() in confirm(t('compute.overwriteConfirm', { placed, edits })). This needs a new i18n key in de, en and tr.\n\n3) Give PhotoInput (StepPhoto.tsx:10) a `primary?: boolean` prop that defaults to true. Pass primary={false} for the 'Anderes Foto' button at line 119, so that 'Weiter' is the only primary action on that step.\n\n4) Home (Home.tsx:60-104).\n- Add a primary CTA in the hero, 'Foto auswählen und loslegen', that triggers fileRef. Optionally make the hero a drop zone.\n- Merge 'Neues Projekt' and 'Foto hochladen' into that CTA, and keep 'Leeres Projekt' as a small secondary link.\n- Render the Projects, Materials and Settings tiles as a compact secondary row, since they duplicate the top nav.\n- Optionally rename 'Testprojekte' to 'Beispiele'.\n\n5) Workspace (Workspace.tsx:74-77).\n- Put the step intro on the same line as the h2, or collapse it behind an info toggle. This saves about 60px.\n- Give the Preview step's Viewer a height of calc(100vh - <measured offset>) with a min-height of about 420px, instead of 62vh, so the mosaic fills the remaining viewport.",
+    "Effort S–M overall. Rank the parts by value.\n\n1) Prevent data loss first (StepCompute.tsx:61-67).\n- Before calling api.compute() while api.computed is true, read api.progress?.total.placed.\n- If it is greater than 0, show confirm(t('compute.recomputeConfirm', { placed })). Use the same pattern as StepPlan.tsx:219.\n- To also cover manual edits, add a counter rec.meta.manualEdits. Increment it in the useProject handlers that call setPieceColor, setCellKind and setFreePieces. Include it in the confirmation condition and in the message.\n- Replace the grey hint at StepCompute.tsx:78 with <Badge kind=\"warn\">, and use .warn text for the stale warning.\n- Add the new i18n keys in de, en and tr.\n\n2) Make the colour tokens pass AA (styles.css).\n- --muted: #5f6675 (5.12:1 on --bg, 5.76:1 on white, 4.59:1 on --viewer-bg).\n- --accent: #b6452b (5.42:1 with white). Change the hard-coded hover at styles.css:182 to a darker shade, for example #9e3a23.\n- --warn: #8a5200 (5.67:1 on --bg, 5.73:1 on #fff1d9).\n- Darken --ok so .badge-ok reaches at least 4.5:1 on #e3f3e7.\n- Keep .btn.danger as an outline. Optionally add a trash icon to delete buttons.\n- Recheck the slider fill and the active stepper chip after the accent change.\n\n3) Photo step. Add a variant?: 'primary' | 'secondary' prop to PhotoInput:\n- 'primary' (the default) for the empty dropzone at StepPhoto.tsx:90,\n- plain 'btn' for 'Anderes Foto' at StepPhoto.tsx:119.\nThis leaves one filled primary button ('Weiter') per screen.\n\n4) Home (Home.tsx).\n- Put a drop zone in the hero. Its primary button 'Foto auswählen und loslegen' reuses the existing hidden input home-photo and supports drag-and-drop. Add a secondary link that scrolls to the samples.\n- Turn the redundant 'Neues Projekt' tile and the three nav tiles into one small secondary row, or remove them.\n- Keep data-testid new-project and sample-* so the e2e tests still work.\n- Rename the samples heading to 'Beispielprojekte'. Keep the hint that they are synthetic test images.\n\n5) Workspace and viewer.\n- Put the step number and title on the same line as a one-line intro (CSS: smaller margins, intro in --ink-soft). Do not hide the intro behind a tooltip, because tooltips do not work on touch.\n- On screens at least 981 px wide, set the viewer height in StepPreview and StepPlan to clamp(420px, calc(100dvh - 200px), 1100px).\n- Keep 62vh at 980 px and below so phones do not get stuck in a full-screen canvas that captures every swipe.\n- Do not change any geometry, count, PDF or render code."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w3-colour-quality",
+   "title": "Smoother colour gradients without stray colours, better 'own materials' palettes",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/color.ts",
+    "src/core/kmeans.ts",
+    "src/core/types.ts",
+    "src/ui/project/StepColors.tsx",
+    "tests/pipeline.test.ts",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w3-live-preview",
+   "title": "Live mosaic preview in steps 2-6, instant 'Übernehmen', compute that survives navigation",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/workers/client.ts",
+    "src/ui/project/Workspace.tsx",
+    "src/ui/project/StepCompute.tsx"
+   ]
+  },
+  {
+   "id": "w3-freeform-editor",
+   "title": "Reliable freeform validation and a usable contour editor",
+   "ownedFiles": [
+    "src/core/edits.ts",
+    "src/core/geometry.ts",
+    "src/core/pieces.ts",
+    "src/ui/project/StoneDialog.tsx"
+   ]
+  },
+  {
+   "id": "w3-face-guidance",
+   "title": "Face resolution guidance, detail meter, safe region drawing, translated layout errors",
+   "ownedFiles": [
+    "src/core/layout.ts",
+    "src/ui/project/StepGeometry.tsx",
+    "src/ui/project/StepShapes.tsx"
+   ]
+  },
+  {
+   "id": "w3-pdf-foundations",
+   "title": "Readable tables, correct labels, honest truncation, bookmarks and print-at-100 %",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "tests/pdf.test.ts"
+   ]
+  },
+  {
+   "id": "w3-project-portability",
+   "title": "Project export/import carries its materials",
+   "ownedFiles": [
+    "src/storage/projects.ts",
+    "src/ui/Projects.tsx"
+   ]
+  }
+ ]
+}

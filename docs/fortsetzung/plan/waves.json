@@ -1,0 +1,74 @@
+[
+ {
+  "name": "Wave 1 \u2013 Data safety & geometric correctness",
+  "ids": [
+   "w1-persistence",
+   "w1-cut-correctness",
+   "w1-mosaic-core",
+   "w1-material-quantities",
+   "w1-touch-input-safety",
+   "w1-materials-csv"
+  ]
+ },
+ {
+  "name": "Wave 2 \u2013 Workspace safety UI, Android platform, honest colours & preview, photo intake, design system",
+  "ids": [
+   "w2-workspace-shell",
+   "w2-android-platform",
+   "w2-colour-honesty",
+   "w2-grout-preview",
+   "w2-design-system",
+   "w2-photo-intake"
+  ]
+ },
+ {
+  "name": "Wave 3 \u2013 Mosaic colour quality, live preview, freeform, face guidance, viewer features, PDF foundations, portability",
+  "ids": [
+   "w3-colour-quality",
+   "w3-live-preview",
+   "w3-freeform-editor",
+   "w3-face-guidance",
+   "w3-viewer-features",
+   "w3-pdf-foundations",
+   "w3-project-portability"
+  ]
+ },
+ {
+  "name": "Wave 4 \u2013 Cut placement & accents, laying workbench, progress engine, PDF sheet structure, offline face detection",
+  "ids": [
+   "w4-cut-placement-accents",
+   "w4-laying-workbench",
+   "w4-progress-engine",
+   "w4-pdf-sheets",
+   "w4-face-detector"
+  ]
+ },
+ {
+  "name": "Wave 5 \u2013 Undo/redo & stone editing, scale performance, PDF content, shopping view, target colours, PDF export UI",
+  "ids": [
+   "w5-undo-editing",
+   "w5-stats-engine",
+   "w5-viewer-performance",
+   "w5-pdf-content",
+   "w5-material-shopping",
+   "w5-target-colours",
+   "w5-pdf-export-ui"
+  ]
+ },
+ {
+  "name": "Wave 6 \u2013 Deviation map & batch editing, real fine tiles, colour measuring, streaming CSV, final PDF wiring",
+  "ids": [
+   "w6-compare-batch",
+   "w6-fine-tiles",
+   "w6-colour-measure",
+   "w6-plan-exports",
+   "w6-pdf-finish"
+  ]
+ },
+ {
+  "name": "Wave 7 \u2013 Documentation, honest limitations & end-to-end consolidation",
+  "ids": [
+   "w7-docs-e2e"
+  ]
+ }
+]

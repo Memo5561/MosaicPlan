@@ -1,0 +1,121 @@
+{
+ "wave": 6,
+ "waveName": "Wave 6 – Deviation map & batch editing, real fine tiles, colour measuring, streaming CSV, final PDF wiring",
+ "package": {
+  "id": "w6-colour-measure",
+  "title": "Measure material colours from a photo on any device",
+  "goal": "APK and tablet users can measure a tile's colour from a camera photo, with glare rejection and an optional white or grey reference. The result is stored and shown as a measured approximation.",
+  "findingIds": [
+   "spec-gaps#7"
+  ],
+  "ownedFiles": [
+   "src/ui/Materials.tsx",
+   "src/core/materialsCsv.ts"
+  ],
+  "newFiles": [
+   "src/core/colorMeasure.ts",
+   "src/ui/MeasureColorDialog.tsx",
+   "tests/w6-colour-measure.test.ts",
+   "src/i18n/ext/w6-colour-measure.ts"
+  ],
+  "steps": [
+   "colorMeasure.ts (pure):\n- samplePatch(img, cx, cy, r): drop clipped pixels (any channel ≥ 250), trim the top and bottom 10 % by L*, average in linear sRGB. Returns lab, hex, n, clippedFrac and spreadDE.\n- whiteBalanceGains(refLin, 'paper' | 'grey18'): 'paper' corrects only the colour cast and keeps luminance; 'grey18' targets 0.18.\n- applyGains.",
+   "MeasureColorDialog:\n- File input with capture=environment.\n- Decode with createImageBitmap(file, {imageOrientation:'from-image'}) at about 2000 px; zoomable.\n- Optional reference tap. A clipped reference is rejected with 'Referenz überbelichtet'.\n- Tile tap with an adjustable patch.\n- Shows the photo crop next to the swatch, HEX and Lab, ΔE to the current value, and the spread, with a warning when the spread is above about 4.\n- Saving requires 'Übernehmen'.",
+   "Materials form: the button is always visible and the eyedropper is an extra where it exists. Store Material.colorSource (contract from wave 5). Typing a HEX by hand sets 'manual'. The material list shows a tag 'gemessen (Näherung, Referenz: Papier, ±x ΔE)'. Append the CSV fields to materialsCsv; old CSV files still import."
+  ],
+  "acceptance": [
+   "Unit tests: a synthetic flat patch with 10 % white glints and dark border pixels comes back within ΔE < 1. A colour cast on the reference is removed by the gains. A clipped reference is rejected.",
+   "e2e: measuring from a test photo fills the HEX only after Übernehmen, and the tag appears."
+  ],
+  "risk": "Effort M. This is camera-dependent. Never present the value as calibrated (requirement 18)."
+ },
+ "findings": [
+  {
+   "title": "Material colours cannot be measured from the real tiles: no averaging, no white balance, and the eyedropper is hidden where unsupported",
+   "kind": "missing-feature",
+   "problem": "Every colour match (CIEDE2000) is only as good as the material HEX value. The only aid is window.EyeDropper, which reads a single screen pixel of whatever is shown, without averaging or white-balance reference. The button is hidden when the API is missing; MDN compatibility data lists Chrome Android and WebView as unsupported, so APK users can only type HEX by hand. Glass tiles also have specular highlights that a single pixel picks up.",
+   "evidence": "src/ui/Materials.tsx:225 (const ED = globalThis.EyeDropper) and :269-283 (button rendered only if ED; it sets the hex from a single sRGBHex pixel). The hint text (src/i18n/de.ts:418) suggests picking 'z. B. Foto Ihrer Steine' from the screen. README table: 'Farbwerte der Materialien … keine Kamerakalibrierung'.",
+   "proposal": "Add a 'Farbe aus Foto messen' dialog in Materials. Load or take a photo (<input type=file accept=image/* capture=environment>). The user taps a neutral reference (white paper or grey card), then each tile. In linear sRGB, apply von-Kries gains = reference target / reference measured. Take a trimmed mean over an N×N patch, excluding the top 10 % L* to drop glints, and convert to Lab and HEX. Save the measured spread (ΔE standard deviation) and metadata 'gemessen am …, Referenz: weiß', so the value is clearly marked as measured, not typed. Add a sheet mode: one photo of a colour chart, tap every tile in turn, and each tap fills the next material.",
+   "files": [
+    "src/ui/Materials.tsx",
+    "src/core/color.ts",
+    "src/core/types.ts"
+   ],
+   "impact": 3,
+   "effort": "M",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#7",
+   "corrected": [
+    "0. **Quick fix (S), do it first.** In `Materials.tsx`, show `mats.colorHint` only when `ED` exists. Otherwise show a hint without the Pipette, e.g. \"HEX eingeben oder Farbe aus Foto messen\". Translate it in `de.ts`, `en.ts` and `tr.ts`.\n\n1. **\"Farbe aus Foto messen\" dialog (M).**\n   - Open it from a button in `MaterialForm` that is always visible.\n   - Add a file input `<input type=file accept=\"image/*\" capture=\"environment\">`. This works in the Capacitor WebView through its file chooser. The manifest declares no CAMERA permission, so the camera intent needs none.\n   - Decode the photo with `createImageBitmap(file, {imageOrientation:'from-image'})`, downscale it to about 2000 px and draw it to a canvas. Let the user zoom in.\n   - **Step A, reference (optional but recommended).** The user taps a neutral reference and chooses its type: grey card (target L* = 50) or white paper (target L* = 93-95, user-adjustable). Average a patch in linear sRGB.\n     - If more than 2 % of the patch has any channel ≥ 250, refuse it with \"Referenz überbelichtet\".\n     - Compute per-channel von-Kries gains as target ÷ measured, with the target being the neutral grey of the chosen L*.\n   - **Step B, tile.** The user taps the tile. The patch size is adjustable (default about 60 % of the tile's on-screen size, shown as a square).\n     - Convert the pixels to Lab, sort by L*, and drop the top 10 % (glints) and bottom 10 % (grout and edge shadows).\n     - Take the per-channel median in linear RGB, apply the gains, convert to Lab and HEX, and clamp to the sRGB gamut.\n     - Report the spread as the standard deviation of ΔE2000 to the median.\n     - Show the photo crop next to the resulting swatch so the user can judge the match.\n   - **Stating limits honestly (requirement 18).** The result is a camera estimate. Phone cameras apply tone mapping and auto-exposure, and screens differ. Never present it as a calibrated or manufacturer value. If the spread is above about 5, or no reference was used, show a warning.\n\n2. **Data (`src/core/types.ts`).** Add an optional field to `Material`: `colorSource?: {kind:'manual'|'eyedropper'|'photo'; measuredAt?: string; reference?: 'none'|'white'|'grey'; spreadDE?: number}`. Persist it in `serialize.ts`, add columns in `csv.ts` import and export, and default to `'manual'` for old data. In the materials table and on the PDF material list, show a small \"gemessen (Foto, ±ΔE x)\" badge.\n\n3. **README.** Update the limitations row to say a photo-based estimate exists but is not calibrated colour measurement.\n\n4. **Tests.** Add vitest tests for the measurement math:\n   - Synthetic image: a flat patch plus 10 % white glint pixels plus dark border pixels gives the base colour within ΔE < 1.\n   - A colour cast on the reference is removed by the gains.\n   - A clipped reference is rejected.\n\n5. **Optional later.** Colour-chart sheet mode: tap a sequence of tiles on one photo and each tap fills the next selected material. Leave it out of the first version.",
+    "Phase 1 (effort M): measure single tiles from a photo, available on every platform.\n\n1. Pure core module, new file src/core/colorMeasure.ts, no DOM. This keeps it testable and out of color.ts.\n   - samplePatch(img: {data, width, height}, cx, cy, radiusPx) → {lin: [r,g,b], lab, hex, n, clippedFrac, spreadDE}.\n   - Leave out pixels where any channel is >= 250 (clipped glints and blown highlights). Then drop the top 10 % of L* (remaining glints). Average the rest in linear sRGB, not in gamma-encoded values.\n   - spreadDE is the standard deviation of ΔE2000 from each kept pixel to the mean.\n   - whiteBalanceGains(refLin, mode). Mode 'paper' corrects only the colour cast: the gains equalise the reference channels and are normalised so the reference's luminance stays the same. Exposure is not invented, because the true L* of the paper is unknown. Mode 'grey18' targets linear 0.18 per channel, which corrects both cast and exposure.\n   - applyGains(lin, gains) → lab, hex.\n   - Add vitest tests in tests/colorMeasure.test.ts with synthetic images: known colour, cast, noise and glints must come back within ΔE00 < 1. A clipped reference must be rejected.\n\n2. UI: a 'Farbe aus Foto messen' button in MaterialForm (Materials.tsx), always visible. Keep the existing Pipette as an extra wherever EyeDropper exists.\n   - The dialog opens <input type=file accept=\"image/*\" capture=\"environment\">. Capacitor's WebChromeClient handles the file chooser and camera, but this still needs a check on a real device.\n   - Load the photo with createImageBitmap(file, {imageOrientation: 'from-image'}) and downscale it to about 2000 px on the long side, to limit memory on Android.\n   - Step 1, optional: tap the reference (Weißes Papier / Graukarte 18 % / keine). If more than 2 % of the reference pixels are clipped, show 'Referenz überbelichtet – bitte neu fotografieren' and apply no correction.\n   - Step 2: tap the tile. Show the patch circle, which the user can resize, and next to it:\n     - the photo crop beside the measured swatch,\n     - the new HEX and Lab,\n     - ΔE00 against the current HEX,\n     - spreadDE, with a warning when it exceeds about 4 or when clippedFrac is high ('Spiegelung/ungleichmäßig – Fläche verschieben').\n   - The user must press 'Übernehmen' before anything is saved.\n\n3. Data:\n   - Add optional fields to Material in types.ts: hexSource?: 'manual' | 'picker' | 'eyedropper' | 'photo'; measuredAt?: string; measureRef?: 'paper' | 'grey18' | 'none'; measureSpreadDE?: number.\n   - Typing a HEX by hand resets hexSource to 'manual'.\n   - In the material list, show a small 'gemessen (Näherung, Referenz: Papier, ±x ΔE)' tag.\n   - Append the new fields to the end of CSV_FIELDS (Materials.tsx:25). Older CSVs without these columns must still import.\n\n4. Honesty (requirement 18):\n   - Keep the README row but rewrite it: 'Näherungsmessung aus Foto mit optionaler Weiß-/Graureferenz; keine farbmetrische Kamerakalibrierung (Tonkurve/Kameraprofil unbekannt)'.\n   - Fix the colorHint texts in de, en and tr so they no longer suggest the Pipette exists everywhere.\n   - Never present a measured value as exact.\n\nPhase 2 (raises the total to L): sheet mode for a photo of a colour chart.\n- Do not auto-advance blindly. Before each tap, show which material is next (number and name), allow skip and undo, and show a summary table of all measured values with their ΔE changes for one final confirmation before any material is overwritten."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w6-compare-batch",
+   "title": "Deviation map, largest-deviation list, batch recolouring and PNG preview export",
+   "ownedFiles": [
+    "src/ui/project/StepPreview.tsx"
+   ]
+  },
+  {
+   "id": "w6-fine-tiles",
+   "title": "Fine stones in real buyable sizes for faces and details (mixed sizes, stage 1)",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/types.ts",
+    "src/core/stats.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepColors.tsx",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w6-plan-exports",
+   "title": "Streaming CSV for millions of stones and paper-matched section presets",
+   "ownedFiles": [
+    "src/core/csv.ts",
+    "src/workers/client.ts",
+    "src/ui/project/StepPlan.tsx"
+   ]
+  },
+  {
+   "id": "w6-pdf-finish",
+   "title": "Exact page counts, labelled parts, coordinate mode choice, PDF on the fast stats engine",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "src/core/pdfPlan.ts",
+    "tests/pdf.test.ts",
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts",
+    "src/ui/project/StepPdf.tsx"
+   ]
+  }
+ ]
+}

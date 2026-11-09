@@ -1,0 +1,135 @@
+{
+ "wave": 5,
+ "waveName": "Wave 5 – Undo/redo & stone editing, scale performance, PDF content, shopping view, target colours, PDF export UI",
+ "package": {
+  "id": "w5-viewer-performance",
+  "title": "Smooth panning and zooming via a cached back buffer",
+  "goal": "Panning and zooming stay smooth on tablets and phones at every zoom level, with pixels identical to a fresh render, and edits and taps appear immediately.",
+  "findingIds": [
+   "performance-scale#4"
+  ],
+  "ownedFiles": [
+   "src/ui/project/Viewer.tsx",
+   "src/core/render.ts"
+  ],
+  "newFiles": [
+   "tests/w5-viewer-performance.test.ts",
+   "e2e/w5-viewer-performance.e2e.cjs"
+  ],
+  "steps": [
+   "render.ts: add an option to skip the sections and highlight passes. Move them into drawOverlay(ctx, …).",
+   "Viewer: keep an off-screen base canvas about 1.5-2x the viewport in device pixels, rendered with the unchanged renderMosaic. Its cache key covers every field in the draw-effect dependencies plus dpr, scale and the background colour.",
+   "Pan: snap ox/oy to multiples of 1/dpr and blit the base at an integer device-pixel offset each frame, then draw the overlays. Re-render the base, or the newly exposed strips through clip plus a restricted View, when the margin runs out.",
+   "Zoom: draw the scaled base during the gesture and render exactly 120-150 ms after the last zoom event; a scaled frame must never be the final image.",
+   "Invalidation: a key change re-renders the whole base. For single-stone edits and progress taps (version or progressVersion with dirty cells, otherwise full), re-render only the cell rectangle ±joint/2 through clip. A full re-render is always an allowed fallback."
+  ],
+  "acceptance": [
+   "Pixel test: a base blitted at an integer offset equals a fresh renderMosaic of the shifted view (max channel difference ≤ 1).",
+   "e2e: after a colour edit and after a laying tap, the canvas pixel at that stone changes at once.",
+   "pan benchmark (TABLET=1, THROTTLE=4, steps 4-18): median rAF callback < 8 ms (today 80-101 ms)."
+  ],
+  "risk": "Effort M. A stale cache could show a wrong colour; keep invalidation conservative and tested. Drawing stays in render.ts so the PDF and preview match."
+ },
+ "findings": [
+  {
+   "title": "Viewer redraws every visible stone on every pointer move; panning is 10 fps or worse on tablet-class CPUs",
+   "kind": "performance",
+   "problem": "renderMosaic is immediate-mode. For each visible cell it sets fillStyle and calls fillRect. When pitch is 9 px or more it also draws the glaze image per cell, and for split cells it adds save, clip, drawImage, restore and stroke (render.ts:176 to 247). Viewer.draw runs this on every pointermove and wheel event (Viewer.tsx:55 to 78, 196 to 207). It also calls getComputedStyle on every frame (Viewer.tsx:75). Nothing is cached between frames, so the cost is set by the number of visible cells. That number is highest just above the overview threshold (pitch 3 px or more and cellCount ≤ 400k, render.ts:165).",
+   "evidence": "Tablet emulation (1280x800 at DPR 2, CDP CPU throttling 4x), 200x100 cm at 5 mm (55,778 positions), preview step, 20 pan moves per zoom level (browser-big.cjs with TABLET=1 THROTTLE=4, browser/t55k/result.json). rAF callback time: zoom step 4 median 80.9 ms, p95 122 ms; step 6 91.8 / 156 ms; step 16 99.7 / 164 ms; step 18 101 / 254 ms. 20 of 20 frames were long tasks at these levels. Desktop without throttling: 55k step 2 median 16 ms, p95 33.5 ms; 5M step 14 median 23.2 ms, p95 36.9 ms (browser/b55k, browser/b5m). CPU profile while panning (browser-prof-pan.cjs, browser/profpan/pan-4 and pan-16.cpuprofile): at the face-overview zoom fillRect is 20.6 % of all samples; at the nose zoom drawImage (glaze) is 16.1 % and fillRect 10.7 %. Script time (Sr = renderMosaic) is only 2 to 4 %, so the cost is the per-cell canvas calls. Screenshots: browser/profpan-montage.png. All paths are under /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/performance-scale/.",
+   "proposal": "Add a tile cache. Quantize the zoom into power-of-two buckets, render 256x256 device-pixel tiles into OffscreenCanvas or ImageBitmap, ideally in a render worker using canvas.transferControlToOffscreen. Keep an LRU of about 64 tiles. Each frame then only draws the roughly 20 to 40 tiles that intersect the view, scaled between buckets, and switches to exact tiles once interaction settles. An edit or progress change invalidates only the tile containing that cell. Draw the selection, sections and progress ticks as a light overlay layer. For pitch 3 to 8 px, fill tiles through ImageData (cell color into a Uint32Array) instead of one fillRect per cell. Apply the glaze once per tile with createPattern aligned to the grid, instead of one drawImage per stone. Read --viewer-bg once, not every frame.",
+   "files": [
+    "src/core/render.ts",
+    "src/ui/project/Viewer.tsx"
+   ],
+   "impact": 4,
+   "effort": "L",
+   "dim": "performance-scale",
+   "id": "performance-scale#4",
+   "corrected": [
+    "Phase 1 (M effort, recommended):\n\n1. Add a back buffer in Viewer.tsx. Use an OffscreenCanvas, or a hidden canvas, sized to the viewport plus a margin of about 25 % on each side, in device pixels. Render it with the existing renderMosaic at the current scale, without the highlight and section overlays. Store the view (scale, ox, oy) it was rendered for.\n\n2. Pan: each frame, copy the buffer onto the visible canvas with one drawImage at the pan offset. When the view nears the edge of the margin, shift the buffer contents with drawImage onto itself. Then call renderMosaic only for the newly exposed strips. Use a View whose width and height cover just the strip, translated with ctx.translate and clipped to the strip rect. visibleRange then limits the work to those cells.\n\n3. Wheel and pinch zoom: while the gesture runs, draw the buffer scaled. About 120-150 ms after the last wheel or pinch event, render the buffer again at the exact scale.\n\n4. Invalidation: the cache key is all the props in the existing draw-effect dependency list (Viewer.tsx:142-144): layout, version, palette, realistic, showCodes, progressMode, focusColor, groutHex, surface, plus DPR.\n   - Any change to these re-renders the whole buffer once.\n   - For a single-stone colour edit or a progress tap, re-render only that cell's rect, with clip and the restricted view. This needs the Viewer to receive the changed row and col from useProject.\n\n5. Overlays: draw the highlight and the section borders and labels after the blit, every frame. They are a few dozen calls. Selecting a stone or a section then never invalidates the buffer.\n\n6. Read --viewer-bg once, on mount and when the theme or data-theme changes, not in every frame.\n\n7. Keep the glaze per cell inside the cached render. Do NOT replace it with one createPattern: edge columns and rows have different sizes (layout.ts:71-104), and cut or freeform pieces are polygons.\n\n8. Add an e2e guard for requirement 18:\n   - After a pan and a single-stone edit, compare getImageData of the cached viewer with a fresh uncached renderMosaic of the same view. The difference must be within an anti-aliasing tolerance.\n   - Re-run pan-verify.cjs. Target: the rAF callback stays under 4 ms during pan at 4x throttle on the tablet profile.\n\nPhase 2 (optional, L effort, only if Phase 1 is not enough on real Android devices):\n- Use 256x256 device-pixel tiles in power-of-two scale buckets, with an LRU of about 64 tiles.\n- Consider a render worker only if the mosaic data can be shared read-only and stays in sync with edits and progress.",
+    "Effort M, impact 3 (4 on tablets and phones). Keep src/core/render.ts output unchanged, because renderFull feeds the PDF preview and thumbnails. Implement the caching only in src/ui/project/Viewer.tsx.\n\n1) Split rendering into a cached base layer and a cheap overlay.\n   - Add an option to renderMosaic (or a thin wrapper) that skips the sections and highlight passes (render.ts:251-301). This keeps the base free of overlays.\n   - Keep one base canvas of 1.5x to 2x the viewport size in device pixels. Use an OffscreenCanvas, or a detached canvas on older WebViews.\n   - Render the base with the same renderMosaic call, using a View shifted by the margin.\n   - Cache key: layout identity, data identity, version, progressVersion, palette identity, realistic, surface, showCodes, progressMode, focusColor, groutHex, background colour, dpr, view.scale.\n   - Read --viewer-bg once (on mount and on theme or matchMedia change), not per frame.\n\n2) Panning.\n   - Snap view.ox and view.oy to multiples of 1/dpr. Then each frame is a single drawImage(base, integer device-pixel offset), plus a redraw of the section rectangles and the selection outline (the existing code at render.ts:251-301 moved into a drawOverlay function).\n   - With integer offsets the blit is pixel-identical to a fresh render, so no visual approximation is introduced.\n   - When the viewport leaves the cached margin, re-render the base around the new centre. This happens once every several hundred px of drag, not every frame. Optionally render only the newly exposed strips by clipping renderMosaic to them.\n\n3) Wheel and pinch zoom.\n   - For in-between frames, draw the cached base with a scale transform (temporarily blurry is acceptable).\n   - Schedule an exact re-render 120-150 ms after the last zoom event.\n   - Never leave a scaled frame as the final, settled image.\n\n4) Invalidation (the correctness-critical part).\n   - Any change of a key field throws away the whole base.\n   - For single-stone edits and progress taps, re-render only the affected cell rectangle (cell bbox expanded by joint/2, from layout.colX/colW/rowY/rowH). Do this with ctx.save(); ctx.rect(...); ctx.clip(); renderMosaic(...); ctx.restore() on the base. That path still uses the exact same renderMosaic code.\n   - Falling back to a full base re-render is always allowed.\n\n5) Do NOT implement the following:\n   - Grid-aligned createPattern glaze. It is wrong for cut edge columns and rows and for SUB/FREE polygons.\n   - ImageData pixel fills inside renderMosaic. They snap joints and change PDF previews.\n   - A separate render worker. It duplicates MosaicData and adds sync complexity.\n   Revisit these only if on-device profiling still shows long frames after steps 1-4.\n\n6) Tests.\n   - Vitest or Playwright pixel test: a base blitted at an integer device-pixel offset equals a fresh renderMosaic of the shifted view (max channel diff <= 1).\n   - e2e: edit a stone's colour and tap a stone in laying mode, then read the canvas pixel at that stone and assert it changed immediately. This proves there are no stale tiles.\n   - Re-run browser-big.cjs with TABLET=1 THROTTLE=4. Target: pan frame median < 8 ms at wheel steps 4-18 (currently 80-101 ms).\n   - Also report one measurement on a real Android device through the Capacitor APK, since all current numbers come from SwiftShader software rendering."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w5-undo-editing",
+   "title": "Undo/redo for every edit, non-modal stone inspector, lighter/darker, persistent comparison reference",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/storage/db.ts",
+    "src/core/edits.ts",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/StepPreview.tsx",
+    "src/ui/project/StepPlan.tsx"
+   ]
+  },
+  {
+   "id": "w5-stats-engine",
+   "title": "Single-pass statistics, 8-13x faster with identical results",
+   "ownedFiles": [
+    "src/core/stats.ts",
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts"
+   ]
+  },
+  {
+   "id": "w5-pdf-content",
+   "title": "Per-sheet legends, readable cut templates, complete compact coordinates, readable overview",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "src/core/pdfPlan.ts",
+    "tests/pdf.test.ts"
+   ]
+  },
+  {
+   "id": "w5-material-shopping",
+   "title": "Full-width material and shopping view with exact per-material buying list",
+   "ownedFiles": [
+    "src/ui/project/MaterialCalc.tsx"
+   ]
+  },
+  {
+   "id": "w5-target-colours",
+   "title": "Store each stone's photo target colour for exact deviation maps",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/serialize.ts",
+    "src/core/types.ts",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w5-pdf-export-ui",
+   "title": "PDF step that tells the truth about page count and lets you print parts",
+   "ownedFiles": [
+    "src/ui/project/StepPdf.tsx"
+   ]
+  }
+ ]
+}

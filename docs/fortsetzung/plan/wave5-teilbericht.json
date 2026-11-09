@@ -1,0 +1,333 @@
+{
+ "status": "Welle 5 unterbrochen: diese 5 Pakete sind fertig und einzeln grün, aber NICHT zusammengeführt/gegengeprüft. w5-target-colours: unvollständiger WIP-Commit. w5-pdf-export-ui: nicht begonnen.",
+ "packages": [
+  {
+   "id": "w5-stats-engine",
+   "branch": "wp/w5-stats-engine",
+   "commit": "70a719ad3820a42296e3d81749477c465fa4cc52",
+   "summary": "Totals and per-section statistics now come from one pass over the grid, and every result is exactly the same as the old per-range count, compared as JSON. Floating-point sums and the perSize tie order also match bit for bit.\n\nWhat changed in src/core/stats.ts:\n- New computeAllStats(layout, data, palette, materials, opts, grid?, cache?) returns { total, perSection } (perSection follows grid.sections order).\n- The total is added up directly in the same pass, not built as a sum of the sections. Each section is accumulated in row-then-column order over its own cells. Accumulators are typed arrays per bucket (bucket 0 = total, bucket 1+s = section s).\n- The old post-loop code moved into finalizeStats() and runs for the total and for each section. computeStats is now a thin wrapper with the same signature, plus an optional opts.minPieceMm.\n- Geometry keys are integers:\n  - FULL, DIAG and SUB: a dense array keyed by kind slot (SUB per k²), colClass/rowClass (the same toFixed(4) equality as before), piece index and rawClass.\n  - LINE: an exact key from the Float64 bit patterns of nx, ny and d (Murmur3 hash, with bit-exact verification and a fallback on collision). It is never quantised.\n  - FREE: never cached.\n- On a cache miss, the CutInfo is fetched through the existing CutCache with exactly the old pieceCutInfo string key. Every dimension still comes from analyzeCut on the real polygon, and a shared CutCache (as generatePdf uses it) gives the same objects and representatives as before.\n\nNew counters on Stats (optional in the type so other packages' literals still compile; computeStats/computeAllStats always set overlapCells):\n- overlapCells: cells whose summed piece area is larger than the cell area.\n- thinPieces: pieces in DIAG, LINE and SUB cells that fail pieceWidthCheck, the same rule compute and the StoneDialog 'belowMin' badge use.\n- thinFreePieces: FREE pieces counted separately.\n- thinPieces and thinFreePieces are only set when opts.minPieceMm is given. Without it they are undefined (not checked), never a made-up 0.\n- invalidPieces is kept.\n\nWorker and protocol: the stats request has optional minPieceMm and sections (SectionSettings). One computeAllStats call answers it with { total, perSection: { id, stats }[] }. The unused `ranges` field was removed; no caller sent it.\n\nBenchmark (tests/w5-stats-engine-bench.ts, 2M cells, Node, 0 mismatches):\n- Portrait sample, 6 mm tiles: old total + 1110 sections took 3551 ms; now 118 ms (3.3 % of the old time, 30x). Total only: 1825 ms → 160 ms (11x).\n- Cut-heavy random mosaic (40 % cut cells: DIAG/LINE/SUB): 10677 ms → 637 ms (6.0 %, 17x). Total only: 5379 ms → 776 ms (7x).",
+   "filesChanged": [
+    "src/core/stats.ts",
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts",
+    "tests/w5-stats-engine.test.ts",
+    "tests/w5-stats-engine.reference.ts",
+    "tests/w5-stats-engine-bench.ts",
+    "e2e/w5-stats-engine.e2e.cjs"
+   ],
+   "acceptance": [
+    {
+     "criterion": "Equivalence: JSON.stringify(computeAllStats) equals the old computeStats for the total and every section. Inputs: random mosaics with DIAG, generator-style and manually edited LINE (any angle or offset), SUB 2/3, FREE, cut-end edges, materials with different raw sizes, progress bits",
+     "status": "pass",
+     "evidence": "tests/w5-stats-engine.test.ts compares against a frozen copy of the old computeStats in tests/w5-stats-engine.reference.ts (checked identical to HEAD by a script diff).\n- 40 random mosaics, plus all 3 edge modes × 3 tile formats × 2 joints, plus the portrait computeMosaic result with about 200+ manual setCellKind and setFreePieces edits and materials of different raw sizes, plus empty-palette and 1×1 edge cases.\n- Covered cell types: LINE without params, SUB without colour list, malformed SUB length, unknown kind, overlapping and degenerate FREE pieces, invalid colour indices.\n- For each mosaic: total and every section are JSON-equal (new counters stripped). This holds with and without minPieceMm, for the wrapper with a fresh cache, and with a shared cache as generatePdf uses.\n- A dedicated test covers LINE params that collide under the old toFixed key.\n- Bench: 0 mismatches over 2M cells and about 1100 sections."
+    },
+    {
+     "criterion": "Scratch bench: 2M cells take ≤ 1/6 of the old total-plus-sections time; record the number",
+     "status": "pass",
+     "evidence": "npx tsx tests/w5-stats-engine-bench.ts 2000000 sample: 3551 ms → 118 ms (3.3 %, 30x).\nnpx tsx tests/w5-stats-engine-bench.ts 2000000 random (cut-heavy): 10677 ms → 637 ms (6.0 %, 17x).\nBoth are under 1/6 (16.7 %). A coarse regression guard in the unit tests requires the new time to be < 1/2 of the old one."
+    },
+    {
+     "criterion": "typecheck and test are green",
+     "status": "pass",
+     "evidence": "npm run typecheck: clean. npm test: 35 files, 768 tests passed, including 13 new ones in tests/w5-stats-engine.test.ts."
+    },
+    {
+     "criterion": "Build and existing e2e stay green; own e2e passes",
+     "status": "pass",
+     "evidence": "npm run build OK.\n- node e2e/run-e2e.cjs http://localhost:4301/: 17/17.\n- e2e/w5-stats-engine.e2e.cjs: 10/10. It checks that the material view's piece count equals placed + open, runs the built worker with and without sections, checks Σ sections = total and placed = the app's counters, and checks that a fresh compute has 0 thin, overlap or invalid pieces.\n- Also re-ran w1-material-quantities (20/20) and w3-review-fixes (22/22).\n- Screenshots reviewed: the material view on desktop and phone is unchanged."
+    },
+    {
+     "criterion": "New counters thinPieces / overlapCells / invalidPieces",
+     "status": "pass",
+     "evidence": "These match an independent brute-force recount (cellPieces + analyzeCut + pieceWidthCheck) on 16 random mosaics with minimum widths 1/1.5/2/3. Targeted cases also pass: thin triangles in a 2 mm edge strip, an overlapping free cell, and a DIAG split whose joint is wider than the strip. Computed portrait and animal mosaics show 0 thin and 0 overlap. Without minPieceMm both thin counters are undefined."
+    }
+   ],
+   "checks": {
+    "typecheck": true,
+    "tests": true,
+    "build": true,
+    "e2e": true
+   },
+   "notes": "Decisions and deviations:\n1) LINE keys. The engine's own key is exact: Float64 bit patterns of nx/ny/d, which is also exact for the stored Float32 values. On a miss, the CutInfo is resolved through the CutCache with the old pieceCutInfo string key, the same way as FULL/DIAG/SUB. Effect: results are identical to before even when two manual cuts collide under the old toFixed(5)/toFixed(3) key. Stats, PDF and CSV keep sharing the same CutInfo objects. Representatives (first encounter in row-major order) are the same as before, so even last-bit floats match. The briefing's 'never quantised' concern, the 15°/0.5 mm rounding with 4804 mismatches, does not apply: there are 0 mismatches.\n\n2) The cell piece colours are derived inline, mirroring cellPieces including edge cases (LINE without params = 1 piece, SUB without list = c1, k = round(√len)), because pieces.ts is not mine. cellPieces itself is only called on cache misses and for FREE/unknown kinds. The equivalence tests guard this against drift.\n\n3) thinPieces uses pieceWidthCheck (caliper and incircle), not minCaliperWidth alone. That is the rule compute enforces and the one the StoneDialog 'belowMin' badge uses for DIAG/LINE/SUB, so the counter counts exactly the stones that carry the badge. It covers all pieces of DIAG/LINE/SUB cells; FULL edge strips are governed by minCutMm and are not counted. FREE is counted separately in thinFreePieces, which is approximate for non-convex pieces (hull width).\n\n4) Not done here because the files belong to other wave-5 packages; needed at integration:\n(a) useProject.ts (w5-undo-editing): add minPieceMm: r.settings.shapes.minPieceMm to the stats request, and rec?.settings.shapes.minPieceMm to the stats effect deps. Until then the app's thinPieces/thinFreePieces stay undefined: honestly 'not checked', and nothing displays them.\n(b) MaterialCalc.tsx (w5-material-shopping): show warnings when overlapCells > 0 or thinPieces > 0, e.g. 'X Teile schmaler als Mindestbreite – Neuberechnung empfohlen'. No i18n keys were added because no UI shows the counters yet.\n(c) pdf.ts (w5-pdf-content): it still calls computeStats once for the total and once per section. Each call is now much faster via the wrapper. Switching to one computeAllStats(…, input.sections, cache) call and using perSection[i] gives the single pass there too; keep passing the same cache so collectTemplates reuses the CutInfos. No other API change is needed.\n(d) jointAreaValid is unchanged on purpose. Wiring overlapCells into it would flag sub-0.01 mm² overlaps that validateFreePieces accepts.\n\n5) Known limitation (pathological case only): the CutCache still clears itself above 200k distinct keys. After a clear, the old code re-picked representatives, while the engine keeps its first ones, so last-bit float differences are possible only with more than 100k distinct manual cut geometries.\n\n6) No IndexedDB stats cache (skeptic advice). No change to the 1500 ms debounce in useProject (not my file).\n\n7) Extra test-support files: tests/w5-stats-engine.reference.ts (frozen reference plus random mosaic generator; not a test file) and tests/w5-stats-engine-bench.ts (a manual bench script like the existing w1-mosaic-core-bench.ts). Neither matches the vitest include pattern.\n\nThe preview server on 4301 is stopped; node_modules (symlink) and dist are not committed. E2E outputs are in /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-stats-engine/ (e2e, e2e-own, e2e-w1mq, e2e-w3rf).",
+   "outOfOwnershipEdits": []
+  },
+  {
+   "id": "w5-undo-editing",
+   "branch": "wp/w5-undo-editing",
+   "commit": "bb03b95284215f7ba763858fb46beef6bf898894",
+   "summary": "Every edit can now be undone and redone safely, in one shared history:\n- stone colour, shape and freeform;\n- \"verlegt\" (laid) marks, including laying in step 9;\n- palette add, change, remove and \"Palette aus Materialien\".\n\nThe history keeps at most 200 entries or 32 MB, only for the current session. Buttons with counters are in steps 5, 8 and 9 and in the stone inspector. Shortcuts: Ctrl/Cmd+Z, Ctrl+Shift+Z and Ctrl+Y. They are ignored while a text field has focus or another dialog is open.\n\n**Journal (src/core/journal.ts, pure TypeScript)**\n- Cell entries are struct-of-arrays, with side maps for sub/line/free. Laying entries store progress before and after. Palette entries store the palette before and after.\n- Removing a colour is stored as a compact inverse: only the slots that held that colour are recorded. Undo shifts every index ≥ the removed one up by 1, then writes the removed index back into those slots. \"Palette aus Materialien\" uses the same recorded steps (`mergeRecorded`).\n- An entry is applied only if the current cells, progress or palette exactly equal its \"after\" state (for redo: its \"before\" state). The palette's colour order (its codes) is checked too.\n- If anything changed in between, the entry is dropped with a message. It never writes an old state over a newer change.\n- Caps drop the oldest entries. A single entry larger than 32 MB is not stored, and the history is cleared.\n\n**edits.ts**\n- `snapshotCell`, `restoreCell`, `cellEquals`, `cellMatches` (kind, c1, c2, sub, line, free and progress; deep copies).\n- `shadeStep` for \"Heller\"/\"Dunkler\": picks an existing palette colour with |ΔL*| between 3 and 20, Δa*b* ≤ 10 and ΔH ≤ 8, nearest step first. It never invents a colour.\n\n**useProject**\n- New APIs: `editCell`/`editCells` (snapshot, mutate, push only real changes, clear redo), `recordProgress`, `paletteOp(kind, fn)` with recording tools `removeColor` and `merge`, `undo`/`redo`, and `history` (counts, next labels, last event, locked state).\n- `setPalette` sorts each change:\n  - a language-only rename of automatic names is not recorded;\n  - in-place changes and appended colours are recorded, and repeated edits of the same colour within 1.5 s merge into one entry;\n  - an untracked remove or reorder clears the history.\n- A new grid (compute, a result adopted from elsewhere, load) clears the history.\n- Calling the public `touchMosaic` without the history also clears it.\n- While a compute is running, undo and redo are locked.\n\n**Comparison photo (db.ts, referenceImage.ts, w5-reference.worker.ts)**\n- At compute time a JPEG of at most 2048 px is stored as `ImageRecord.reference` with the grid revision, in the same transaction as the grid. It is decoded on load and when another tab's result is adopted. A photo replacement keeps it while the grid stays.\n- Older projects get \"Referenz neu erzeugen\". It runs the same crop, working size and `applyAdjustments` as the compute, using `adjust`/regions/layout from `computedWith`, in its own worker, without recomputing the mosaic. It is blocked (with the reason shown) if the photo was replaced, is unreadable, or the key is missing.\n\n**Stone inspector**\n- At ≥981 px it is a sticky side panel in place of the legend aside: no backdrop, the canvas stays interactive (clicking another stone switches the panel), Esc closes it.\n- Below 981 px it stays a modal. At ≤600 px it is a bottom sheet with a sticky summary.\n- Order: summary with a large laid toggle, then colour, cut template, shape, position and neighbours.\n- Colour row: the 12 nearest colours to the colour the stone had when the inspector opened, plus \"Alle Farben\". ▲/▼ markers show lighter/darker. Name and ΔE are shown under the selected colour.\n- \"Heller\"/\"Dunkler\" buttons show the target swatch, code and ΔE. If no matching colour exists, the button is disabled and a visible hint says to add one in step 5 (in materials modes: via Materialverwaltung).\n- All cut sizes still come from `analyzeCut`.\n\n**Other UI**\n- StepPreview now uses `FindStone.tsx` and `api.reference`.\n- StepPlan's old laying-only undo stack (`ProgressUndo`) is replaced by the shared history. `lay-undo` keeps its test id and text format; `lay-redo` is new.\n- All texts are in de/en/tr in `src/i18n/ext/w5-undo-editing.ts`; it also overrides `w4lw.undoTitle` and `w4lw.undoNote`.",
+   "filesChanged": [
+    "src/core/edits.ts",
+    "src/core/journal.ts",
+    "src/storage/db.ts",
+    "src/ui/project/useProject.ts",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/StepPreview.tsx",
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StepColors.tsx",
+    "src/ui/project/HistoryControls.tsx",
+    "src/ui/project/referenceImage.ts",
+    "src/workers/w5-reference.worker.ts",
+    "src/i18n/ext/w5-undo-editing.ts",
+    "src/ui/css/w5-undo-editing.css",
+    "tests/w5-undo-editing.test.ts",
+    "tests/w5-undo-editing-ui.test.ts",
+    "e2e/w5-undo-editing.e2e.cjs",
+    "e2e/w3-viewer-features.e2e.cjs",
+    "e2e/w3-freeform-editor.e2e.cjs"
+   ],
+   "acceptance": [
+    {
+     "criterion": "Vitest: SUB [3,5,7,9] with progress 101 changed to FULL, then undone, restores exactly, and stats equal the pre-edit stats",
+     "status": "pass",
+     "evidence": "tests/w5-undo-editing.test.ts 'SUB [3,5,7,9] mit Verlegestatus 101 → ganzer Stein → Rückgängig': cellMatches, sub [3,5,7,9], progress 0b101, computeStats JSON equal; redo gives the edited stats again."
+    },
+    {
+     "criterion": "Vitest: removing the portrait's most-used colour and undoing restores packMosaic bytes exactly",
+     "status": "pass",
+     "evidence": "Portrait sample via computeMosaic plus one injected freeform cell: removeColorRecorded → undo gives byte-identical packMosaic (all typed arrays, free JSON, progress, rec) and equal stats. Redo gives the post-removal bytes. A renamed palette (stale) is not applied. Also checked in the browser: removing colour 15 (687 whole stones) and undoing gives identical IndexedDB bytes."
+    },
+    {
+     "criterion": "Vitest: the journal respects its byte cap",
+     "status": "pass",
+     "evidence": "'Grenzen des Verlaufs': with a 4000-byte cap, bytes ≤ cap after each of 300 pushes and the oldest are dropped; a 200-entry cap holds exactly 200, and all 200 can be undone; an entry over the cap gives 'too-large' and empties the history."
+    },
+    {
+     "criterion": "e2e: change a stone 03→02, Ctrl+Z restores 03, Ctrl+Shift+Z gives 02 again",
+     "status": "pass",
+     "evidence": "e2e/w5-undo-editing.e2e.cjs: '03 → 02 → 03 → 02', Ctrl+Y also redoes, the saved IndexedDB value matches, and Ctrl+Z in a number input does not touch the stone. 29/29 checks."
+    },
+    {
+     "criterion": "e2e: 'Heller' on a pale-blue stone picks a same-hue lighter code, or is disabled with the hint",
+     "status": "pass",
+     "evidence": "A020 (06 #8FB4CA): disabled with the hint 'Kein hellerer Farbton dieser Farbe in der Palette – im Schritt Farben ergänzen.'. After adding #A2C4D8 (L* +6, same hue) in step 5, 'Heller' targets exactly the new colour 33 and applies it in one click."
+    },
+    {
+     "criterion": "e2e: after compute and reload, the comparison slider still shows the photo",
+     "status": "pass",
+     "evidence": "After reload: compare toggle enabled, slider present, thumbnail canvas present, canvas pixels left of the split differ from the mosaic. With the reference deleted from IndexedDB (old project): marked 'unvollständig'; 'Referenz neu erzeugen' brings it back (224 ms), saved as origin 'regenerated' with the same size and revision as the computed one."
+    },
+    {
+     "criterion": "Existing e2e/run-e2e.cjs keeps passing",
+     "status": "pass",
+     "evidence": "17/17 on the final build at :4300."
+    },
+    {
+     "criterion": "All other e2e suites keep passing",
+     "status": "pass",
+     "evidence": "Full run of all 30 suites. The two failures from that run (w4-review-fixes, w3-freeform-editor) were fixed and the affected suites re-run on newer builds: 25/25, 33/33, plus the other 13 changed-area suites green (details in notes)."
+    },
+    {
+     "criterion": "typecheck / unit tests / build",
+     "status": "pass",
+     "evidence": "npm run typecheck clean; npm test 36 files / 784 tests passed; npm run build OK (w5-reference.worker bundled)."
+    }
+   ],
+   "checks": {
+    "typecheck": true,
+    "tests": true,
+    "build": true,
+    "e2e": true
+   },
+   "notes": "**Decisions and deviations from the briefing**\n\n1. **One shared history.** Laying progress now goes into the same journal as stone, shape and palette edits; StepPlan's separate `ProgressUndo` stack is gone. As w4 suggested, Ctrl+Z works in step 9 and undoes the most recent change of any kind. The w4 e2e contracts still hold: test id `lay-undo`, text \"↶ Rückgängig (n)\", status \"Rückgängig gemacht: …\", the note \"solange das Projekt geöffnet ist – auch nach einem Schrittwechsel\", and an empty history after reload.\n   - A stone edit no longer clears the laying undo. The exact after-check protects older entries instead.\n\n2. **Palette edits are undoable.** `api.paletteOp('remove'|'merge', fn)` records the inverse. Plain `api.setPalette` (add, update, matchAll, AccentColors, custom palette before compute) is recorded automatically. Automatic names changing with the language, and the one-time migration of pre-wave-2 names, are not recorded. An unrecorded remove or reorder while a grid exists clears the history. Pure palette edits made before the first compute are recorded and cleared at compute.\n\n3. **Laid toggle.** It is a large label-wrapped native checkbox (`data-testid=stone-placed`), not a button with `aria-pressed`. Several existing e2e suites call Playwright `isChecked()`, which throws on `aria-pressed` buttons. A native checkbox is semantically equivalent.\n\n4. **Panel compatibility.** The panel has `role=\"dialog\"` with `aria-modal=\"false\"`. Its close button keeps `data-testid=\"modal-close\"`, and the content keeps the class `stone-grid` (single column via CSS). Other suites rely on all three.\n   - The freeform editor opened from the panel goes through a portal to `document.body`, so it stays above the sticky header.\n   - On wide tablets the Android back button does not close the panel (it is not a modal); ✕ and Esc do.\n\n5. **\"Heller\"/\"Dunkler\" also limit |ΔL*| to 20.** Without this cap, a near-neutral beige jumped to dark grey (ΔL −45). It is unit-tested and the rule text in de/en/tr says so.\n\n6. **Comparison photo storage.** It is stored in `ImageRecord`, so `duplicateProject` copies it. Project export/import (projects.ts, not owned) drops it, so imported projects show \"Referenz neu erzeugen\". New file `src/workers/w5-reference.worker.ts` is unique to this package; protocol.ts is owned by w5-stats-engine and was not touched.\n\n7. **Phone layout.** In step 9 at 360–390 px, the tools and the ↶/↷ buttons fit in one row; my CSS reduces segmented-button padding and gaps there. A wrapped row had pushed the mosaic below the fold and broke w4-review-fixes taps. In the bottom sheet, the history buttons share the row with the laid toggle.\n\n8. **Cell-entry undo is exact in content but not in pack order.** It restores the cell contents exactly, but a re-inserted sub/line/free Map entry moves to the end of the Map, so `packMosaic` order can differ; `unpack` gives identical cells. The palette-remove inverse is byte-exact.\n\n**Out-of-ownership edits (both e2e, minimal)**\n- `e2e/w3-viewer-features.e2e.cjs`: the reload check now expects the reference photo to be available (an intended change of this package). The find-stone regex also accepts the shared FindStone wording \"gültig: …\".\n- `e2e/w3-freeform-editor.e2e.cjs`: a small `withLegend` helper closes the stone panel to read the legend totals, then reopens the stone, because at desktop width the panel replaces the legend.\n- `src/ui/project/StepColors.tsx` (no wave-5 owner):\n  - removing a colour and \"Palette aus Materialien\" now go through `api.paletteOp` instead of mutating the grid before `setPalette`;\n  - a sticky ↶/↷ bar, the status line and the keyboard shortcuts were added.\n\n**Verification**\n- Full run of all 30 e2e suites on the first build: 28 passed. w4-review-fixes (phone toolbar wrap) and w3-freeform-editor (`.stone-grid` and legend) failed; both were fixed.\n- Re-runs on newer builds:\n  - fixed suites: w4-review-fixes 25/25, w3-freeform-editor 33/33;\n  - all green: w2-design-system, w1-touch-input-safety, w4-laying-workbench 36/36, w2-review-fixes, w3-viewer-features 49/49, w1-persistence, w1-cut-correctness, w3-review-fixes, w4-progress-engine, w2-colour-honesty, w1-mosaic-core.\n- Final build: run-e2e 17/17 and w5-undo-editing 29/29.\n- The preview server's 30-minute background limit stopped it once mid-run; it was restarted and the remaining suites were run again.\n- Screenshots reviewed:\n  - /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-undo-editing/e2e-own (panel, lighter/darker, palette removal, step 9, reload compare, regenerate, phone sheet);\n  - /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5ue/shots (360 px sheet and toolbar);\n  - main e2e output in /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-undo-editing/e2e.\n- Preview servers are stopped. The node_modules symlink and dist are gitignored and not committed. No dependencies were added.\n\n**For w7 (README):** change the \"Rückgängig (Undo)\" row to: session only; up to 200 steps; covers colour, shape, freeform, laying and palette; Strg+Z / Strg+Umschalt+Z / Strg+Y. Also mention the stone side panel, Heller/Dunkler, the comparison photo stored with the project, and \"Referenz neu erzeugen\".",
+   "outOfOwnershipEdits": [
+    "e2e/w3-viewer-features.e2e.cjs (reload check now expects the stored reference photo, an intended change; find-stone regex accepts the shared FindStone wording 'gültig: …')",
+    "e2e/w3-freeform-editor.e2e.cjs (withLegend helper: closes the desktop stone panel, which now replaces the legend, to read stone totals, then reopens the stone)",
+    "src/ui/project/StepColors.tsx (remove colour and 'Palette aus Materialien' go through api.paletteOp so they are undoable; sticky ↶/↷ bar, status line and keyboard shortcuts; no wave-5 owner)"
+   ]
+  },
+  {
+   "id": "w5-viewer-performance",
+   "branch": "wp/w5-viewer-performance",
+   "commit": "475e11726cdeebf60c0647faff8eb5bedbfb5908",
+   "summary": "Panning and zooming are now smooth. The Viewer keeps the stone layer in a cached back buffer and only copies it while panning; edits and laying taps redraw just the affected stone.\n\n**Measured (TABLET=1, THROTTLE=4, 200 × 100 cm in 5 mm, 55,778 positions, same machine, my e2e and bench-pan.cjs)**\n- Median rAF callback while panning at zoom steps 4–18: before 13–141 ms (22 long tasks per level), now 0.6–1.4 ms. p95 is about 2–6 ms and there are 1–5 long tasks per level.\n- Phone (412 × 915, dpr 2.625), steps 18–26: before 7–15 ms median, now about 1 ms.\n- Still slow: the one exact render 130 ms after a zoom gesture costs about as much as one old frame (up to about 250 ms throttled).\n\n**render.ts**\n- New options `baseOnly` (stone layer only), `area` (draw one region: background, grout and stones that can touch it) and `overviewMode` (force stones or overview).\n- New `drawMosaicOverlay`: the focus veil, compare photo, sections, highlight, rulers and compare handle moved out unchanged. A unit test records the canvas calls and shows renderMosaic = baseOnly + overlay, call for call.\n- Stone culling now uses `drawRange` (visible cells plus one pitch + 2 px), so a pixel does not depend on which region was drawn. `renderFull`/PDF output is unchanged, because its view already covers the whole mosaic.\n\n**viewerBase.ts (new)**\n- BaseBuffer is a ring buffer: viewport plus a 12.5 % margin per side, at most 256 px. Panning never copies the buffer inside itself; it renders only newly visible strips, and fills the margin in idle time.\n- Blits use whole device pixels.\n- The cache key covers layout, data, palette, realistic, surface, showCodes, progressMode, focusColor, grout and background, plus scale, dpr and canvas size. A change rebuilds the buffer.\n- CellShadow stores exactly what each drawn cell looked like: kind, colours, progress and full geometry, with no hashing.\n  - After every version/progressVersion change, and on every frame outside a gesture, it compares the drawn area with the data and redraws only changed cells (cell rect + pad, clipped).\n  - From 48 changed cells it groups them into 256 px tiles; from 20,000 it rebuilds fully.\n  - It also catches changes made without a cell list or without a counter (stone dialog, undo, palette remap).\n\n**Viewer.tsx**\n- The origin is rounded to whole device pixels when drawing; input stays exact. The overlay canvas and hit tests use the drawn view.\n- Wheel and pinch show the scaled buffer (over the overview or grout as an underlay). The exact image follows 130 ms after the last zoom step, and the tap-zoom animation's last frame is exact.\n- If no 2D context is available, it falls back to drawing directly. Overview zoom levels draw directly as before, which is already cheap.\n- New handle method `drawnView()` and data attributes `frame`, `baseResets`, `baseRects`, `baseDirty`, `basePaints` for tests.\n\n**Tests**\n- Unit tests (16): rect and ring-buffer helpers; CellShadow exactness, including in-place SUB/FREE/LINE edits; a 500-step random sequence of pans, edits with and without counters, margin fill, resizes and key changes in a pixel-model canvas, with every screen pixel equal to a fresh draw at every step; the render.ts split.\n- e2e (33 checks) with a bundled harness around the real Viewer, plus the app.\n\n**Checks run**\n- typecheck, 771 unit tests and build pass.\n- run-e2e 17/17 and my e2e 33/33.\n- All earlier w1–w4 e2e suites pass. w3-viewer-features (49/49) and w4-laying-workbench (36/36) were re-run on the final build.\n- Screenshots reviewed.",
+   "filesChanged": [
+    "src/core/render.ts",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/viewerBase.ts",
+    "tests/w5-viewer-performance.test.ts",
+    "e2e/w5-viewer-performance.e2e.cjs",
+    "e2e/w5-viewer-performance.harness.tsx"
+   ],
+   "acceptance": [
+    {
+     "criterion": "Pixel test: a base blitted at an integer offset equals a fresh renderMosaic of the shifted view (max channel difference ≤ 1)",
+     "status": "pass",
+     "evidence": "e2e Part A1, real Viewer, dpr 1, whole stones with glaze: max 0 at fit and after zoom, max 1 after 9 pans (margin, strips, ring wrap, far jumps; 119 strips redrawn), and max 1 for a pure blit after the margin fill. Full content (split/free cells, codes, check marks) at dpr 1/2/2.625: every stone colour is equal (609/2640/3869 stones, worst diff 0–1). The only pixels that differ by more than 1 are anti-aliasing on edges, text and check marks (0.02–0.07 % of channel values). The rasterizer differs the same way from itself when the same fresh image is drawn 64 px shifted. The 500-step pixel-model unit test is exact."
+    },
+    {
+     "criterion": "e2e: after a colour edit and after a laying tap, the canvas pixel at that stone changes at once",
+     "status": "pass",
+     "evidence": "App, step 8: AI034 colour changed in the stone dialog, pixel 203,178,161 → 83,88,85 two frames later, 1 changed cell, no rebuild (3→3). App, step 9, laying mode: tap gives 237,193,162 → 159,163,138 (placed 0→1, 1 changed cell); a second tap restores it exactly. The harness checks the same at dpr 1/2/2.625, plus a change without a version counter."
+    },
+    {
+     "criterion": "pan benchmark (TABLET=1, THROTTLE=4, steps 4-18): median rAF callback < 8 ms (today 80-101 ms)",
+     "status": "pass",
+     "evidence": "e2e Part C, 55,778 positions: steps 4–18 median 0.7–1.0 ms, p95 2.0–3.9 ms. bench-pan.cjs on the same machine: base commit 13–141 ms median, this branch 0.6–1.4 ms."
+    },
+    {
+     "criterion": "Zoom: scaled frame only during the gesture, never the final image",
+     "status": "pass",
+     "evidence": "Wheel at dpr 1/2/2.625: 'scaled' during the gesture, 'exact' 400 ms later. Two-finger pinch on a phone: 'scaled' while moving and on release, then 'exact'; the final image equals a fresh render (0 values > 1)."
+    },
+    {
+     "criterion": "Section/selection/focus changes do not invalidate the cache",
+     "status": "pass",
+     "evidence": "e2e: selectedSection, highlight and focusRange changes give baseResets unchanged, frame exact, image equal to a fresh render (only anti-aliasing differs)."
+    },
+    {
+     "criterion": "Existing e2e and checks stay green",
+     "status": "pass",
+     "evidence": "npm run typecheck, npm test (771/771), npm run build, run-e2e 17/17, all w1–w4 e2e suites. w1-cut-correctness hit a timeout once on the language selector while 4 suites ran in parallel and passed 24/24 when run alone."
+    }
+   ],
+   "checks": {
+    "typecheck": true,
+    "tests": true,
+    "build": true,
+    "e2e": true
+   },
+   "notes": "**Deviations from the plan, with reasons**\n\n1. **The Viewer finds changed cells itself.** useProject belongs to w5-undo-editing in this wave, so the Viewer does not receive dirty-cell lists.\n   - Instead, CellShadow compares the drawn area with the data after every version/progressVersion change and on every frame outside a gesture.\n   - This is exact (no hashing) and also covers the stone dialog without a list, undo/redo, palette remaps and changes made without a counter.\n   - Cost is O(cells in the buffer), under 1 ms for normal buffers; it is skipped during pan, pinch and zoom gestures.\n   - No contract change is needed in useProject.\n\n2. **The buffer is a detached `<canvas>`, not an OffscreenCanvas.** Measured in Chromium: an OffscreenCanvas anti-aliases slanted polygon edges differently from the on-screen canvas (diffs up to 52 on every split cell). With a detached canvas of the same kind the first blit is identical (max 0).\n\n3. **Ring buffer instead of copying the buffer onto itself.** The buffer is the viewport plus a 12.5 % margin per side, at most 256 px; there is no margin above 16 M device pixels.\n   - Newly visible strips are drawn per frame, and the margin is filled in idle time in chunks of up to 131 k px.\n   - The first exact render after zoom or a rebuild therefore costs exactly the viewport.\n\n4. **renderMosaic now pads the culled cell range by one pitch + 2 px** (`drawRange`), also in the default path. This removes the dependency on which region was drawn (stroke and code overflow of neighbours just outside). It has no effect on renderFull/PDF, whose view covers the whole mosaic.\n\n5. **The pixel acceptance holds literally for rectangles and glaze at dpr 1 (max ≤ 1).**\n   - For slanted edges, check marks and text, and for glaze edges at dpr ≠ 1, Chromium anti-aliases and filters slightly differently depending on where on the canvas something is drawn. A fresh render drawn 64 px shifted differs from itself in the same way, and software (willReadFrequently) canvases behave the same.\n   - So the e2e checks: every stone colour is equal; values > 1 stay below 0.2 % (measured 0.02–0.07 %); the cache never shows a wrong colour.\n\n6. **Overview zoom levels are still drawn directly.** The overview is a single drawImage, so caching it gains nothing. The base path forces `overviewMode: false` so the larger buffer never switches mode.\n\n**Not done (requirement 18)**\n- No measurement on a real Android device or the Capacitor APK. All numbers come from headless Chromium with CDP CPU throttling and SwiftShader.\n- The exact render 130 ms after a zoom gesture still costs one full viewport render (about 100–250 ms throttled at 55 k positions, the same as one frame before). Rendering it progressively in bands would be a possible follow-up.\n- Phase 2 of the plan (power-of-two tile LRU, render worker) was not built; the measurements do not call for it.\n\n**Out-of-ownership edits:** none.\n\n**For w7 (README):** cached back buffer with an exact cell comparison; zoom shows a scaled preview and is sharp 130 ms after the gesture; the before/after numbers above.\n\n**For integration with w5-undo-editing:** the Viewer only needs version/progressVersion bumps or any prop change. Undo/redo restores are found by the cell comparison even when no list is passed.\n\n**New UI text:** none, so no i18n ext file and no CSS.\n\n**Housekeeping**\n- Preview servers on 4302 and 4303 are stopped.\n- The node_modules symlink and dist are not committed; no dependencies were added.\n- Bench scripts and results: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5vp/bench-pan.cjs and /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5vp/bench/ (base-t55k, new-t55k, base-phone, new-phone). The baseline build of the base commit is in /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5vp/basebuild.\n- Screenshots: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-viewer-performance/e2e-own and /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-viewer-performance/e2e.",
+   "outOfOwnershipEdits": []
+  },
+  {
+   "id": "w5-material-shopping",
+   "branch": "wp/w5-material-shopping",
+   "commit": "31eb77851abc3b1750507ff09b17a7ce93f4f4db",
+   "summary": "The \"Material & Einkauf\" view in step 9 (src/ui/project/MaterialCalc.tsx) is now a full-width shopping view. Every number comes straight from stats.perMaterial and stats.perColor.\n\n1. **Stat row.**\n   - Steine gesamt (with the cut and whole counts).\n   - Rohsteine inkl. Reserve, labelled \"sichere Obergrenze (Richtwert)\" with the reserve in %.\n   - Materialkosten, always with two decimals and the 'unvollständig' badge.\n   - \"davon Einkauf\" = Σ packs to buy × price. It is only shown for materials with recorded stock, pack size and price, and is marked incomplete otherwise.\n   - Fugenmasse, labelled \"Schätzung, 1,6 kg/l\". It shows \"nicht berechenbar\" when the areas are invalid.\n   - The reserve chips.\n\n2. **Actions.**\n   - \"Einkaufsliste als CSV\" goes through downloadBlob({announce:false}) and shows a SaveResultNote. It is disabled while the stats are being recalculated.\n   - \"Drucken\" calls window.print(). In the Android app it is replaced by a note with the 'unvollständig' badge, because the WebView cannot print.\n\n3. **Banners.**\n   - Shortfall: each material whose need exceeds its stock, with need, stock, amount to buy, packs and cost, plus the totals.\n   - Material missing (deleted or not imported) and colours without a material, with a button to step 5.\n   - Stock not recorded: it says plainly that \"zu kaufen\" stays empty. It is never assumed that nothing is in stock.\n   - Tiles with an invalid colour index.\n\n4. **Table \"Einkaufsliste je Material\".**\n   - One row per material, so a material shared by several colours is a single row.\n   - Columns: material with swatch and type, Farbnr. with colour name, colour codes with swatches, raw size (* when the grid size was assumed), price per pack.\n   - Group \"Bedarf (ganzes Mosaik)\": raw tiles, packs as \"n × ppp St.\" plus the pack label, cost.\n   - Group \"Einkauf (Bedarf − Bestand)\": stock or \"nicht erfasst\", to buy (red when short), packs to buy, cost.\n   - '–' with a tooltip wherever piecesPerPack, price or stock is missing. Nothing is estimated.\n   - A sum row: Σ need = rawWithReserveTotal, Σ cost = totalCost, plus Σ to buy and Σ purchase cost, each with incomplete badges.\n\n5. **Table \"Bedarf je Farbe\".**\n   - Columns: Nr + swatch, name (paletteDisplayName), material or 'Material fehlt' badge or 'kein Material', Steine, davon geschn., Rohsteine (* = grid size assumed), +reserve.\n   - Its sum row stays visible in long lists that scroll inside their box.\n   - Next to it: \"Berechnung im Detail\" (the full kv table as before, including the area-invalid handling and a Kosten row whenever materials are linked), the yield hints, and the per-shape and per-size tables side by side. A note appears when more than 200 sizes exist.\n\n6. **Phone layout.** At 600 px and below both tables become cards using the same markup (data-label captions and group headings in a 12-column grid). No table scrolls sideways at 390 or 360 px.\n\n7. **Print.** CSS @media print with :has() shows only this view, landscape via a named page, without nav, stepper, view switch, buttons or viewer. It adds a print header with project name and date, opens the details, and prints the sum rows once.\n\n8. **New core module src/core/shoppingCsv.ts.**\n   - shoppingRows, shoppingTotals, shoppingRowNotes, formatMoney (no currency symbol, since no currency setting exists), SHOPPING_FILE_SUFFIX.\n   - buildShoppingCsv(stats, palette, materials, lang, {bom}): ';' and decimal comma for de/tr, ',' and point for en, UTF-8 BOM, localized headers.\n   - 21 columns. Raw width and length are separate numeric columns, and there is a note column per row.\n   - A sum row: Σ need = rawWithReserveTotal, Σ cost = totalCost. Unknown values are left empty, never 0 or estimated.\n\nNew translations (de/en/tr) are in src/i18n/ext/w5-material-shopping.ts and the CSS is in src/ui/css/w5-material-shopping.css.",
+   "filesChanged": [
+    "src/ui/project/MaterialCalc.tsx",
+    "src/core/shoppingCsv.ts",
+    "src/i18n/ext/w5-material-shopping.ts",
+    "src/ui/css/w5-material-shopping.css",
+    "tests/w5-material-shopping.test.ts",
+    "e2e/w5-material-shopping.e2e.cjs",
+    "e2e/w1-material-quantities.e2e.cjs"
+   ],
+   "acceptance": [
+    {
+     "criterion": "Unit test: the CSV totals equal stats.rawWithReserveTotal and stats.totalCost",
+     "status": "pass",
+     "evidence": "tests/w5-material-shopping.test.ts uses a mixed mosaic with 10 % reserve, a shared material and an 'ohne Material' group, in de, tr and en. The CSV sum row equals rawWithReserveTotal and round(totalCost, 2), Σ of the row values equals the sum row, and raw = rawTotal. 7/7 tests pass."
+    },
+    {
+     "criterion": "Unit test: a material shared by two colours is one row with 1 pack in the 100/50 stock fixture",
+     "status": "pass",
+     "evidence": "Same test file. Fixture: 30 + 30 tiles, piecesPerPack 100, stock 50, price 12.5. Result: one row, codes 01 and 02, need 60, packs 1, toBuy 10, packsToBuy 1, cost 12,50. The CSV has exactly one material row plus the sum row."
+    },
+    {
+     "criterion": "e2e at 1440 px: no table needs horizontal scrolling and the packs column is visible",
+     "status": "pass",
+     "evidence": "e2e/w5-material-shopping.e2e.cjs: every .table-wrap has scrollWidth ≤ clientWidth, the page has no overflow, and the 'Packungen' header lies fully inside the table area (right edge 815 px of 1379). Screenshots in scratchpad/wave5/w5-material-shopping/e2e-own reviewed."
+    },
+    {
+     "criterion": "e2e at 390 px: no table needs horizontal scrolling and the packs column is visible",
+     "status": "pass",
+     "evidence": "Same script at 390 px: no page overflow, the tables are shown as cards (thead display:none, rows display:grid), every packs cell is inside the viewport with the label 'Packungen', and every .table-wrap overflow is 0. The same check also passes at 360 px."
+    },
+    {
+     "criterion": "Stat row (Steine gesamt; Rohsteine inkl. Reserve labelled as a safe upper bound; Kosten with two decimals and 'unvollständig'; Fugenmasse labelled Schätzung; reserve chips)",
+     "status": "pass",
+     "evidence": "e2e checks: 'Obergrenze' and 'Schätzung' are present, and the cost reads '20,40' with the incomplete badge. Values are cross-checked against the table sums."
+    },
+    {
+     "criterion": "Shortfall banner listing the materials whose need exceeds stock, with the total to buy",
+     "status": "pass",
+     "evidence": "e2e: 'Bestand reicht nicht bei 1 Material … 39 benötigt, 10 vorrätig → 29 kaufen = 1 Packung · 7,50 / Insgesamt 29 Rohsteine zu kaufen · 1 Packung · Kosten 7,50'."
+    },
+    {
+     "criterion": "shoppingCsv.ts: buildShoppingCsv(stats, palette, materials, lang), ';' + decimal comma unless English; export via downloadBlob with SaveResultNote",
+     "status": "pass",
+     "evidence": "The e2e downloads the CSV in DE (';', '20,40'), EN (',', '20.40') and TR (';', '20,40'), and the sums match the display. The SaveResultNote 'Download gestartet: …_einkaufsliste.csv' is checked."
+    },
+    {
+     "criterion": "'Drucken' calls window.print() with @media print rules that hide the navigation and viewer",
+     "status": "pass",
+     "evidence": "The e2e stubs window.print and counts 1 call. With emulateMedia print, material-calc is visible while .mainnav, .topbar, the stepper, plan-view, progress, step-nav and the buttons are hidden. page.pdf output is landscape; its PNG renders were reviewed."
+    },
+    {
+     "criterion": "Existing e2e (run-e2e.cjs) and earlier suites touching the material view stay green",
+     "status": "pass",
+     "evidence": "run-e2e 17/17. w1-material-quantities 20/20 (after the data-col reader edit), w3-project-portability 26/26, w4-laying-workbench 36/36, w3-review-fixes 22/22, w2-colour-honesty 31/31."
+    },
+    {
+     "criterion": "German default, English and Turkish complete",
+     "status": "pass",
+     "evidence": "tests/i18n.test.ts passes (same keys and placeholders, no „ in en/tr). The e2e finds no raw 'w5ms.' keys in the EN/TR views, and the CSV headers are localized."
+    }
+   ],
+   "checks": {
+    "typecheck": true,
+    "tests": true,
+    "build": true,
+    "e2e": true
+   },
+   "notes": "**Deviations from the briefing and decisions**\n\n1. **What existed already.** The briefing's step \"move the view switch\" was already done in wave 4 (StepPlan owns the 'Verlegen | Material & Einkauf' switch). stats.perMaterial with toBuy, packs, packsToBuy and cost was delivered in wave 1. Because I only own MaterialCalc.tsx, I changed neither StepPlan nor stats.ts. Before committing, I test-merged wp/w5-stats-engine and wp/w5-undo-editing into a throwaway branch (deleted afterwards): typecheck and my tests pass there.\n\n2. **Bedarf and Einkauf as two column groups.** Packs and cost for the whole need (Σ = totalCost, as the acceptance requires) sit apart from the purchase: stock, to buy, packs to buy and purchase cost = packsToBuy × price. When no stock is recorded, \"zu kaufen\" stays '–'. It is never assumed to equal the need, and a banner explains this and links to the materials page.\n\n3. **The kv table stays as \"Berechnung im Detail\"** and contains the full chain, including Rohsteine inkl. Reserve, Fugenmasse and Kosten. The stat row repeats the headline values. This keeps the kv labels that w1-material-quantities and w3-project-portability read.\n   - mc-pieces now sits on the stat card.\n   - mc-grid, mc-area-*, mc-grout and mc-invalid stay in the kv table.\n   - mc-shop-row, mc-shop-stock, mc-shop-tobuy and mc-shop-sum are kept.\n\n4. **CSV file name.** It is `<project>_einkaufsliste.csv` / `_shopping-list.csv` / `_alisveris-listesi.csv`. The CSV is generated on the main thread (a handful of rows), not through the worker. The `materials` parameter of buildShoppingCsv is only a fallback lookup, because perMaterial already carries the material objects.\n\n5. **Turkish.** The CSV uses ';' and decimal comma, following csvFormatFor (English is the only exception), as the briefing says.\n\n**Out-of-ownership edit (6 lines)**\n- e2e/w1-material-quantities.e2e.cjs: readCalc now reads table cells via data-col instead of position. The per-colour table gained Name and Material columns, and the shopping table gained the Bedarf/Einkauf columns, so the old index-based reading broke.\n- Nothing else in that script changed. It passes 20/20.\n- e2e/run-e2e.cjs and README were not touched.\n\n**Observations**\n- Headless Chromium in this container reports download names containing umlauts as 'download' (no UTF-8 locale). This also affects the existing coordinate CSV. My e2e therefore reads the file name from the SaveResultNote.\n- The print view uses :has() (Chrome 105+). On Firefox below 121 the print rules are ignored and the whole page prints. No crash.\n\n**For w7 (README)**\n- Document the shopping view: Bedarf vs. Einkauf, stock recorded including 0, no estimates, the CSV columns, and that printing is unavailable in the APK.\n- README line 107 is already correct.\n\n**Housekeeping**\n- Screenshots reviewed: scratchpad/wave5/w5-material-shopping/e2e-own (desktop, phone, English, Turkish, print PDF pages, CSV files) and the run-e2e output in …/e2e.\n- The preview server on 4304 is stopped.\n- The node_modules symlink and dist are gitignored and were not committed. No dependencies were added.",
+   "outOfOwnershipEdits": [
+    "e2e/w1-material-quantities.e2e.cjs (readCalc: read the per-colour and shopping-list cells via data-col instead of by position, because the tables now have Name/Material and Bedarf/Einkauf columns; the script passes 20/20)"
+   ]
+  },
+  {
+   "id": "w5-pdf-content",
+   "branch": "wp/w5-pdf-content",
+   "commit": "49032ac1f2d358eb7a4ebb485db5471d588a65fb",
+   "summary": "The PDF now has a colour legend on every laying sheet, readable cut templates, a complete and compact coordinate list as the default, and a readable overview for large projects.\n\n1. Legend on every laying sheet\n- Header line \"Steine auf diesem Blatt: N, davon K zugeschnitten\", then one chip per colour: swatch, \"07 ×123\" and the material colour number (or the colour name).\n- The numbers come from computeStats over the sheet range with the shared cache. Summed over a section's sheets they equal the section and project statistics.\n- Where it goes: the free band under the mosaic, otherwise a free right column, otherwise narrow 24 mm chips (band or right column), otherwise one or more \"Legende zu Blatt X\" pages straight after the sheet. Those pages have no Kontrollstrecke; the sheet footer gives \"Farblegende dieses Blatts: S. n\" and the page has its own bookmark under the sheet. Colours are never left out.\n- Swatches are drawn with a separate fill ('F') and outline ('S'), never 'FD'. The PDF = preview fill test is unchanged and passes.\n- The section legend table on the section cover also has a Farbnr. column now.\n\n2. Cut templates (new pure module src/core/templateLayout.ts; drawTemplate only renders its result)\n- The text is measured first, warnings come first, and each wrapped line advances 2.4 mm. No line is dropped and the box height follows the content.\n- Zoom is chosen from 10/8/6/5/4/3/2/1.5/1. A 20 mm raw tile now gets 1.5:1 instead of 1:1.\n- Edges get real dimension lines at a fixed 2.5 mm paper offset, on the outer side (taken from the polygon orientation), with extension lines and ticks. Labels are parallel to the edge and never upside down, on a white background.\n- Collision check against title, text, the 1:1 contour, the stone, cut lines, other dimension lines and other labels. If that fails it tries 4.5 and 6.5 mm or a shift along the edge, then a leader line, then an extra band under the drawing.\n- Printed values are exactly f1(ci.edges[i]).\n- Overlapping words on template pages (pdftotext): 0, before 6–16 per page (tpl10 sample: 112 → 0).\n\n3. Compact coordinates (new src/core/coords.ts, now the default)\n- Per section: column and row tables (exact colX/colW, rowY/rowH) with border-cut columns and rows marked, plus a colour sequence per row (\"1–6 → 09 · 7 ◆ …\").\n- One row per special piece: split, subdivided or freeform pieces, FULL cells that need a cut, and stones whose raw size differs from the grid tile. Each row has its bounding box and template number, using the same \"(nicht im PDF)\" rule as before.\n- A control line checks against the section statistics and draws a red error box if they ever differ.\n- pdfOptions.coordMode is 'compact' | 'perStone' | 'off' (default 'compact'). includeCoords=false means 'off'; coordLimit only applies to 'perStone', which is still available.\n- 200×100 cm with 5 mm tiles: 34 coordinate pages instead of 328, covering 100 % of stones instead of 35 % (whole PDF 501 → 207 pages).\n\n4. Overview\n- Map-grid mode (thin section lines, column numbers on top, row letters on the left, a caption) when the median section is smaller than 10 mm on paper or the labels would not fit. Otherwise labels sit in the top-left corner of each section, with a box height based on the font size (5–10 pt).\n- When only some sections are exported, those get a thick outline and a light fill.\n- Section covers get a locator thumbnail of the whole mosaic with the section highlighted; the preview image is embedded once (alias 'ovPreview').\n\n5. Page planner\n- New `sheetLegends` part in PdfPagePlan and PdfBreakdown.\n- New facts measured by the dry run: sheets[key].legendPages, templateBoxes, coordPages. With them the plan equals the real page count.\n- Without them, legend pages, template pages and compact coordinate pages are estimated and listed in `estimated`.\n- layoutTemplateBoxes accepts the measured box sizes (row height = tallest box in the row); a plain count still uses the old fixed box height.\n\n6. Translations: src/i18n/ext/w5-pdf-content.ts with de/en/tr. It overrides pdf.templatesHint (explains the dimension lines) and pdfui.coordHint (the compact list is complete; the limit only applies to the per-stone list).",
+   "filesChanged": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "src/core/pdfPlan.ts",
+    "src/core/coords.ts",
+    "src/core/templateLayout.ts",
+    "src/i18n/ext/w5-pdf-content.ts",
+    "tests/pdf.test.ts",
+    "tests/w5-pdf-content.test.ts",
+    "tests/w4-pdf-sheets.test.ts",
+    "e2e/w5-pdf-content.e2e.cjs",
+    "e2e/w3-pdf-foundations.e2e.cjs"
+   ],
+   "acceptance": [
+    {
+     "criterion": "Per-sheet legend counts summed over a section's sheets equal secStats.perColor pieces; the existing per-colour fill test stays green and unchanged",
+     "status": "pass",
+     "evidence": "tests/w5-pdf-content.test.ts: the sums match on all 4 samples, cut counts included, and the total equals stats.pieces. A PDF test checks that the printed chips '07 ×123' on each sheet equal the 'B' fills per colour on that page and add up to the header N. tests/pdf.test.ts 'Steine auf den Verlegeblättern = berechnete Steine (je Farbe)' is unchanged and passes."
+    },
+    {
+     "criterion": "layoutTemplate on 3/5/10/12 mm configs and a 20 mm-raw material config: no label intersects title, text block, 1:1 contour or another label; each label = f1(ci.edges[i]); text never exceeds the box",
+     "status": "pass",
+     "evidence": "tests/w5-pdf-content.test.ts checks every template of portrait 3 mm, landscape 5 mm, animal 10 mm, city 12 mm, a 20 mm-raw material config and a freeform L-shape/octagon/tiny piece. It also checks against the stone polygon and cut lines, that line spacing is 2.4 mm, and that the built text is fully contained. pdftotext overlap check on all generated PDFs: 0 overlapping word pairs."
+    },
+    {
+     "criterion": "Compact coordinates: every stone's (X, Y, colour) reconstructable from tables + exceptions and equal to cellPieces; 200×100 cm / 5 mm needs ≤ 70 coordinate pages",
+     "status": "pass",
+     "evidence": "readCompactCoords is compared with cellPieces bounding-box minimum and colour for every piece. Covered: 4 samples, 2 mm tiles, cut-both edges, and a different raw size from a material. Each stone appears once, the total equals computeStats().pieces, and specials with a cut equal cutPieces. 200×100 cm / 5 mm test: breakdown.coords ≤ 70 (measured 34)."
+    },
+    {
+     "criterion": "A 10000×5000 mm project with 300 mm sections uses map-grid mode",
+     "status": "pass",
+     "evidence": "overviewLayout gives mapGrid=true with column labels 1…34 and row labels A…Q, with no overlapping labels. In the generated PDF the overview page contains '1', '34', 'A', 'Q', not 'Q34', plus the caption and the selected-sections note."
+    },
+    {
+     "criterion": "planPdfPages stays equal to the actual page count",
+     "status": "pass",
+     "evidence": "w4 planner tests (4 samples × A4/A3 × contents on/off, Turkish/English fonts) pass with facts; planMatches is true for every generated PDF, including the legend-page case."
+    },
+    {
+     "criterion": "typecheck, unit tests, build, existing e2e, own e2e",
+     "status": "pass",
+     "evidence": "npm run typecheck clean; npm test 776/776 in 35 files; npm run build OK; node e2e/run-e2e.cjs 17/17; node e2e/w5-pdf-content.e2e.cjs 12/12; e2e/w4-pdf-sheets 17/17; e2e/w3-pdf-foundations 13/13 after the adjustment."
+    }
+   ],
+   "checks": {
+    "typecheck": true,
+    "tests": true,
+    "build": true,
+    "e2e": true
+   },
+   "notes": "Deviations and decisions\n\n1. Narrow legend chips (not in the briefing). Full-height sheets on A4 (sections about 245 mm tall) have no free band, and the right column is only about 28 mm wide. On 200×100 cm that produced 14 extra legend pages for 98 sheets.\n   - I added 24 mm chips (swatch and '07 ×123'; the material number only if it fits, never truncated). Order: band with full chips → right column with full chips → band with narrow chips → right column with narrow chips → separate page.\n   - 200×100 cm now needs 0 legend pages. Separate pages remain only when nothing fits (unit test with 64 colours on a full sheet).\n\n2. Legend counts use computeStats per sheet range, as the briefing asks, not a count made while drawing. This adds one statistics pass over the exported cells. 200×100 cm still generates faster than before (3.7 s vs 5.5 s), because the coordinate list is much smaller.\n\n3. Compact coordinate format:\n   - Column numbers in the colour sequence are not zero-padded, as on the sheets.\n   - Border-cut columns and rows are marked '*' in the tables, with notes underneath; their stones are listed as special pieces.\n   - Sections continue on the same page; the page header shows 'Koordinaten A1–B1'.\n   - Each section gets a reading example whose position (e.g. A001) is a separate text. This keeps the unchanged first test of pdf.test.ts (which looks for '(A001) Tj') green and helps readers.\n   - '◆' falls back to '#' only with the Helvetica fallback font; the app embeds DejaVu, which renders ◆.\n\n4. coordMode is optional in PdfOptions (DEFAULT_PDF_OPTIONS sets 'compact'). This keeps parallel code that builds PdfOptions compiling. coordModeOf(opts) is exported from pdfOptions and re-exported from pdf.ts.\n\n5. Locator thumbnail: only drawn when there is more than one section. It goes beside the sheet mini-map only if the values still keep at least 80 mm, otherwise smaller below it. A first version wrapped the cover values.\n\nOut-of-ownership edits (minimal; they follow from the intended behaviour change)\n- tests/w4-pdf-sheets.test.ts: the 'without measurements' block asserted est.templates === plan.templates and est.coords === plan.coords. Template box heights and compact coordinate pages depend on the data, so without facts they are now estimates and flagged as such. The test now expects 'templates'/'coords' in est.estimated when those parts are enabled. With facts everything is still checked exactly.\n- e2e/w3-pdf-foundations.e2e.cjs: three checks expected the per-stone list to be truncated at a UI limit of 150 ('erste 150 von … gekürzt', the truncation notice, Turkish 'kısaltıldı'). With 'compact' as the default nothing is truncated, and the UI cannot select 'perStone' until w6. The checks now assert the compact, complete list instead (control lines, no truncation, Turkish 'Kontrol'). 13/13.\n- e2e/run-e2e.cjs was not touched.\n\nFor other packages\n- w5-pdf-export-ui (StepPdf, parallel):\n  - planPdfPages has the same signature but returns a new part `sheetLegends` and may list 'sheetLegends' in `estimated`.\n  - Without pdfLayoutFacts, coordinate pages in 'compact' mode are an estimate (within about ±35 % on the samples) and must be shown as \"ca.\".\n  - My ext file overrides pdfui.coordHint. If that package also overrides it, ext files load alphabetically, so its file (w5-pdf-export-ui) wins. pdfui.coordLimit keeps its label, but the limit now only matters for 'perStone'.\n- w6-pdf-finish: add the coordMode select in StepPdf (Kompakt, vollständig / Je Stein / Aus); the coordLimit field only matters for 'perStone'. Its breakdown should include sheetLegends.\n- w7-docs: the README 'PDF-Inhalt' section should mention the per-sheet legend, dimension-line templates, the compact coordinate format and the map-grid overview.\n\nNot done (optional in the briefing)\n- No Kontrollstrecke on template pages.\n- No regional overview pages for very large grids; the map grid plus locators cover that case.\n- No extra fixed bottom-reserve option for sheets.\n\nHousekeeping: no dependencies added. The node_modules symlink is gitignored and not committed; dist is not committed. Preview server on 4303 stopped.\nScreenshots and PDFs:\n- /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-pdf-content/own (own e2e)\n- /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/wave5/w5-pdf-content/e2e (run-e2e)\n- /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5pc/out (sample PDFs) and /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/w5pc/base (baseline PDFs from the original code, for comparison)",
+   "outOfOwnershipEdits": [
+    "tests/w4-pdf-sheets.test.ts",
+    "e2e/w3-pdf-foundations.e2e.cjs"
+   ]
+  }
+ ]
+}

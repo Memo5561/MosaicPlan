@@ -1,0 +1,193 @@
+{
+ "wave": 1,
+ "waveName": "Wave 1 – Data safety & geometric correctness",
+ "package": {
+  "id": "w1-material-quantities",
+  "title": "Correct raw-tile, pack, stock and cost totals",
+  "goal": "Raw-tile counts are never too low. Waste matches the displayed raw count. Packs and costs are counted per material, not per colour, so shared materials are no longer counted twice. Missing materials and invalid colour indices are reported instead of being silently skipped.",
+  "findingIds": [
+   "correctness-core#5",
+   "ux-desktop#8",
+   "correctness-ui-state#7",
+   "correctness-ui-state#3"
+  ],
+  "ownedFiles": [
+   "src/core/stats.ts",
+   "tests/core.test.ts"
+  ],
+  "newFiles": [
+   "tests/w1-material-quantities.test.ts"
+  ],
+  "steps": [
+   "Raw count: per colour, keep Map<CutInfo,count> and merge entries by a rotation-canonical key. The key is shape | rawW×rawH | yield | the polyInRaw vertices rounded to 0.1 mm and translated to the bbox origin, taking the smallest string over 0/90/180/270° rotations without mirroring. Memoise it in a WeakMap.",
+   "Set cs.raw = Σ ceil(n/yield) and cs.rawWithReserve = ceil(cs.raw·(1+reserve/100) - 1e-9). Keep rawExact as the lower bound. Compute rawArea = Σ cs.raw·rawW·rawH, so wasteArea and wastePct follow the rounded count.",
+   "perMaterial: { materialId, material, colors[], rawW, rawH, need (= Σ rawWithReserve of linked colours), stock?, toBuy?, packs?, packsToBuy?, cost? }.\n- packs only when piecesPerPack > 0.\n- toBuy when stock !== undefined; a stock of 0 counts as recorded.\n- totalCost comes from perMaterial.\n- costComplete is false whenever a colour with stones lacks a material, a pack size or a price.\n- Colours without a material go into one 'ohne Material' group that uses the grid tile size.",
+   "Per-colour flags: materialMissing (materialId set but not found) and rawAssumedGrid.",
+   "invalidColorPieces: count pieces whose colour index is ≥ palette.length instead of skipping them with `continue`.",
+   "tests/core.test.ts: replace the tautological jointArea check (around line 261) with an independent invariant. For every cell, the sum of piece areas is ≤ the cell area. jointArea ≥ finishedArea minus the sum of cell areas."
+  ],
+  "acceptance": [
+   "Strip plus diagonal triangle of the same colour on 8×8 tiles gives raw 2. One DIAG cell with both halves in one colour gives 1. Three isosceles diagonal triangles on 8×8 give 2. On 6×10, one DIAG_A cell with both halves blue plus one mirrored DIAG_B half in blue gives 2.",
+   "The existing 256-whole-stones test still gives 256/282.",
+   "Two colours share a material with piecesPerPack 100 and stock 50, needing 30+30: 1 pack (not 2), toBuy 10. Σ perMaterial.need equals rawWithReserveTotal.",
+   "wastePct is consistent with the displayed raw count. An out-of-range colour index is counted in invalidColorPieces.",
+   "typecheck and test are green."
+  ],
+  "risk": "Effort M. The raw count rises by 2-8 % compared with today. The UI already labels it an estimate; the README is updated in wave 7. StepPlan and the PDF still show per-colour packs until waves 3 and 5 switch to perMaterial."
+ },
+ "findings": [
+  {
+   "title": "Raw-stone count is too optimistic: fractional yields of different cut shapes are added up before rounding",
+   "kind": "bug",
+   "problem": "computeStats adds 1/yieldPerRaw for every piece of a colour regardless of shape, then rounds up once per colour. A strip with yield 2 and a triangle with yield 2 count as 1 raw stone together, even when they cannot come from the same raw stone. Waste uses the same unrounded raw area, so waste % does not match the displayed raw count. Rectangle yield also has no cutting allowance (kerf/breakage) and uses DIM_TOL in the floor, e.g. two 4.02 mm pieces from an 8.00 mm tile.",
+   "evidence": "src/core/stats.ts:190-192 (rawExact += 1/yield; rawArea += y*w*h), :211 (single ceil per colour), :243-244 (waste from fractional rawArea); src/core/pieces.ts:265-267. Repro /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/correctness-core/r6_yield_mixing.out: 'Blau piece in col 0: triangle 7.29x7.29 yieldPerRaw=2', 'Blau piece in col 2: rectangle 3.50x8.00 yieldPerRaw=2', 'computeStats Blau: pieces=2 rawExact=1 raw=1'. Two raw stones are physically required: the triangle's minimum width is 5.15 mm, but only 4.5 mm remains next to the strip. On 24 sample runs (t3_pipeline.out) the app's rawTotal is below a count that never shares raw stones across shape/size groups (an upper bound) by 8-48 stones, e.g. cfg3 animal 327 vs 352 (7%) and cfg0 animal 1602 vs 1650.",
+   "proposal": "In computeStats, accumulate counts per (colour, cutInfo.signature or shape|w|h|yield) in a Map. After the loop, set raw per colour = sum over groups of ceil(n / yield) and rawArea = sum of raw * rawW * rawH. Waste then matches the rounded count. Add a `cutLossMm` setting (default about 0.5 mm) and use floor((W + loss) / (w + loss)) for rectangle yield, without DIM_TOL. Update README section 'Materialbedarf'. Turn the r6 scenario into a unit test expecting 2.",
+   "files": [
+    "src/core/stats.ts",
+    "src/core/pieces.ts",
+    "README.md"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "correctness-core",
+   "id": "correctness-core#5",
+   "corrected": [
+    "If anything is done, keep it small and honest:\n(1) In computeStats, after per-colour rounding, compute rawArea = sum over colours of cs.raw * cs.rawW * cs.rawH. That makes wasteArea and wastePct match the displayed raw count (stats.ts:243-244).\n(2) Optional: keep a per-colour Map keyed by `${shape}|${w.toFixed(1)}|${h.toFixed(1)}|${yieldPerRaw}` (not cutInfo.signature, which splits identical shapes placed differently). Show it only as a \"conservative upper bound\" next to the current figure, or use it only for the stock-shortage warning (StepPlan.tsx:419). Do not replace the main count with it.\n(3) Do not add a default cutting allowance. If a cutting allowance is added, make it an opt-in setting with default 0, so tile halves keep yield 2.\n(4) In README 'Materialbedarf', state that the raw-tile count is an estimate based on per-shape yields: leftover pieces of different shapes are added up per colour, and the reserve covers the uncertainty.\n(5) Add a unit test for the r6 scenario that checks rawWithReserve covers 2 at 10 % reserve, and that wastePct matches the rounded count.",
+    "In computeStats (src/core/stats.ts), stop adding 1/yieldPerRaw per piece. Instead:\n\n(a) In the loop, keep one Map<CutInfo, number> per colour, keyed by object identity, so no string is built per piece. pieceCutInfo already returns cached CutInfo objects. After the loop, merge entries using a rotation-canonical key, computed once per unique CutInfo and memoised in a WeakMap: shape | rawW x rawH | yieldPerRaw | the vertex list of polyInRaw, translated to its bbox origin, rounded to 0.1 mm and sorted, taking the smallest string over 0/90/180/270° rotations. Do not mirror, because glass tiles have a face side. Then set cs.raw = Σ_groups ceil(n / yield), cs.rawWithReserve = ceil(cs.raw * (1 + reserve/100) - 1e-9), and rawArea = Σ_colours cs.raw * rawW * rawH. Waste and waste % then match the displayed count. Keep cs.rawExact only as the lower bound, or drop it.\n\n(b) Label the number honestly in the UI, PDF and README ('Materialbedarf'). It is a safe upper bound: identical cuts (same shape, rotation allowed) share raw stones, but different cut shapes are counted separately. Leftover-piece reuse is not counted, and the reserve covers breakage.\n\n(c) Optionally add a 'Schnittzugabe' (cut allowance) setting with default 0 mm, so today's yields stay the same. When it is set, compute rectangle yield as floor((W + loss + DIM_TOL) / (w + loss)). Keep DIM_TOL, to stay consistent with the fit check in pieces.ts:253 and to avoid floating-point mis-rounding.\n\n(d) Optional follow-up (M): first-fit-decreasing packing of full-height rectangle strips of different widths in the same colour, e.g. 3.5 + 4.0 from 8 mm. This tightens the bound without ever going below what is physically possible.\n\nTests (tests/core.test.ts):\n- r6 scenario: strip + diagonal triangle gives 2 Blau.\n- One DIAG_A cell with both halves in one colour gives 1.\n- Three isosceles diagonal triangles on 8x8 give 2.\n- On 6x10: one DIAG_A cell with both halves Blau plus one mirrored DIAG_B half in Blau gives 2 Blau.\n- The existing 256-whole-stones test is unchanged (256 / 282).\n- Sections: Σ section raw ≥ total raw."
+   ]
+  },
+  {
+   "title": "Material calculation (the shopping list) is squeezed into a 340 px sidebar tab with a clipped column",
+   "kind": "ux",
+   "problem": "The most practical output for a hobbyist, how many stones and packs of each colour to buy, sits in a 340 px tab next to a large canvas. The table overflows, the 'Pack.' column is cut off, colour names and assigned materials are missing, and two thirds of the screen is empty while scrolling the 32 rows.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-desktop/journey7.out: material table scrollWidth 392 > clientWidth 340, header 'Pack.:CLIPPED'. Screenshots shots/j2-12-plan-material.png, shots/j7-01-scrolled-material.png. Layout: src/ui/styles.css:670-673 (grid 1fr 340px), src/ui/project/StepPlan.tsx:239.",
+   "proposal": "Change StepPlan into two top-level views: 'Verlegen' (viewer plus sections) and 'Material & Einkauf' (full width, no viewer). Render MaterialCalc as a full-width table: Nr, swatch, name, assigned material (manufacturer, number), Steine, davon geschnitten, Rohsteine, +Reserve, Packungen, Preis, Bestand/Fehlmenge. Put the summary KPIs (Steine gesamt, Rohsteine inkl. Reserve, Kosten, Fugenmasse) in a stat row on top, and add 'Einkaufsliste als CSV' and 'drucken' buttons.",
+   "files": [
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/styles.css"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "ux-desktop",
+   "id": "ux-desktop#8",
+   "corrected": [
+    "1) In StepPlan.tsx, move the Abschnitte/Material switch out of the aside and above `.viewer-layout`, and rename the options to 'Verlegen' and 'Material & Einkauf'. When 'Material & Einkauf' is selected, render MaterialCalc at full width in place of the viewer-layout. Keep the Viewer mounted but hidden, or accept that it re-mounts.\n\n2) In MaterialCalc:\n- Show the KPIs as a `.summary-box` stat row: Steine gesamt, Rohsteine inkl. Reserve, Kosten (with the existing `costComplete` 'incomplete' badge), Fugenmasse (marked as an estimate). Keep the reserve chips next to them.\n- Turn the per-colour table into a full-width table that mirrors the PDF material list (pdf.ts:371-386), using only existing ColorStat fields. Columns: Nr, swatch, name (palette[i].name), material (manufacturer, product, colorNumber, or 'kein Material zugeordnet' with a link to step 5), Steine, davon geschnitten, Rohstein-Format (rawW x rawH), Rohsteine, +Reserve, Packungen ('packs x piecesPerPack', or '–' when no material or no pack size; never estimate a pack count), Preis (cs.cost or '–'), and Bestand/Fehlmenge (shown only when material.stock is set).\n- Write the header 'Packungen' in full instead of 'Pack.'.\n- Lay the per-shape and per-size tables side by side underneath.\n\n3) Add 'Einkaufsliste als CSV' as a new `buildShoppingCsv(stats, palette, materials, decimalComma)` in src/core/csv.ts with exactly those columns. Run it through the existing pdf worker path. Add a small unit test that its totals equal stats.rawWithReserveTotal and totalCost.\n\n4) Add 'Drucken' as `window.print()` with an `@media print` rule that hides the nav, stepper and viewer.\n\nBelow 980 px, the existing single-column media query already applies, so mobile needs no change apart from keeping `.table-wrap` horizontal scrolling. Effort: S for the layout and table, M including the CSV and print rules.",
+    "A) Fix the core first (src/core/stats.ts, about M effort).\n- Add `perMaterial: { materialId, material, colors: number[], rawW, rawH, need, stock?, toBuy?, packs?, packsToBuy?, cost? }[]`.\n- `need` = sum of the per-colour `rawWithReserve` values of the colours linked to that material. This keeps Σ per material = Σ per colour = `rawWithReserveTotal` exactly.\n- `packs = ceil(need / piecesPerPack)`, only when `piecesPerPack > 0`; otherwise leave it undefined and show '–'.\n- `toBuy = max(0, need − stock)`, only when `stock !== undefined`. A stock of 0 counts as recorded; today StepPlan.tsx:419 ignores it because of `stock > 0`.\n- `packsToBuy = ceil(toBuy / piecesPerPack)`.\n- `cost = packs × price`.\n- Compute `totalCost` from `perMaterial`, not per colour. `costComplete` stays false if any colour with stones has no material, no pieces per pack or no price.\n- Colours without a material go into a group \"ohne Material\" with the raw size taken from the layout tile, packs '–' and cost marked as incomplete.\n- Add a vitest. Two colours share one material with piecesPerPack 100 and stock 50; colour needs 30 + 30. Expect 1 pack (not 2) and toBuy 10 (not 0). Also assert Σ need over perMaterial == rawWithReserveTotal.\n- Use `perMaterial` in the PDF material table as well (pdf.ts:371-384).\n\nB) UI (StepPlan.tsx and styles.css, S effort).\n- Move the Abschnitte / Material switch above `.viewer-layout`.\n- 'Abschnitte': keeps the viewer and the 340 px side panel as today.\n- 'Material & Einkauf': renders MaterialCalc at full width, without the viewer.\n- Top: a stat row with Steine gesamt, Rohsteine inkl. Reserve, Kosten (with the existing 'unvollständig' badge, and two decimals) and Fugenmasse (keep \"Schätzung\"), plus the reserve chips.\n- Table 1, \"Einkaufsliste je Material\": swatch, manufacturer, product, colour number, used for colours (e.g. 04, 05, 07), raw size w×h mm, Bedarf incl. reserve, Bestand, zu kaufen, Packungen zu kaufen (× packageSize), Preis.\n- Table 2, \"Bedarf je Farbe\": Nr, swatch, name, material, stones, of which cut, Rohsteine, +Reserve. No packs or price in this table.\n- Keep the per-shape and per-size tables below, side by side on desktop.\n- Add an \"Einkaufsliste als CSV\" button: semicolon-separated, decimal comma unless the language is English, rows taken directly from `perMaterial`.\n- Drop the 'drucken' button, or link it to the PDF materials page.\n- On screens under 600 px, show each material row as a card, so there is no table that has to be scrolled sideways.\n\nC) Do not add a currency symbol unless a currency setting exists (Material.price has none). Never show a pack count or cost for a material that has no piecesPerPack or price."
+   ]
+  },
+  {
+   "title": "Material links are lost on project export/import, and deleting a used material silently changes the material calculation",
+   "kind": "bug",
+   "problem": "exportProject writes only record, image, mosaic and progress. The materials referenced by palette[i].materialId and settings.materialIds are not included. After importing on a second device (the README recommends this for PC↔tablet), every material link is dangling. The stone detail shows 'Material: ?', raw-stone counts fall back to the grid size, and pack and cost information disappears. None of this is flagged. The same happens on the same device when a used material is deleted: Materials.tsx only asks 'Material löschen?'. Material DB edits (hex, size) and new materials (materialIds=[] means 'all') also never mark a materials-mode project as stale. A second minor point: an import gets exactly the same name as the existing project.",
+   "evidence": "Repro: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/correctness-ui-state/t9_materials_export_import.cjs plus mats.csv, output t9_output.txt. Device 1: 'Material: Bisazza Vetricolor 09', 'Rohsteine inkl. Reserve 1.982', 'Kosten 0,55'. 'export contains materials? false | palette entries with materialId: 10 / 10'. After deleting 6 materials on device 1: 'stale badge = false', 'Rohsteine inkl. Reserve 3.387', 'Kosten 0,25 unvollständig'. Device 2 after import: 'Material: ?', 'Rohsteine inkl. Reserve 6.367', no cost row (screenshot t9-device2-matcalc.png). Code: projects.ts:208-226 (payload without materials), Materials.tsx:188-191 (delete with no usage check), useProject.ts:27 (key uses only materialIds).",
+   "proposal": "(1) Export: add `materials: Material[]` holding every material referenced by the palette or settings.materialIds. Import: upsert them by id, or match an existing material by manufacturer+colorNumber+hex. Report 'X Materialien übernommen, Y zugeordnet'. Append ' (Import)' to the imported project's name. (2) On delete in Materials, scan listProjects() for references and show 'Wird in Projekt A, B verwendet – Materialbedarf ändert sich'. (3) In PaletteEditor and StoneDialog, show a warning badge 'Material fehlt' when materialId is set but not found, instead of '?'. In MaterialCalc, list colours whose raw size fell back to the grid size. (4) For materials and auto-snap modes, add a fingerprint of the used materials (id+hex+size) to computeKey.",
+   "files": [
+    "src/storage/projects.ts",
+    "src/ui/Materials.tsx",
+    "src/ui/project/StepColors.tsx",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/useProject.ts"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "correctness-ui-state",
+   "id": "correctness-ui-state#7",
+   "corrected": [
+    "(1) Export: in src/storage/projects.ts exportProject, add `materials: Material[]` to the payload. Include every material whose id appears in record.palette[].materialId or settings.materialIds; when materialIds is [] ('all'), include only the palette-referenced ones. Import, in importProject:\n- For each exported material: if a local material with the same id exists, keep the local one and do not overwrite it.\n- Otherwise, if a local material matches by manufacturer+product+colorNumber (trimmed, case-insensitive), map the old id to the local id.\n- Otherwise, insert the exported material with its original id.\n- Rewrite palette[].materialId and settings.materialIds through that mapping before saveProject.\n- Return the counts and show 'X Materialien übernommen, Y zugeordnet' in Projects.tsx.\n- Append ' (Import)' to meta.name when a project with the same name already exists.\n\n(2) Material CSV (Materials.tsx materialsToCsv/parseMaterialsCsv): add an 'id' column. On CSV import, reuse the id if present and upsert by id; otherwise fall back to a manufacturer+product+colorNumber match before creating a new uid(). This lets the CSV route keep links intact.\n\n(3) Delete: in the Materials.tsx delete handler, load the projects and count the ones whose palette or settings.materialIds reference m.id. If any do, the confirm text names them ('Wird in Projekt A, B verwendet – Materialbedarf/Kosten ändern sich').\n\n(4) Missing-material visibility instead of silent fallback:\n- In makeRawSizeFn, return a `missing: true` flag when materialId is set but not found. Collect these colours into a `missingMaterials: number[]` field on Stats and set costComplete=false for them.\n- StoneDialog.tsx:129-131: show a warning badge 'Material fehlt (gelöscht oder nicht importiert)' instead of '?'.\n- StepColors.tsx, material column: show the same badge.\n- StepPlan.tsx material calc: list the affected colour codes with 'Rohsteinmaß = Rastermaß (Material fehlt)'. Render the cost row whenever any colour has a material reference, even if totalCost is 0, with the 'unvollständig' badge.\n- PDF material list: same marking.\n\nDo NOT add a material fingerprint to computeKey or otherwise mark the project stale. A recompute wipes manual edits and laying progress, and with materialIds=[] any new material would invalidate every materials-mode project. If desired, show a non-blocking info note ('Materialdaten seit der Berechnung geändert') that does not suggest recomputing.",
+    "(1) **Export/import (src/storage/projects.ts:75-118).**\n- Raise the payload version to 2 and add `materials: Material[]`. Include only materials referenced by `palette[i].materialId`, plus the explicit `settings.materialIds` when that list is not empty. Do not export the whole catalog when the list is [] ('all').\n- On import, handle each exported material in this order:\n  - (a) If a local material with the same id exists, keep the local one. Never overwrite it. If its hex or size differs from the exported one, record that as a note.\n  - (b) Otherwise, look for an exact match on normalised manufacturer + product + colorNumber + lengthMm × widthMm. If found, remap that id in the palette and in `settings.materialIds`.\n  - (c) Otherwise, insert the exported material under its own id.\n- Never pick a 'nearest' material automatically.\n- Show a summary message: 'X Materialien neu angelegt, Y vorhandenen zugeordnet, Z mit abweichenden Daten'.\n- For a version 1 file, warn: 'Datei enthält keine Materialien – N Farben ohne gültiges Material'.\n- Append ' (Import)' to the imported project's name.\n- Add an optional `id` column to the materials CSV (Materials.tsx:25) and reuse it on CSV import, so a CSV round trip keeps the links.\n\n(2) **Delete in Materials.tsx:186-193.** Before calling confirm, run listProjects() (db.ts:91). Count the projects whose palette or settings.materialIds reference the material, and say so in the confirm text: 'Wird in Projekt A, B (n Farben) verwendet – Materialbedarf und Kosten dieser Farben werden danach ohne Material berechnet.' Optionally offer to replace it with another material before deleting.\n\n(3) **Make the fallback visible.**\n- In stats.ts makeRawSizeFn/perColor, add a per-colour flag `materialMissing` (materialId set but not found in the DB) and one `rawAssumedGrid` (raw size taken from the grid).\n- In StepPlan's material table and the PDF material list, mark those colours: 'Material fehlt – Rohsteingröße = Rastergröße angenommen'.\n- Always show the cost row when any colour has a materialId, with the 'unvollständig' badge, instead of hiding it at totalCost 0 (StepPlan.tsx:372).\n- In StoneDialog.tsx:129-131, replace '?' with a warning badge 'Material fehlt (gelöscht oder nicht importiert)'.\n- In the StepColors.tsx:202 select, render a disabled option for a dangling id so it does not silently display '–'.\n\n(4) **Replace the computeKey fingerprint with a non-destructive check.** Do not change computeKey or computedWith. At render time, compare each linked material with the palette entry: missing, hex ΔE2000 > 1, or size changed. Show an informational badge in steps 5 and 9: 'Materialdaten seit Berechnung geändert – Farben/Verlegeplan unverändert, Materialbedarf nutzt aktuelle Daten'. Offer an explicit 'Farben neu zuordnen' action that only updates the materialId links and never triggers a recompute that would wipe edits or progress.\n\n(5) **Tests.** Add a vitest for an export→import round trip into an empty materials store and into one with a conflicting id, checking that every palette materialId resolves and that the raw-stone totals match the source device. Add one for the delete-usage scan."
+   ]
+  },
+  {
+   "title": "'Palette aus Materialien' after a compute swaps the palette without remapping stones, so the whole mosaic changes colours (black face)",
+   "kind": "bug",
+   "problem": "In custom-palette mode, the 'Palette aus Materialien' button calls api.setPalette() with a freshly built array in material order. The computed mosaic stores palette indices, and compute had already re-sorted the palette by lightness. Every stone therefore silently gets another colour: the face becomes black and the hair light blue. The preview, the stats and the PDF all use the scrambled mapping. Only the generic stale badge appears. Other paths that change palette length or order without remapping can produce indices ≥ palette.length.",
+   "evidence": "Repro: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/correctness-ui-state/t12_palette_replace_after_compute.cjs, output t12_output.txt. Before: '02 Haut hell 300 | 03 Hellblau 1.176 | ... | 10 Schwarz 215'. After: '02 Schwarz 300 | 03 Haut hell 1.176 | ... | 10 Grau 215 | 11 Gruen 0 | 12 Rosa 0'. Same stone counts, different colours. Side-by-side t12-before-after.png in the same folder. Code: StepColors.tsx:144-155 (setPalette(p) with no remap, even when api.computed exists); compare removePaletteColor in edits.ts:174-193, which does remap.",
+   "proposal": "Add a remapPalette(oldPalette, newPalette, data, formula) helper to edits.ts. It maps each old index to its new index by materialId, then exact hex, then nearest ΔE, and rewrites c1/c2/sub/free via remapAll. Call it from every palette-replacing action when api.computed is set ('Palette aus Materialien', and any future import), followed by touchMosaic(). Otherwise disable the button after compute, with the hint 'Erst neu berechnen'. Add an invariant check (max index < palette.length) in the loader and before PDF/CSV generation, and show an error instead of printing wrong colours.",
+   "files": [
+    "src/ui/project/StepColors.tsx",
+    "src/core/edits.ts",
+    "src/ui/project/useProject.ts"
+   ],
+   "impact": 5,
+   "effort": "S",
+   "dim": "correctness-ui-state",
+   "id": "correctness-ui-state#3",
+   "corrected": [
+    "The direction is right. Here it is made precise:\n\n(1) In src/core/edits.ts, add `export function remapToPalette(oldP: PaletteColor[], newP: PaletteColor[], data: MosaicData, formula): void`.\n- Build a lookup `map[old] -> new` for each old index: same materialId first, then the same hex (case-insensitive), then the nearest new colour by ΔE (NearestColorMatcher over newP.lab).\n- Apply it with the existing remapAll. Export remapAll or call it internally.\n\n(2) In StepColors.tsx, change the 'Palette aus Materialien' onClick:\n- When api.computed is set, call remapToPalette(palette, p, api.computed.data, rec.settings.deltaE), then api.setPalette(p), then api.touchMosaic(). This is the same order remove() already uses at lines 111-114.\n- Keep the stale state, since cp changes, so the user is still asked to recompute. Ask for confirmation first, e.g. 'Mosaik wird auf die neue Palette umgefärbt (nächste Farbe) – für ein optimales Ergebnis neu berechnen'.\n- The simpler alternative is to hide or disable this button while api.computed exists and show 'Erst neu berechnen'.\n\n(3) Add an invariant so wrong results can never be printed silently:\n- In src/core/stats.ts:172-173, count stones whose index is out of range in an `invalidColorPieces` counter instead of skipping them with `continue`.\n- In StepPdf.tsx, StepPlan.tsx and the CSV export, refuse to generate output and show an error ('Farbzuordnung ungültig – bitte neu berechnen') when that counter is above 0, or when a max-index scan of c1/c2/sub/free is ≥ palette.length.\n- When useProject.ts loads a mosaic, run the same scan. If it fails, mark the project as needing a recompute instead of rendering magenta stones.\n\n(4) Add a vitest that computes in custom mode, replaces the palette in another order with fewer entries, applies the remap, and then checks two things: every index is below palette.length, and the stats piece total still equals the total from geometry.",
+    "1) StepColors.tsx:144-152, the 'Palette aus Materialien' button. When api.computed is null, keep today's replace behaviour. When api.computed exists, MERGE so that existing indices and codes stay stable:\n   a) For each material with a valid hex that is not yet in the palette (match by materialId, then by exact upper-case hex), append it with addPaletteColor(..., m.id). Appending never invalidates an index.\n   b) Find the palette entries that have no material counterpart, i.e. no materialId among the current materials and no exact hex match. Remove them in DESCENDING index order with the existing removePaletteColor(palette, api.computed.data, i, undefined, rec.settings.deltaE), which already moves their stones to the nearest remaining colour by ΔE. Before applying, count the affected stones from api.stats.perColor and show a confirm dialog such as 'N Steine werden auf die nächste Materialfarbe umgestellt (max. ΔE x) – fortfahren?'. Afterwards show the same numbers as a notice.\n   c) Call api.setPalette(next) and then api.touchMosaic(). Leave the stale badge on, because a recompute could make use of the newly added colours.\n   If you want a single helper, put mergePaletteFromMaterials(palette, data, materials, formula) in edits.ts. It returns {palette, movedStones, maxDeltaE} and is built from addPaletteColor and removePaletteColor. Do not build a full reorder remap, since that renumbers codes and makes printed sheets wrong.\n2) Invariant guard. Add assertPaletteIndices(data, palette) to src/core/edits.ts (or types.ts). It scans c1/c2 (only where kind uses them), sub and free, and returns the maximum index. Call it:\n   - in useProject's loader after unpackMosaic;\n   - in the stats worker;\n   - at the start of buildPdf and buildCsv.\n   On a violation, do not print magenta stones or undercounted totals. Show a clear error ('Farbzuordnung beschädigt – bitte neu berechnen'), block PDF/CSV export and offer a recompute.\n3) Tests in tests/core.test.ts:\n   - Compute in custom mode from 12 materials, run the merge, and assert that every piece keeps its hex, total pieces are unchanged and all indices are < palette.length.\n   - Run the merge with a shrunk material list and assert that the moved-stone count equals the stones of the removed colours and that the total is unchanged.\n   - buildCsv and buildPdf throw on out-of-range indices.\n   Reproduction of the current failure modes: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/value-correctness-ui-state-3/remap_check.ts."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w1-persistence",
+   "title": "Reliable saving, atomic compute commit and mosaic integrity",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/storage/db.ts",
+    "src/storage/projects.ts",
+    "src/core/serialize.ts"
+   ]
+  },
+  {
+   "id": "w1-cut-correctness",
+   "title": "Buildable cut pieces and honest cut instructions",
+   "ownedFiles": [
+    "src/core/pieces.ts",
+    "src/core/geometry.ts",
+    "src/core/edits.ts",
+    "src/core/types.ts",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/CutTemplateSvg.tsx",
+    "src/ui/project/StepShapes.tsx"
+   ]
+  },
+  {
+   "id": "w1-mosaic-core",
+   "title": "4x faster analysis loop, stable custom palettes, safe palette replacement",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/ui/project/StepColors.tsx"
+   ]
+  },
+  {
+   "id": "w1-touch-input-safety",
+   "title": "No ghost clicks, no accidental laying taps, correct German number input",
+   "ownedFiles": [
+    "src/ui/project/Viewer.tsx",
+    "src/ui/components.tsx"
+   ]
+  },
+  {
+   "id": "w1-materials-csv",
+   "title": "Robust material CSV import/export for German Excel",
+   "ownedFiles": [
+    "src/ui/Materials.tsx"
+   ]
+  }
+ ]
+}

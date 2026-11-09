@@ -1,0 +1,128 @@
+{
+ "wave": 4,
+ "waveName": "Wave 4 – Cut placement & accents, laying workbench, progress engine, PDF sheet structure, offline face detection",
+ "package": {
+  "id": "w4-face-detector",
+  "title": "Offline face suggestions when the browser has no FaceDetector",
+  "goal": "For the user's own portraits, the app suggests a face region and an eye-band detail region offline, including in the APK. Suggestions are clearly marked and are applied only after the user confirms them.",
+  "findingIds": [
+   "spec-gaps#6"
+  ],
+  "ownedFiles": [
+   "vite.config.ts",
+   "src/ui/project/RegionEditor.tsx"
+  ],
+  "newFiles": [
+   "src/vendor/pico/pico.js",
+   "src/vendor/pico/facefinder.bin",
+   "src/vendor/pico/LICENSE",
+   "src/core/faceDetect.ts",
+   "src/workers/face.worker.ts",
+   "tests/w4-face-detector.test.ts",
+   "tests/fixtures/face-pd-portrait.png",
+   "src/i18n/ext/w4-face-detector.ts"
+  ],
+  "steps": [
+   "Vendor pico.js (MIT, about 6 KB) and the facefinder cascade (about 240 KB) with their licence. Do NOT add puploc unless its licence is confirmed.",
+   "faceDetect.ts: detectFacesGray(gray, w, h) → {x, y, w, h, score}[] normalised to 0..1, with cluster_detections and a quality threshold. face.worker.ts runs it on the 640 px editor image and loads the cascade via new URL('./facefinder.bin', import.meta.url).",
+   "vite.config.ts: add 'bin' to the workbox globPatterns so the cascade is precached for offline use.",
+   "RegionEditor:\n- Use FaceDetector first when it exists, otherwise pico.\n- Run once automatically when the shapes step opens with no regions; the button stays too.\n- Suggestions live in local state, drawn dashed, with 'automatisch erkannt – bitte prüfen (Sicherheit x %)' and Übernehmen/Verwerfen.\n- Accepting adds the expanded face ellipse and an eye-band detail region labelled 'geschätzt'.\n- Selected regions get move and resize handles with 44 px hit areas.\n- With no detection, say 'Kein Gesicht gefunden'.\n- Text states that only frontal human faces are detected."
+  ],
+  "acceptance": [
+   "Unit test: a small public-domain real portrait fixture gives one detection whose centre lies inside a hand-labelled face box. landscape.png and city.png give no detection above the threshold. The synthetic portrait does not crash.",
+   "Playwright: after the service worker installs, an offline context still produces suggestions on the shapes step. Nothing is added to the regions until Übernehmen is clicked."
+  ],
+  "risk": "Effort M. Detection quality is unverified; if the fixture test fails, ship the manual flow only and document that. Never auto-apply a region."
+ },
+ "findings": [
+  {
+   "title": "Automatic face (and eye) detection never works in practice; face protection depends on the user drawing ellipses",
+   "kind": "missing-feature",
+   "problem": "Requirements 5 and 6 (auto-suggest finer stones in faces and eyes; faces must not be distorted) rely on the FaceDetector Shape Detection API. That API is not enabled in standard Chromium, and the APK's WebView is Chromium-based. For a user's own photo the app therefore has no face region by default. Only the generic skin-tone weighting and the edge-density detail map apply. Eyes, mouth and other features are not detected at all.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/b1.cjs output: 'FaceDetector in window: false'. After clicking 'Gesichter erkennen' the UI says 'Automatische Gesichtserkennung wird von diesem Browser nicht unterstützt – bitte Gesichtsbereich manuell markieren.' (shots/b1-shapes.png). src/ui/project/imagePrep.ts:153-163 is the only detection path and returns null without the API. The sample portrait has a face region only because it is hard-coded in src/ui/Home.tsx (SAMPLES).",
+   "proposal": "Bundle an offline detector that runs in the compute worker. For example pico.js (MIT; about 2 KB of code plus a ~240 KB cascade) with its 'puploc' pupil localiser, or MediaPipe BlazeFace short-range (Apache-2.0) if the WASM size is acceptable. Precache it with Workbox so it works offline. Turn the detections into suggested Regions: a face ellipse and two eye ellipses, labelled 'automatisch erkannt – bitte prüfen' with their confidence. The user confirms or drags them; nothing is applied without visible regions. In eye regions, apply the finest option available (a zone from the mixed-size finding, or SUB), and lower λ so pupils and highlights are not averaged away. Add a test that checks the sample portrait gets a face box overlapping the hard-coded one.",
+   "files": [
+    "src/ui/project/imagePrep.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/workers/compute.worker.ts",
+    "src/core/mosaic.ts",
+    "vite.config.ts"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#6",
+   "corrected": [
+    "1. Add an offline detector.\n   - Vendor pico.js (MIT) and its facefinder cascade (about 240 KB) under src/vendor/pico/.\n   - Wrap them in src/core/faceDetect.ts as a pure function `detectFacesGray(gray: Uint8Array, w, h): {x,y,w,h,score}[]`, with coordinates normalised to 0..1.\n   - Call it from a new 'detectFaces' message in src/workers/compute.worker.ts (protocol.ts), so the UI never blocks.\n   - Load the cascade with fetch(new URL('./facefinder.bin', import.meta.url)).\n   - Add the 'bin' extension to vite-plugin-pwa workbox globPatterns in vite.config.ts, so it is precached for offline use and lands in dist/ for the APK.\n   - Keep the existing FaceDetector path as a first choice when it exists.\n\n2. Eyes.\n   - Only add pico's puploc localiser (about 1.2 MB) if its licence is confirmed.\n   - Otherwise add one 'detail' region (existing type, already λ×0.5 and subdivision allowed in mosaic.ts) covering the eye band. Place it at fixed proportions of the detected face box, e.g. y = box.y + 0.25…0.5·h, x = box.x + 0.1…0.9·w.\n   - Label it 'geschätzt' (estimated), not 'erkannt' (detected).\n   - No new core type or mosaic.ts change is needed.\n\n3. UX in StepPhoto / StepShapes.\n   - Run detection automatically after the photo is loaded or cropped, mapping coordinates into crop space and rerunning when the crop changes. This way the step-1 background-simplify preview (StepPhoto.tsx:50 passes rec.regions) already protects the face.\n   - Add the results as suggested regions with a `source: 'auto'` flag and the confidence. Draw them dashed, listed as 'automatisch erkannt – bitte prüfen (Konfidenz x)', each with the existing delete button.\n   - Add move/resize handles for regions; today regions can only be drawn and deleted.\n   - With zero detections, show the existing 'faceNone' / manual-marking hint. Never apply anything silently.\n\n4. Tests.\n   - Add a small public-domain real portrait (e.g. a US-government official portrait) as tests/fixtures. Assert that one face is found whose box centre lies inside a hand-annotated face box.\n   - Assert that the landscape and city samples yield no detection above the score threshold.\n   - Do not rely on the synthetic cartoon sample. Keep its hard-coded region.\n\n5. Update README.md:147 to describe the bundled detector, its frontal-face limitation and that suggestions must be confirmed.\n\nEffort: M.",
+    "1) Detector: vendor pico.js (MIT, 5.6 KB) and the facefinder cascade (~240 KB) under src/vendor/pico/, wrapped in a typed module, plus lploc.js and puploc.bin (~1.2 MB) as an optional second stage. Load them lazily with a dynamic import or fetch the first time detection runs, and make sure the globPatterns in vite.config.ts include the .bin files (add 'bin') so it works offline and in the APK. On the 640 px canvas that RegionEditor already renders, run on the main thread or in compute.worker.ts through a new 'detectFaces' message in protocol.ts. Keep FaceDetector as the first choice where it exists. Use a quality threshold (pico demo: q > 50) and cluster_detections. Return {box, q, pupils?}.\n\n2) Suggestions, not results: add optional fields to Region in types.ts: source: 'auto' | 'manual' and confidence?: number (serialize.ts/db.ts must accept old records). Show auto regions with a dashed outline and the label 'automatisch erkannt – bitte prüfen (Sicherheit 87 %)'. Offer 'Übernehmen' and 'Verwerfen' buttons. Add move and resize handles to RegionEditor in StepShapes.tsx, so a misplaced ellipse can be fixed and does not have to be deleted and redrawn. Keep the existing box expansion (StepShapes.tsx:121). Run detection once automatically after a photo is uploaded. If it finds something, show a hint in the Shapes and Compute steps ('1 Gesicht erkannt – Bereich prüfen'). Nothing is applied silently.\n\n3) Make eye regions actually do something: add Region.type 'eye', or make 'detail' nest. In mosaic.ts:229-233, replace the else-if with multiplicative factors: lambda *= (inFace ? 0.4 : 1) * (inDetailOrEye ? 0.5 : 1). In eye regions also set weight[idx] *= 2 so k-means keeps pupil and highlight colours. Do not bypass pieceCuttable/minPieceMm: piece validity and cut dimensions stay computed geometrically. Once mixed tile sizes exist, eye regions can also pick the smallest zone tile.\n\n4) Honest scope: the i18n strings (de/en/tr) and README.md:147 should say that only frontal human faces are detected, not profiles or animals. Manual marking stays available.\n\n5) Tests: add a vitest that runs the detector on a small committed public-domain real-photo fixture and asserts IoU > 0.3 with a hand-labelled box. Add one that asserts no detection above the threshold on landscape.png and city.png. Add one that asserts the synthetic portrait does not crash. Add a core test that an 'eye' region inside a face changes λ, i.e. more non-FULL cells than face alone, while the stats and count invariants still hold.\n\nImpact 3-4: measured face ΔE 4.31→3.83 and twice as many cuts in the face once a region exists. Effort M."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w4-cut-placement-accents",
+   "title": "Cuts where they matter, colours the face needs, optional continuous contours",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/types.ts",
+    "src/core/kmeans.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepColors.tsx",
+    "src/ui/project/StepCompute.tsx",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w4-laying-workbench",
+   "title": "Laying workbench: section focus, brush/rectangle marking, next stone, undo taps, material view switch",
+   "ownedFiles": [
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StoneDialog.tsx"
+   ]
+  },
+  {
+   "id": "w4-progress-engine",
+   "title": "Instant progress counts, no stats storms, progress carried over on recompute, progress in project lists",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/storage/db.ts",
+    "src/ui/Projects.tsx",
+    "src/ui/Home.tsx",
+    "src/ui/project/Workspace.tsx"
+   ]
+  },
+  {
+   "id": "w4-pdf-sheets",
+   "title": "PDF sheet structure: no paper-wasting strips, cut templates traceable from every sheet, code plans for tiny stones",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "tests/pdf.test.ts"
+   ]
+  }
+ ]
+}

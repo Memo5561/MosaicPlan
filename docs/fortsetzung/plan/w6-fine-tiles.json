@@ -1,0 +1,152 @@
+{
+ "wave": 6,
+ "waveName": "Wave 6 – Deviation map & batch editing, real fine tiles, colour measuring, streaming CSV, final PDF wiring",
+ "package": {
+  "id": "w6-fine-tiles",
+  "title": "Fine stones in real buyable sizes for faces and details (mixed sizes, stage 1)",
+  "goal": "Subdivided cells can use real small tiles of a buyable size, counted as uncut stones of their own material. Fine regions force finer stones where the user wants them, so requirement 3 and requirement 5 are served by actual planning, not just by cutting large stones.",
+  "findingIds": [
+   "spec-gaps#2",
+   "algo-quality#8"
+  ],
+  "ownedFiles": [
+   "src/core/mosaic.ts",
+   "src/core/types.ts",
+   "src/core/stats.ts",
+   "src/ui/project/StepShapes.tsx",
+   "src/ui/project/StepColors.tsx",
+   "tests/golden/mosaic-hashes.json"
+  ],
+  "newFiles": [
+   "tests/w6-fine-tiles.test.ts",
+   "src/i18n/ext/w6-fine-tiles.ts"
+  ],
+  "steps": [
+   "types.ts: add Region.type 'fine', PaletteColor.fineMaterialId?, and ShapeOptions.fineTileMm?.\nStepShapes: a 'Feinstein-Größe' select that offers the k ∈ {2,3} giving an exact size, fine = (w+g)/k − g. Other k values are shown honestly as 'wird aus dem Grundstein geschnitten'. The RegionEditor tool gets the 'fine' type (StepShapes passes the type option).",
+   "mosaic.ts: if the cell centre lies in a fine region and every subRect passes pieceCuttable, force SUB with the group means. Otherwise keep the normal choice and set Rec.FINER. Inside face and detail regions with subdivision on, lower the SUB penalty to at most the LINE cost (1.4·λ).",
+   "stats.ts: makeRawSizeFn(color, pieceW, pieceH) returns the fine material when the piece bbox matches its size within DIM_TOL; analyzeCut then reports exactRaw, i.e. uncut with yield 1. perColor and perMaterial get one row per (colour, raw size). Sub pieces with no matching fine material stay 'cut from base tile'.",
+   "StepColors: per colour, a second 'Feinstein-Material' select limited to materials of the fine size, with an auto-match by ΔE."
+  ],
+  "acceptance": [
+   "Total pieces are unchanged when a fine material is assigned.",
+   "Sub pieces are uncut exactly when the fine material size equals the sub size. FULL stones of the same colour still use the base material, so notFitting stays 0.",
+   "On the portrait sample with a fine region over the eyes, at least 50 % of the cells in that region are SUB, and all invariants hold.",
+   "The golden fixture is unchanged for projects without fine regions."
+  ],
+  "risk": "Effort M-L. Zones with their own grid (stage 2) are deferred. The tiles-step honesty badge stays until then."
+ },
+ "findings": [
+  {
+   "title": "Mixed tile sizes (req. 3) exist only as k×k cuts of the base stone, in sizes the user cannot choose, and are almost never used",
+   "kind": "missing-feature",
+   "problem": "Requirement 3 asks for different tile sizes in one project, with real positions and dimensions for each stone. The only mechanism is splitting a base cell into k×k pieces. The fine size is forced by (w−(k−1)g)/k, which is often not a size you can buy. Every fine piece is counted as cut from the large raw tile, because there is only one raw size per colour. The user therefore cannot plan 'fine stones from my 4 mm tiles'. The optimiser also almost never picks subdivision, even inside a marked face, so requirement 5 ('finer stones in faces, eyes, hair') is effectively not met.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/core1.out: sub-piece sizes are 2.00 mm (from 5/1), 3.50 mm (8/1), 3.25 mm (8/1.5) and 4.00 mm (10/2), always 'cut', yieldPerRaw 4. core2.out: SUB is used in 5 of 1004 face cells (0.5 %) at default detail and 14 (1.4 %) at detail 100 %. LINE wins because its penalty is 1.4·λ, against 2·λ for subdivision (mosaic.ts:336, :364). The raw size is set per colour only (src/core/stats.ts:73-81). The UI wording is in src/i18n/de.ts:140 ('tiles.mixedHint'). In shots/b2-eyes.png the only subdivided cell in view is at the nose bridge.",
+   "proposal": "Add 'Zonen mit eigenem Raster'. Zone {id, c0,c1,r0,r1 (base-grid index range), tileW, tileH, joint}. Zone span Lx = colX[c1−1]+colW[c1−1]−colX[c0], which is exact because it ends at stone outer edges. Inner grid = computeLayout({widthMm:Lx, heightMm:Ly, tileW, tileH, joint, edgeMode:'cut-both'}), offset by (colX[c0], rowY[r0]). The zone border lies in the base joint, so the gap between zone and base stones is exactly the base joint g. Base cells inside the zone get a new CellKind.ZONE with 0 pieces, so nothing is counted twice. The zone gets its own MosaicData from computeMosaic on the zone sub-image, with fixedPalette set to the project palette. If computeAxis returns rest>0, show the remainder rather than silently stretching. Offer exact-fit snapping. Example: base 10/2 mm with a 4/2 mm zone always fits, since 12n−2 = 2n·4+(2n−1)·2. Base 8/1 mm with a 4/1 mm zone fits whenever n is a multiple of 5. IDs 'Z1:A001' with absolute X/Y. Stats, CSV and PDF iterate the base grid plus zones. Raw material is chosen per (colour, tile size), so zone stones are uncut real tiles. splitAxis must not place section boundaries inside a zone span. The step-6 region tool creates zones from face or detail rectangles. Quick win first (S): replace the k choice with a 'target fine size' and offer only k where (w+g) = k·(w2+g). In that case, map the pieces to a material of size w2 and count them as uncut.",
+   "files": [
+    "src/core/types.ts",
+    "src/core/layout.ts",
+    "src/core/mosaic.ts",
+    "src/core/pieces.ts",
+    "src/core/stats.ts",
+    "src/core/render.ts",
+    "src/core/pdf.ts",
+    "src/core/csv.ts",
+    "src/core/serialize.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepGeometry.tsx"
+   ],
+   "impact": 5,
+   "effort": "L",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#2",
+   "corrected": [
+    "Do the work in stages so that the stone-count invariants (each stone counted once, totals match geometry) stay testable at every step.\n\nStage 0 (S), honesty in the app (requirement 18):\n- In StepGeometry.tsx:182, put an incomplete badge next to tiles.mixedHint. Reword it to: \"Nur als 2×2/3×3-Teilung einer Rasterzelle; Zonen mit eigenem Raster fehlen noch.\"\n- Next to the subdivide toggle in StepShapes.tsx, show the computed sub size (already computed there).\n- If no material of that size exists in the material DB, add the warning \"Teilsteine werden aus dem Grundstein geschnitten\".\n\nStage 1 (M), real fine tiles for subdivided cells:\n1. Replace the k segmented control with a \"Feinstein-Größe\" select. Offer only the sizes w2 for which (tileW+g) = k·(w2+g) with k in {2,3}; for k=4 or more the sample grid S=6 in mosaic.ts:127 would also need changing. Examples: 10/2 gives 4 mm (k=2), 5/1 gives 2 mm (k=2), 8/1 gives 2 mm (k=3). Store k and fineTileMm.\n2. Add an optional fineMaterialId to PaletteColor. Extend makeRawSizeFn to (color, kind) and use the fine material for pieces of SUB cells. analyzeCut then reports needsCut=false and yieldPerRaw=1 automatically, because exactRaw holds (pieces.ts:244-246, 264).\n3. Split ColorStat into per-(colour, raw size) rows so that packs, cost and the PDF/CSV material list are right for both tile sizes.\n4. In the colour step, match each colour to the nearest material that has that size, using the same ΔE matching as today.\n5. Tests:\n   - Sum of pieces is unchanged by the switch.\n   - Sub pieces are uncut exactly when the fine material size equals the sub size.\n   - Full stones of the same colour still use the base material, so notFitting stays 0. Today it goes to 38 in the repro.\n\nStage 1b (S, tuning): inside face/detail regions with subdivision enabled, lower the SUB penalty in mosaic.ts:364 to at most LINE's 1.4·λ (or add a \"Feine Steine in Gesichtern bevorzugen\" toggle). Then check with the real-photo repro that face ΔE improves. At the default detail of 50 %, SUB is currently 0–1.7 % of face cells.\n\nStage 2 (L), zones with their own grid, as the auditor proposed:\n1. Zone {id, c0, c1, r0, r1, tileW, tileH, joint}. Span Lx = colX[c1−1] + colW[c1−1] − colX[c0]. Inner layout from computeLayout(..., edgeMode 'cut-both'), offset by colX[c0] and rowY[r0]. Base cells inside a zone get CellKind.ZONE with 0 pieces.\n2. Each zone has its own MosaicData and progress array, computed from the zone sub-image with the project palette as a fixed palette.\n3. Offer exact-fit snapping:\n   - 10/2 base with a 4/2 zone always fits.\n   - 8/1 base with a 4/1 zone fits when n is a multiple of 5.\n   - Otherwise, show the cut edge stones explicitly.\n4. Changes to section splitting: do not forbid boundaries inside zones. Split a zone into sub-zones at each section boundary. Boundaries lie in base joints, so each sub-zone again has an exact span.\n5. IDs use the form Z1:A001 with absolute X/Y.\n6. Stats, CSV, PDF, render, Viewer hit-testing, StoneDialog edits and serialize must iterate base cells plus zones. Bump the format version and add a migration.\n7. Add invariant tests:\n   - No zone pieces overlap base pieces.\n   - The total pieces in stats equal the sum over the base grid plus all zones.\n   - Section counts add up to the total.\n   - PDF counts equal the preview.",
+    "STAGE 1 (M): reuse the existing SUB stones, so every guarantee still holds.\n\n(a) Fine-stone region (\"Feinzone\"):\n- Add Region.type 'fine' next to face and detail (types.ts:84).\n- In computeMosaic, after the analysis of each cell (mosaic.ts ~353-376): if the cell centre lies in a fine region and all subRects pass pieceCuttable, force bestKind=SUB and take the colours from gs.map(meanOf).\n- If a piece is not cuttable, keep the normal choice and set Rec.FINER, so the cell is visibly marked as a recommendation.\n- Draw these regions in the step-6 region editor with their own colour. The user then really gets fine stones in eyes, mouth and hair, instead of 1-2 % chance.\n\n(b) Pick a target fine size instead of k:\n- In StepShapes, list the k values that give an exact whole-mm size, fine = (w+g)/k − g, for example 10/2 gives 4 mm and 12/2 gives 5 mm.\n- Show other k values honestly as \"X,XX mm – wird aus dem Grundstein geschnitten\".\n- Allow k=4 only after changing the sample grid S to 12 for that path (needs S % k == 0).\n- Hard-cap k at 4 because progress is a 16-bit mask per cell (edits.ts:128-134).\n\n(c) Material for fine stones:\n- Add PaletteColor.fineMaterialId.\n- Change RawSizeFn to (color, pieceW, pieceH) and choose the fine material when the piece's bounding box exactly matches that material's size (within DIM_TOL). analyzeCut then returns needsCut=false and yield 1 without any other change. The CutCache key already contains the raw size.\n- In computeStats (stats.ts:153-200), the PDF material table (pdf.ts:386-425) and the CSV, change perColor to one row per (colour, raw size). Each fine material then gets its own order line.\n- Never relabel a piece as uncut unless its size matches exactly.\n\n(d) Tests:\n- Total pieces = sum over cells of cellPieceCount.\n- Sum of piece areas plus joint area = finished area.\n- Fine pieces with a matching material: needsCut false. Without one: needsCut true.\n- PDF counts = stats counts.\n- Progress with k=4 (16 pieces) round-trips through serialize.\n\nSTAGE 2 (L, after Stage 1): zones with their own grid, as the auditor proposed, for pitch ratios that are not whole numbers (e.g. 10/1 base with 5/1 fine). Required conditions:\n- The zone covers whole base cells [c0,c1)×[r0,r1). Lx = colX[c1−1]+colW[c1−1]−colX[c0].\n- Inner layout = computeLayout(Lx, Ly, w2, h2, g2, 'cut-both'). Border pieces are computed cuts, so the gap to the neighbouring base stones is exactly g.\n- If computeAxis falls back (rest > 0), refuse the zone and show the remainder; never stretch.\n- Offer snapping to n-cell multiples for an exact fit (see exactfit.out, e.g. 8/1 with 4/1 needs n=5).\n- Covered base cells get CellKind.ZONE with 0 pieces.\n- Each zone has its own MosaicData (so its own 16-bit progress per inner cell), uses the project palette as fixedPalette, and gets IDs 'Z1:A001' plus absolute X/Y.\n- computeSections must not cut through a zone. A zone larger than a section goes into one section, with a warning.\n- Viewer hit-testing, StoneDialog, neighbors, stats, PDF, CSV and serialize all go through the zones first.\n- Invariant tests: base pieces + zone pieces = total, no stone counted twice, area plus joints = finished area, measured zone-border gap = g, and PDF sheet == preview for a sheet containing a zone."
+   ]
+  },
+  {
+   "title": "No resolution check for faces, and no face priority unless the user marks the face by hand",
+   "kind": "ux",
+   "problem": "Whether a portrait is recognisable depends on how many stones span the face. The app neither checks nor advises: the default project (30×40 cm, 8 mm stones) gives a face about 15 stones wide. Without a marked face region the face gets no extra palette weight and no cut priority. FaceDetector exists in only a few browsers, so in practice face priority depends on the user marking the face by hand.",
+   "evidence": "Scripts /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/eval-photos.ts and exp-misc.ts (outputs .../out/results/eval-photos.txt, exp-misc.txt). Obama photo at default settings (/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/out/obama-default-face.png): the face is about 15 stones wide and each eye about 2 stones. Geometry-only face error (unquantised colours, per pixel) is ΔE 4.2, against 2.87 at 40 cm/5 mm. Astronaut without a face region: face perceived ΔE 2.17 (worse than the image average of 1.93), 17 of 32 colours used in the face, 4.5 % of cuts in the face. With a face region: 1.96, 20 colours, 8.9 % of cuts.",
+   "proposal": "In steps 2/3, once a face region exists, show 'Gesicht: X Steine breit, Augen: Y Steine' with a traffic light (red < 20, yellow 20–30, green > 30 stones across the face). Offer one-click suggestions: a smaller stone size or a larger width that reaches green. As a fallback when FaceDetector is missing, bundle a small offline face detector (e.g. a BlazeFace/MediaPipe wasm model of a few hundred KB, lazy-loaded so the offline PWA/APK still works). It pre-fills the face region as a 'Vorschlag' the user can edit.",
+   "files": [
+    "src/ui/project/StepGeometry.tsx",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/imagePrep.ts",
+    "src/core/mosaic.ts"
+   ],
+   "impact": 3,
+   "effort": "M",
+   "dim": "algo-quality",
+   "id": "algo-quality#8",
+   "corrected": [
+    "1. **Face-resolution indicator (effort S, impact 3).**\n   - Add a pure helper `faceResolution(region, layout)` in src/core/layout.ts. It returns `{ across: region.w * layout.cols, high: region.h * layout.rows }`. Regions are normalised to the cropped image, which maps onto finishedW/H.\n   - In StepShapes.tsx RegionEditor (api.layout is already available there), show for each face region in the region list: \"Gesicht: ca. N × M Steine\". Add a traffic light labelled as a guideline (\"Richtwert\"): red < 20, yellow 20–30, green ≥ 30 across. Base the thresholds on the measured face ΔE: 4.2 at about 15 stones, 2.87 at about 30.\n   - Add one-click suggestions computed with `estimateCells`:\n     - \"Steingröße X mm → ca. K Steine\" (the largest tile preset that reaches ≥ 30)\n     - \"Breite Y cm → ca. K Steine\"\n     - Each suggestion also shows the new total stone count. Applying it only changes settings; nothing is computed silently.\n   - Show the same line read-only in StepGeometry and in the StepCompute summary when a face region exists.\n   - In StepCompute, when no face region exists, show a muted hint: \"Kein Gesichtsbereich markiert – Gesichter erhalten nur die Hautton-Gewichtung\", with a link to step 6.\n   - Do not show an eye count, or show it only as \"≈ Gesichtsbreite/5 (Schätzung)\".\n   - Add a unit test for `faceResolution` in tests/.\n\n2. **Offline face-detection fallback (effort M).**\n   - When `detectFaces` (imagePrep.ts:153) finds no FaceDetector, lazy-load a lightweight pure-JS detector such as pico.js (nenadmarkus/picojs, a small JS file plus a cascade file of a few hundred KB; check the licence). Run it in a worker on the 640-px RegionEditor canvas.\n   - Add the cascade file's extension to the workbox globPatterns in vite.config.ts:14 so it is precached for offline use and the APK.\n   - Do not use MediaPipe tasks-vision. Its 14.6 MB wasm exceeds maximumFileSizeToCacheInBytes (8 MB, vite.config.ts:15) and would fail offline.\n   - Insert detections as editable face regions using the existing expansion at StepShapes.tsx:121, marked \"Vorschlag\". Optionally run detection once automatically when step 6 opens with no regions.\n   - Report \"Kein Gesicht gefunden\" honestly. Never auto-apply a region without showing it to the user.",
+    "1) Core helper (S). Add a pure function to src/core/layout.ts: regionCellSpan(layout, region) -> {cols, rows, mmW, mmH}. It counts the columns/rows whose centre lies inside the region's bounding box; for ellipses, measure the span along the centre row and column. Use the exact layout.colX/colW/rowY/rowH. Add a vitest that checks the numbers: default 300×400 mm, 8 mm stones, 1 mm joint, region w=0.46 -> 15 across; 400 mm, 5 mm, 1 mm -> 31.\n\n2) Readout where faces are created (S). In RegionEditor (src/ui/project/StepShapes.tsx, under the region list), show for each face region: 'Gesicht: 15 × 22 Steine'. Add a badge marked 'Richtwert' (guideline): red below 16, yellow 16–29, green from 30 stones across. Explain why in one sentence: below about 16 stones per face width a face is hard to recognise. Repeat the readout in LayoutSummary (StepGeometry.tsx) whenever face regions exist, so it updates live when the user goes back to steps 2/3. Do not show an eye count unless a detector returns eye keypoints; if one does, name the source.\n\n3) One-click suggestions (S/M). For a red or yellow face, offer:\n(a) The largest square tile from the existing StepTiles list (2–12 mm) that reaches 30 stones at the current joint. Add 'nicht in deinen Materialien' when no material in the DB has that size.\n(b) A larger project size, with width AND height scaled by the same factor so the crop and the face region do not move.\nEach button shows the exact effect before it is applied: new grid size and grid positions (estimateCells), new finished size and m². Once a mosaic has been computed, ask for confirmation first. The confirmation says that recomputing replaces manual stone changes and laying progress (they are kept until then), and it names the number of stones already marked as laid.\n\n4) Optional detector fallback (M, separate task). When FaceDetector is missing, use pico.js with its facefinder cascade (about 240 KB, MIT), bundled locally. Add the cascade's file extension to workbox globPatterns so it works offline in the PWA and the APK. Run it in the compute worker on the 640 px region-editor image. Pre-fill ellipse regions labelled 'Vorschlag (automatisch, bitte prüfen)', using the same expansion as StepShapes.tsx:121. Before shipping, test the detection rate on the 4 sample images plus a few real CC0 portraits. Only consider MediaPipe if you accept about 4 MB of gzipped download and change maximumFileSizeToCacheInBytes and globPatterns. Update README.md:147 and the i18n files de/en/tr to match."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w6-compare-batch",
+   "title": "Deviation map, largest-deviation list, batch recolouring and PNG preview export",
+   "ownedFiles": [
+    "src/ui/project/StepPreview.tsx"
+   ]
+  },
+  {
+   "id": "w6-colour-measure",
+   "title": "Measure material colours from a photo on any device",
+   "ownedFiles": [
+    "src/ui/Materials.tsx",
+    "src/core/materialsCsv.ts"
+   ]
+  },
+  {
+   "id": "w6-plan-exports",
+   "title": "Streaming CSV for millions of stones and paper-matched section presets",
+   "ownedFiles": [
+    "src/core/csv.ts",
+    "src/workers/client.ts",
+    "src/ui/project/StepPlan.tsx"
+   ]
+  },
+  {
+   "id": "w6-pdf-finish",
+   "title": "Exact page counts, labelled parts, coordinate mode choice, PDF on the fast stats engine",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "src/core/pdfPlan.ts",
+    "tests/pdf.test.ts",
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts",
+    "src/ui/project/StepPdf.tsx"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,199 @@
+{
+ "wave": 1,
+ "waveName": "Wave 1 – Data safety & geometric correctness",
+ "package": {
+  "id": "w1-touch-input-safety",
+  "title": "No ghost clicks, no accidental laying taps, correct German number input",
+  "goal": "A tap on touch screens can never tick 'verlegt' or switch to a neighbouring stone in the dialog it just opened. Taps at overview zoom no longer hit random stones. Typing '1.000' means 1000. The back gesture closes a dialog first.",
+  "findingIds": [
+   "ux-mobile-android#0",
+   "ux-mobile-android#2",
+   "ux-mobile-android#9",
+   "ux-mobile-android#1"
+  ],
+  "ownedFiles": [
+   "src/ui/project/Viewer.tsx",
+   "src/ui/components.tsx"
+  ],
+  "newFiles": [
+   "src/ui/numberParse.ts",
+   "tests/w1-touch-input-safety.test.ts",
+   "e2e/w1-touch-input-safety.e2e.cjs",
+   "src/i18n/ext/w1-touch-input-safety.ts"
+  ],
+  "steps": [
+   "Viewer: set a tapHandled flag in onUp when a touch tap is recognised. Register a non-passive canvas 'touchend' listener that calls preventDefault when the flag is set and then resets it; reset it in onDown too. Give pointercancel its own handler that only clears state and never picks. Use a tap slop of 10 px for touch/pen and 5 px for mouse. Ignore presses longer than 500 ms.",
+   "Viewer small-target gate for touch/pen: compute the hit piece's bbox on screen (min(w,h)·scale). Below 28 CSS px, do not call onPick. Instead animate zoomAt(tap) until the piece is about 40 px (capped at maxS) and show a 1.5 s hint 'Zum Antippen hineingezoomt'. Mouse behaviour is unchanged.",
+   "components.tsx Modal backdrop: close only on a click where pointerdown also started on the backdrop.",
+   "components.tsx Modal history:\n- On mount, call history.pushState({mpModal:id}, '').\n- Guard against StrictMode double mount by checking history.state.\n- A popstate that removes our entry closes the modal.\n- ✕, Esc and the backdrop call history.back() when our entry is on top.\n- A programmatic unmount pops our own entry.\n- Keep a depth counter so nested modals close last-in-first-out.",
+   "numberParse.ts: add parseLocaleNum(s, lang).\n- Strip spaces, NBSP and thin spaces.\n- Grouping regex per language, with a leading [1-9] so '0.125' is not read as thousands.\n- If exactly one '.' or ',' remains, treat it as the decimal point.\n- Allow a trailing separator while typing.\n- Validate strictly and return NaN otherwise.\nNumberInput uses it in both places and shows a muted hint '→ 1000' (ungrouped) when grouping or spaces were removed."
+  ],
+  "acceptance": [
+   "Unit tests:\n- de: '1.000'→1000, '1.000,5'→1000.5, '1 000'→1000, '12,5' and '12.5'→12.5, '0.125'→0.125, '1,2,3'→NaN, '12,'→12, '12abc'→NaN\n- en: '1,000'→1000, '1.000'→1\n- tr: '0,5'→0.5",
+   "e2e at 390×844 with hasTouch on the computed portrait: 15 taps across the canvas at fit zoom open no dialog and toggle no stone, and placed-count stays 0 in the plan step. After zooming in, one tap opens the dialog and its stone-id equals the reference id; stone-placed stays unchecked.",
+   "e2e lay mode: a tap at fit zoom leaves placed-count unchanged and zooms in. After zooming, one tap changes placed-count by exactly 1. A 1.2 s long press changes nothing.",
+   "e2e: with the stone dialog open, page.goBack() closes only the dialog and the URL stays on /preview.",
+   "e2e: typing '1.000' in width-input (de, unit cm) shows '1000' after blur."
+  ],
+  "risk": "Effort M. preventDefault on touchend must not break pinch or pan; keep it limited to recognised taps. Modal history must not leave stale entries behind when Save closes the dialog programmatically."
+ },
+ "findings": [
+  {
+   "title": "Ghost click on touch: tapping a stone opens the dialog, then the same tap marks the stone as laid or switches to a neighbour stone",
+   "kind": "bug",
+   "problem": "On touch devices the Viewer opens the stone dialog on pointerup (Viewer.tsx:215-241, onPick). The browser then sends the compatibility mousedown/mouseup/click for the same tap to whatever element of the new modal is under the finger. The user only wanted to look at a stone, but the stray click can tick 'dieser Stein ist verlegt' (laying progress is written and saved) or press a neighbour button so the dialog shows a different stone. This breaks requirement 13 (inspect a stone) and requirement 14 (correct progress), and the user never sees it happen.",
+   "evidence": "Reproduction (Playwright, 390x844, hasTouch). /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-mobile-android/scripts/ghost.cjs taps a stone twice: once with the ghost events suppressed (reference) and once as a normal tap. Output in .../out/ghost.txt: {\"y\":519,\"tapped\":\"AK034\",\"shown\":\"AK035\",ghostClick:\"click->span.muted rechts\"}, {\"y\":544,\"tapped\":\"AP034\",\"shown\":\"AP033-1\",ghostClick:\"click->button.neighbor links AP033\"}. Variant .../scripts/ghost2.cjs (.../out/ghost2.txt): {\"y\":360,\"tapped\":\"B022\",\"placedAfter\":true,\"ghostClick\":\"click->label.inline dieser Stein ist verlegt\"}. Afterwards the plan step shows 'placed-count after only opening dialogs in preview: 1'. The event log in .../out/touch.txt shows 'pointerup:canvas' followed by 'mousedown/mouseup/click:button.neighbor' at the same coordinates. Related code: components.tsx:115 (backdrop closes on onMouseDown) and StoneDialog.tsx:155-166 (placed checkbox inside a label).",
+   "proposal": "1) Viewer.tsx: for e.pointerType !== 'mouse', do not call onPick in onUp. Store the pending pick and run it from a 'click' listener on the canvas; the click still lands on the canvas because the modal does not exist yet. Alternatively, add a non-passive canvas 'touchend' listener that calls e.preventDefault() after a recognised tap, which suppresses the synthetic mouse events. 2) Modal: close the backdrop on 'click' only when pointerdown also started on the backdrop, and ignore clicks in the first 350 ms after mount. 3) Add an e2e check with hasTouch: tap a stone, then assert placed-count is still 0 and stone-id equals the reference id.",
+   "files": [
+    "src/ui/project/Viewer.tsx",
+    "src/ui/components.tsx",
+    "src/ui/project/StoneDialog.tsx",
+    "e2e/run-e2e.cjs"
+   ],
+   "impact": 5,
+   "effort": "S",
+   "dim": "ux-mobile-android",
+   "id": "ux-mobile-android#0",
+   "corrected": [
+    "1) Viewer.tsx, root-cause fix, verified by injection. In the interaction useEffect, add `let tapHandled = false;`. In onUp, set `tapHandled = e.pointerType !== 'mouse'` right before calling `propsRef.current.onPick?.(...)`. Add `const onTouchEnd = (e: TouchEvent) => { if (tapHandled && e.cancelable) e.preventDefault(); tapHandled = false; };` and register it with `cv.addEventListener('touchend', onTouchEnd, { passive: false })`, removing it in the cleanup. pointerup fires before touchend, so the flag is set in time. preventDefault on touchend cancels the gesture tap, so no mousedown/mouseup/click reaches the new modal. Pan and pinch are unaffected because onPick is only called when !moved. The zoom buttons are separate elements and still work. A second option also works: defer onPick to a canvas 'click' listener when pointerType is not 'mouse'. The touchend variant is the one I tested.\n2) components.tsx:115, defensive. Close the backdrop on click only if pointerdown also started on the backdrop. Use `onPointerDown={e => downOnBackdrop.current = e.target === e.currentTarget}` together with `onClick={e => { if (downOnBackdrop.current && e.target === e.currentTarget) props.onClose(); downOnBackdrop.current = false; }}`. This replaces the current onMouseDown close, so a stray mousedown cannot close a dialog on tablets where the backdrop lies under the finger. A 350 ms 'ignore clicks after mount' timer is not needed once step 1 is in place.\n3) e2e/run-e2e.cjs. Add a hasTouch/isMobile context, then use page.touchscreen.tap at several canvas points that previously hit the placed row and the neighbour buttons (e.g. x=140, y=360 and y=540 on a 390x844 viewport after compute on the portrait sample). After each tap, assert that [data-testid=stone-placed] is unchecked and that stone-id equals the id from a reference tap with mouse events suppressed. At the end, assert placed-count is 0 in the plan step.",
+    "1) src/ui/project/Viewer.tsx, in the interaction useEffect:\n(a) Separate the cancel handler from onUp. A 'pointercancel' should only remove the pointer and reset downAt, moved and pinchDist. It must never call onPick. Today onUp is registered for pointercancel at line 283.\n(b) Keep a flag `tapPicked` and set it to true in onUp when a touch tap is recognised: e.pointerType === 'touch', pointers.size === 0, downAt is set and moved is false. Then register `cv.addEventListener('touchend', (e) => { if (tapPicked) { e.preventDefault(); tapPicked = false; } }, { passive: false })` and remove it in the cleanup function. This stops Chromium/Android WebView from sending the synthetic mousedown/mouseup/click into the modal that has just opened. I verified this in verify.cjs: 0 of 17 taps leaked, and dialogs still opened. Reset tapPicked in onDown so a stale flag cannot carry over.\nLeave the mouse and pen paths unchanged. For mouse, the click target is the common ancestor of the canvas and the modal, not a dialog control.\n\n2) Optional hardening in src/ui/components.tsx Modal: remember whether the pointerdown target was the backdrop (`downOnBackdrop.current = e.target === e.currentTarget` in onPointerDown), and close in onClick only if that flag is set and e.target === e.currentTarget. Do not add a 350 ms timing guard.\n\n3) e2e/run-e2e.cjs: add a context with { isMobile: true, hasTouch: true, viewport: 390x844 }. Open the portrait sample and compute it. Run page.touchscreen.tap at about 15 y-positions down the canvas centre line; close each dialog with the X button. Then assert two things: (a) placed-count on the Plan step is still 0; (b) for each tap, the stone-id shown equals a reference id worked out in the page from the same coordinates. Simpler for (b): tap twice at the same point and require the same id. Also test lay mode (plan step, layMode on): one tap must toggle exactly one stone, so placed-count goes up by 1."
+   ]
+  },
+  {
+   "title": "Laying mode and stone taps at overview zoom hit random stones (about 6 px per stone); taps 4 px apart lay three different stones and there is no undo",
+   "kind": "ux",
+   "problem": "The plan step opens fitted to the screen. On a phone the 30x40 cm portrait sample is drawn at about 1 CSS px per mm, so one 5 mm stone plus joint is about 6 CSS px, roughly 1 mm on the physical screen. A fingertip covers dozens of stones. In laying mode every tap without movement toggles whatever stone lies under the touch point. A finger offset of 4 px already lays a different stone. At this zoom nothing visible changes, so the user does not notice, and README states there is no undo. The tap slop is 5 px (Viewer.tsx:201), smaller than typical finger jitter, and long presses also count as taps (downAt.t is never used). The preview has the same problem: taps 3 px apart open different stones.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-mobile-android/scripts/touch.cjs (output .../out/touch.txt): 'lay mode placed after taps at (0,0),(+4,0),(0,+4) px: 1 2 3' and 'stone ids for taps at +0,+3,+6 px: [AP033-1, AP034, AP034]'. Screenshot .../shots/m-touch.png (right panel): 3 stones marked as laid, with no visible marker at fit zoom. Canvas size 340x523 CSS px for 300x400 mm. Code: StepPlan.tsx:120-126 (togglePiecePlaced on every pick), Viewer.tsx:196-244.",
+   "proposal": "In Viewer.onUp, for pointerType 'touch' or 'pen', compute the on-screen stone size, min(layout.tileW, layout.tileH) * view.scale. If it is below 24 px, do not call onPick. Instead animate a zoom centred on the tap point to the scale where a stone is about 36 px, and show the hint 'Zum Verlegen hineinzoomen'. Raise the touch tap slop to 10 px and ignore presses longer than 500 ms. After each toggle in laying mode, flash the stone outline for 400 ms and call navigator.vibrate?.(10). In StepPlan, keep the last 50 toggles as {idx, piece, prevBit} and add a 'Rückgängig' button next to the laying-mode toggle. Optionally add a row-by-row mode: tap a cell to mark the rest of that row within the selected section.",
+   "files": [
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StepPreview.tsx",
+    "src/core/edits.ts"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "ux-mobile-android",
+   "id": "ux-mobile-android#2",
+   "corrected": [
+    "1) Viewer.tsx onUp: when e.pointerType is 'touch' or 'pen', first find the target cell and piece as the code does now. Then compute its on-screen size: min(layout.colW[col], layout.rowH[row]) * view.scale for a full cell, or the bbox of the target piece's polygon for split or cut cells. If that size is under about 24 CSS px, do not call onPick. Instead animate a zoom (about 200 ms) centred on the tap point, up to the scale where that cell is about 40 px, capped at maxS. Show a short hint, 'Zum Verlegen/Auswählen hineinzoomen'. If the tap lands on a section label rectangle, select that section instead of toggling the hidden stone underneath.\n2) Touch slop: raise it to 10 px for touch (keep 5 px for mouse). Treat a press longer than 500 ms as 'not a tap' (do not call onPick). Do not treat pointercancel as a tap: register a separate handler that only clears state.\n3) StepPlan.tsx: keep an undo stack in state, capped at 50 entries. A single toggle pushes {idx, piece}; undo XORs the same bit again (togglePiecePlaced is an XOR, edits.ts:127). The section 'complete' and 'reset' actions push a copy of data.progress for that section's row/col range, restored with a small edits.ts helper. Show a 'Rückgängig (n)' button next to the 'Verlegemodus' toggle, plus a status line naming the last change, e.g. 'AP034 als verlegt markiert' / 'AP034 wieder offen' (use pieceId from layout.ts:184). This feedback stays readable at any zoom level.\n4) After each toggle, set a transient highlight on that stone for about 600 ms by reusing the existing `highlight` prop. Drop navigator.vibrate, or add android.permission.VIBRATE to the manifest or use @capacitor/haptics, because without the permission it does nothing in the APK.\n5) Optional: a row mode. In lay mode, a 'Reihe' segmented option marks every stone from the tapped cell to the end of that row within the selected section, pushing a single undo entry.\nTests: add an e2e touch test. Taps at fit zoom must not change placed-count; tap, zoom and tap must change it by 1; undo must return it to 0.",
+    "1. Viewer.tsx, onDown, onMove and onUp: store e.pointerType at pointer-down.\n   - For touch and pen, use a tap slop of 10 px; keep 5 px for the mouse.\n   - Before calling onPick, find the stone that was hit, as today (cellPieces and pointInPolygon). Compute its on-screen size as min(bbox(piece.poly).w, bbox(piece.poly).h) * view.scale.\n   - For touch or pen, if that size is below 28 CSS px, do not call onPick. Call the existing zoomAt(p.x, p.y, k) with k chosen so that this stone becomes about 40 px (zoomAt already respects maxS = 120). Show a short hint, \"Zum Antippen hineingezoomt\" / \"Zoomed in so you can tap a single stone\" / tr equivalent.\n   - A press longer than 500 ms never toggles. In laying mode, pass a new prop onLongPick(row, col, piece) so that a long press opens StoneDialog. That gives access to stone details without leaving laying mode. Outside laying mode, a long press is ignored.\n   - Mouse behaviour stays as it is.\n   - Apply the same logic in StepPreview, because it uses the same Viewer.\n\n2. StepPlan.tsx, feedback after each toggle:\n   - Set a transient flash state for 400 ms and pass it through the existing highlight prop.\n   - Show a small toast with the real stone ID from the existing ID function, e.g. \"AP034 verlegt\" or \"AP034 wieder offen\", with a \"Rückgängig\" button.\n   - Call navigator.vibrate?.(10), and add <uses-permission android:name=\"android.permission.VIBRATE\"/> to android/app/src/main/AndroidManifest.xml. Without it the WebView ignores the call. It is a normal permission, so the user sees no prompt.\n\n3. Undo, kept in memory and limited to the last 50 steps.\n   - Store entries as either {kind:'piece', idx, piece} (undo by toggling again) or {kind:'range', r0, r1, c0, c1, before: Uint16Array}. A range entry is a copy of data.progress for the section, taken before \"Abschnitt fertig\" or \"Zurücksetzen\".\n   - Add a \"Rückgängig (n)\" button next to the laying-mode toggle and in the toast.\n   - Undo restores the bits, checks piece < cellPieceCount(data, idx) before toggling, and calls api.touchProgress() so the saved data and the counts update.\n   - Clear the stack whenever api.version changes (stone edits) or c.layout changes (recompute), because those reset progress and change the number of stones per cell.\n   - Optionally add a confirmation to \"Abschnitt fertig\" when the section is partly laid. With undo in place this is not strictly needed.\n\n4. Honesty (requirement 18): change the README.md undo row to \"Rückgängig: nur für Verlegefortschritt (letzte 50 Schritte, nicht über Neuladen hinweg); Farb-/Formänderungen ohne Undo\". Add the de, en and tr strings.\n\n5. Tests, in e2e/run-e2e.cjs or a new touch spec with isMobile and hasTouch:\n   - A tap at fit zoom in laying mode leaves placed-count unchanged and increases the zoom.\n   - After that zoom, a tap lays exactly the stone under the finger, and a second tap 4 px away still hits the same stone.\n   - A 1 s long press does not change the count.\n   - \"Abschnitt fertig\" followed by \"Rückgängig\" restores the earlier count exactly, including partly laid sections.\n\nLeave the row-by-row mode for a separate follow-up, such as \"Bereich aufziehen = verlegt\" using setRangePlaced, which already counts exactly."
+   ]
+  },
+  {
+   "title": "Typing '1.000' (German thousands separator) into the size field silently becomes 1 cm; '1 000' and '1.000,5' also become 1",
+   "kind": "bug",
+   "problem": "parseNum (components.tsx:5-7) replaces only the first comma and uses parseFloat, which reads the leading numeric prefix and ignores the rest. With a German or Turkish keyboard it is natural to type '1.000' (the user's own example size is 1000x500 cm). This is accepted as 1 with no invalid marker. The project size, grid and all downstream numbers change to a 1 cm project. The same happens for any NumberInput: tile size, joint, section size, reserve, PDF size.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-mobile-android/scripts/numbers.cjs (output .../out/numbers.txt), phone emulation with de-DE locale, width-input: {typed:'1.000', invalidWhileTyping:false, valueAfterBlur:'1'}, {typed:'1.000,5', valueAfterBlur:'1'}, {typed:'1 000', valueAfterBlur:'1'}. '12,5' works. Input font-size is 14.72px (auto-zoom on iPad Safari).",
+   "proposal": "Rewrite parseNum(s, lang) as follows. Strip spaces, NBSP and thin spaces. If lang is de or tr and the text matches /^-?\\d{1,3}(\\.\\d{3})+(,\\d+)?$/, remove the dots and turn the comma into a dot. Otherwise, if there is exactly one ',' or '.', use it as the decimal point. Then require /^-?\\d+(\\.\\d+)?$/ and use Number(); anything else returns NaN, so the field shows as invalid and the value is not committed. Add unit tests for '1.000', '1.000,5', '1 000', '12,5', '12.5' and '1,2,3'. In NumberInput, show the parsed value as a hint while typing (e.g. '= 1.000 cm').",
+   "files": [
+    "src/ui/components.tsx",
+    "tests/"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "ux-mobile-android",
+   "id": "ux-mobile-android#9",
+   "corrected": [
+    "1. Move parsing into a pure module, src/ui/numberParse.ts (no React import), so vitest in tests/ can import it. Use `parseLocaleNum(s, lang)`:\n   (a) Remove all whitespace, including U+00A0, U+2009 and U+202F.\n   (b) Pick the separators per language: for de/tr, group = '.' and decimal = ','; for en, group = ',' and decimal = '.'.\n   (c) If the text matches `^-?[1-9]\\d{0,2}(G\\d{3})+(D\\d*)?$` (G = escaped group char, D = escaped decimal char), remove all G characters and turn D into '.'. The leading [1-9] stops '0.125' from being read as thousands.\n   (d) Otherwise, if there is exactly one '.' or ',', treat it as the decimal point. This keeps '12.5' and '12,5' working in every language.\n   (e) Allow one trailing separator while typing ('12,' gives 12) so the field does not flash red mid-entry.\n   (f) Require `^-?(\\d+(\\.\\d*)?|\\.\\d+)$` and use Number(). Anything else, such as '1,2,3' or '1.000.5,3', returns NaN, so the field is marked invalid and nothing is committed.\n2. In NumberInput (src/ui/components.tsx), call parseLocaleNum(text, lang) at both places that call parseNum today.\n3. Show the parsed value as a muted hint only when the typed text differs from fmt(parsed), for example typed '1.000' shows '= 1000 cm'. Use the ungrouped canonical form from the existing fmt(), not toLocaleString, so the two possible readings of input like '1.250' are clearly different.\n4. Add vitest cases: de '1.000' → 1000, de '1.000,5' → 1000.5, de '1 000' → 1000, de '12,5' and '12.5' → 12.5, de '0.125' → 0.125, de '1,2,3' → NaN, de '12,' → 12, en '1,000' → 1000, en '1.000' → 1, tr '0,5' → 0.5.",
+    "1. Move parsing into a pure module, for example src/ui/parseNum.ts (no React imports), and export `parseLocaleNum(s: string, lang: Lang): number`:\n   - Strip whitespace, NBSP and thin spaces: `t = s.replace(/[\\s   ]/g, '')`.\n   - For de and tr, grouping is detected with `/^-?\\d{1,3}(\\.\\d{3})+(,\\d*)?$/`. If it matches, remove all dots and turn the comma into '.'.\n   - For en, grouping is detected with `/^-?\\d{1,3}(,\\d{3})+(\\.\\d*)?$/`. If it matches, remove all commas.\n   - After that step, if more than one '.' or ',' is left, return NaN. Otherwise turn the remaining ',' into '.'.\n   - Accept only `/^-?(\\d+\\.?\\d*|\\.\\d+)$/`. This allows a trailing separator such as '100,' so typing '100,5' does not flash red. Return Number(t), and NaN for anything else ('12abc', '1e3', '1,2,3').\n2. In NumberInput (components.tsx), call `parseLocaleNum(text, lang)` in both places (lines 35 and 54). Keep the existing min/max validation and the rule that nothing is committed while the value is invalid.\n3. When grouping was detected or spaces were removed, show a small muted hint under the field with the value formatted WITHOUT grouping. For example, '1.000' shows '→ 1000 cm'. The size fields can add the converted value, e.g. '→ 1000 cm (10 m)'. On blur, the existing fmt() already re-renders the value ungrouped ('1000'), so the user sees exactly what was understood.\n4. Add a unit file tests/parseNum.test.ts covering:\n   - de: '1.000' gives 1000, '1.000,5' gives 1000.5, '1 000' gives 1000, '12,5' and '12.5' give 12.5, '100,' gives 100, '1,2,3' gives NaN, '12abc' gives NaN.\n   - en: '1,000' gives 1000, '2.5' gives 2.5.\n   - tr: same results as de.\n5. Optional, same change: raise the input font-size to 16px on touch devices so iOS/iPad Safari stops zooming in on focus. Leave layout and geometry code untouched; this is input parsing only."
+   ]
+  },
+  {
+   "title": "Android back button leaves the app from every screen, including open dialogs; in the PWA, back jumps from step 8 to Home",
+   "kind": "bug",
+   "problem": "The APK does not include @capacitor/app (package.json; capacitor.plugins.json lists only filesystem and share). Capacitor 8's BridgeActivity has no back handling: there is no OnBackPressedCallback anywhere in @capacitor/android. So the hardware back button or back gesture takes the default Activity path. On Android 12 and newer it sends the app to the background; on Android 7-11 it finishes the activity, which destroys the WebView and restarts the app on Home. Back never closes a dialog and never returns to the previous step. In the browser/PWA, step changes use history.replaceState (Workspace.tsx:23-26) and modals are not in the history, so back always leaves the whole project. Pending saves depend only on visibilitychange/pagehide (useProject.ts:131-141); there is no native pause hook.",
+   "evidence": "Code: android/app/src/main/java/de/mosaicplan/app/MainActivity.java is an empty BridgeActivity. node_modules/@capacitor/android/.../BridgeActivity.java has no onBackPressed, and grep for OnBackPressed or canGoBack finds only MockCordovaWebViewImpl. android/app/src/main/assets/capacitor.plugins.json contains only Filesystem and Share. Browser reproduction: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-mobile-android/scripts/back.cjs opens a project, computes it, goes to step 8, opens a stone dialog and presses back. Output (.../out/back.txt): 'after BACK #1: http://localhost:4173/ | dialog still open: false | on home: true'. history.length stays 3 across step changes.",
+   "proposal": "Add @capacitor/app (npx cap sync). Create a small back-handler stack, src/ui/backStack.ts, with a LIFO list and a useBackHandler(fn, active) hook. Modal registers onClose while mounted. Workspace registers 'go to previous step' when idx > 0, and 'go to project list' at step 1. App registers 'go to #/' when route !== ''. In main.tsx, when isNative(): App.addListener('backButton', () => { if (!backStack.run()) App.minimizeApp(); }). Use minimizeApp rather than exitApp so state survives. Also App.addListener('pause', () => flushAll()), where useProject registers its flush in a global set. For the web/PWA: use history.pushState for step changes instead of replaceState, push a {modal} entry when a Modal opens, and close it on popstate. Add an e2e check that page.goBack() with an open dialog only closes the dialog.",
+   "files": [
+    "package.json",
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/ui/components.tsx",
+    "src/ui/project/Workspace.tsx",
+    "src/ui/project/useProject.ts",
+    "android/app/src/main/java/de/mosaicplan/app/MainActivity.java"
+   ],
+   "impact": 5,
+   "effort": "M",
+   "dim": "ux-mobile-android",
+   "id": "ux-mobile-android#1",
+   "corrected": [
+    "Use browser history as the single source of truth for both the PWA and the APK.\n\n(1) Workspace: make the step come from the route.\n- In Workspace.tsx, replace the `useState` step with a value derived from the route: `const step = isStep(initialStep) ? initialStep : 'photo'`.\n- Change `setStep(s)` to `location.hash = '#/project/' + id + '/' + s`. This pushes a history entry, and App's existing hashchange listener re-renders Workspace with the new `initialStep`. Workspace stays mounted because `key` is the project id, so the project is not reloaded.\n- Use `history.replaceState` plus a `setHash` call only for the automatic jump to 'preview' after loading (Workspace.tsx:28-31), so that it does not create an extra entry.\n\n(2) Modal (components.tsx:107): give it its own history entry.\n- On mount, run once: `history.pushState({ mpModal: true }, '')` (same URL, so no hashchange fires).\n- Add a `popstate` listener that calls `onCloseRef.current()`. Keep `onClose` in a ref so the effect does not re-run on every render; the current effect depends on `[props]`.\n- When the modal closes through ✕, Escape or the backdrop, call `history.back()` if `history.state?.mpModal` is set, and ignore the resulting popstate.\n- Guard against the StrictMode double mount by checking `history.state?.mpModal` before pushing.\n\n(3) Native app:\n- `npm i @capacitor/app@^8.1` and `npx cap sync android`.\n- In main.tsx, when `isNative()`, add: `App.addListener('backButton', ({ canGoBack }) => canGoBack ? history.back() : App.minimizeApp())`. Hash and pushState entries count in the WebView's canGoBack. Use `minimizeApp`, not `exitApp`, so in-memory state survives.\n- Optional hardening: `App.addListener('pause', () => flushAllProjects())`, where useProject registers its `flush` in a module-level Set.\n\n(4) Add e2e checks in e2e/run-e2e.cjs:\n- (a) With the stone dialog open, `page.goBack()` closes the dialog, the URL stays on `.../preview`, and the canvas is still visible.\n- (b) Going from colors to preview and then `goBack()` shows step 'colors' (the active stepper button and the h2).\n- (c) A further `goBack()` leaves the project only after the step history is used up.\n\nImpact 4, effort M.",
+    "Use one back mechanism: browser history, the same on web and Android.\n\n(1) Steps controlled by the URL, in Workspace.tsx:\n- Add useEffect(() => { if (STEPS.includes(initialStep) && initialStep !== step) setStep(initialStep) }, [initialStep]) so a back or forward traversal updates the screen.\n- Make user clicks on the stepper, the Next/Back buttons and the stale badge call goStep(s), which pushes the new hash (location.hash = h, or history.pushState plus setStep).\n- Keep replaceState for automatic redirects only, for example the 'preview' jump after loading at Workspace.tsx:28-31, so back never lands on a step the user did not choose.\n\n(2) Modals in history, in components.tsx Modal:\n- On mount, run history.pushState({mpModal: id}, '') with the same URL.\n- Listen for popstate. When this modal's entry is no longer current, call onClose.\n- Have the X button, Escape and a backdrop tap call history.back() instead of onClose; the popstate handler then closes the modal.\n- In the cleanup, if the modal unmounts programmatically (for example after Save) and history.state?.mpModal === id, call history.back() so no stale entry is left.\n- Keep a module-level depth counter so the nested free-form modal in StoneDialog closes first.\n\n(3) Android:\n- Add @capacitor/app@^8.1 (8.1.2 exists, peer @capacitor/core >=8) and run npx cap sync.\n- In main.tsx, when isNative(): App.addListener('backButton', ({canGoBack}) => canGoBack ? history.back() : App.minimizeApp()).\n- Do not use exitApp, and do not build a separate JS backStack.\n- The listener is mandatory: without it, plugin 8.1.2 ignores back at the root.\n- Optional: App.addListener('pause', flushAll), where useProject registers its flush in a module-level Set.\n\n(4) Tests: extend e2e/run-e2e.cjs:\n- Open the stone dialog, call page.goBack(), and check that the dialog is closed and the URL and active step-* are unchanged.\n- Call goBack() again and check that the previous step is shown and the active stepper button matches the URL hash.\n- Open the nested free-form modal and check that back closes only the inner modal.\n- Check manually on a device or emulator with API 30 and API 34+ that back at Home minimizes the app and that reopening keeps the state.\n\nNo changes to src/core, so stone counts and cut dimensions are not affected. Impact 4 (5 on Android 7-11), effort M."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w1-persistence",
+   "title": "Reliable saving, atomic compute commit and mosaic integrity",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/storage/db.ts",
+    "src/storage/projects.ts",
+    "src/core/serialize.ts"
+   ]
+  },
+  {
+   "id": "w1-cut-correctness",
+   "title": "Buildable cut pieces and honest cut instructions",
+   "ownedFiles": [
+    "src/core/pieces.ts",
+    "src/core/geometry.ts",
+    "src/core/edits.ts",
+    "src/core/types.ts",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/CutTemplateSvg.tsx",
+    "src/ui/project/StepShapes.tsx"
+   ]
+  },
+  {
+   "id": "w1-mosaic-core",
+   "title": "4x faster analysis loop, stable custom palettes, safe palette replacement",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/ui/project/StepColors.tsx"
+   ]
+  },
+  {
+   "id": "w1-material-quantities",
+   "title": "Correct raw-tile, pack, stock and cost totals",
+   "ownedFiles": [
+    "src/core/stats.ts",
+    "tests/core.test.ts"
+   ]
+  },
+  {
+   "id": "w1-materials-csv",
+   "title": "Robust material CSV import/export for German Excel",
+   "ownedFiles": [
+    "src/ui/Materials.tsx"
+   ]
+  }
+ ]
+}

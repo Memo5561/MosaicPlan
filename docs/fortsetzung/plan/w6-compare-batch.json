@@ -1,0 +1,173 @@
+{
+ "wave": 6,
+ "waveName": "Wave 6 – Deviation map & batch editing, real fine tiles, colour measuring, streaming CSV, final PDF wiring",
+ "package": {
+  "id": "w6-compare-batch",
+  "title": "Deviation map, largest-deviation list, batch recolouring and PNG preview export",
+  "goal": "The user can see where the mosaic deviates most from the photo, jump to those stones, correct whole areas in one undoable step, and save the preview as an image.",
+  "findingIds": [
+   "spec-gaps#10",
+   "spec-gaps#3",
+   "spec-gaps#12"
+  ],
+  "ownedFiles": [
+   "src/ui/project/StepPreview.tsx"
+  ],
+  "newFiles": [
+   "src/ui/project/BatchPanel.tsx",
+   "src/ui/project/DeviationPanel.tsx",
+   "src/ui/css/w6-compare-batch.css",
+   "e2e/w6-compare-batch.e2e.cjs",
+   "src/i18n/ext/w6-compare-batch.ts"
+  ],
+  "steps": [
+   "Overlay toggle 'Abweichung Bild ↔ Stein (ΔE)': computed live from deviation.ts on version change and drawn as a coloured overlay canvas over the viewer. Fixed legend <2 / 2-5 / 5-10 / >10. Cells with no target are hatched as 'keine Fotoreferenz'. When dither > 0, add the note 'Rasterung erhöht Einzelabweichung absichtlich'. When stale, show the stale badge.",
+   "'Größte Abweichungen' list of the top 50 stones by ID, using viewer.center and opening the stone inspector.",
+   "BatchPanel: Viewer mode 'rect' selects a cell range; the scope can also be the current section or the whole project. Actions, each one journal entry through api.editCell/paletteOp:\n- 'Farbe A → B' via replaceColor, with a dry-run count first.\n- 'Heller/Dunkler': for each source colour, the same-hue rule from wave 5, using existing palette colours only. Show the mapping preview. Unmatched pieces are counted and left unchanged.\n- 'Form zurücksetzen': warns when laid stones are included.",
+   "'Vorschau als Bild (PNG)': renderFull at 2000/4000/8000 px (8000 on desktop only), clamped to ≤40 MP (≤16 MP on native), exported as PNG through downloadBlob. Label it 'Vorschau – kein maßstäblicher Plan'. Offer the same for the selected section."
+  ],
+  "acceptance": [
+   "e2e: the overlay shows hatched cells only for freeform pieces. Recolouring a stone toward its target lowers its listed ΔE. 'Farbe A → B' on a rectangle changes exactly the dry-run count, Ctrl+Z restores it, and stats totals stay unchanged.",
+   "e2e: the PNG download has dimensions within the cap."
+  ],
+  "risk": "Effort M. Batch actions must go through the journal so they can be undone."
+ },
+ "findings": [
+  {
+   "title": "No original-vs-mosaic comparison; the reference image disappears after a reload; no map of where the mosaic deviates",
+   "kind": "ux",
+   "problem": "Judging realism and spotting distorted faces (requirement 6) needs a precise comparison. The preview shows only a small side thumbnail of the processed photo. That canvas exists only in memory, so after a reload it is gone and the label wrongly says it will appear after calculation, although the mosaic is already calculated. Per-stone ΔE is calculated during colour assignment but thrown away, so the user cannot find the stones that most need manual correction.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/b3.cjs output: 'orig-thumb canvases before reload: 1, after reload: 0, text after reload: \"Wird nach der Berechnung angezeigt.\"'; 'range inputs on preview step: 0'. b1.cjs found no compare control. src/ui/project/StepPreview.tsx:22-30 and :93-94; api.processed is set only inside compute() in useProject.ts. ΔE per piece is computed in track() in the assignment loop of src/core/mosaic.ts, and only the aggregates are kept.",
+   "proposal": "1) Rebuild the processed image on load, using renderCropped(bitmap, adjust, effectiveCrop) plus applyAdjustments in the worker, or store it as a JPEG in IndexedDB at compute time. 2) Add a compare slider in Viewer. Draw the processed image into world rectangle (0,0,finishedW,finishedH) with the same view transform, clipped to x < split. Registration is exact because the processed image is cropped to the mosaic field's aspect ratio. 3) Store per-cell ΔE (Uint8, maximum over the cell's pieces) from the assignment loop and add an 'Abweichung' heatmap overlay. Add a 'größte Abweichungen' list that jumps to the stone with Viewer.center().",
+   "files": [
+    "src/ui/project/StepPreview.tsx",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/useProject.ts",
+    "src/core/mosaic.ts",
+    "src/core/render.ts"
+   ],
+   "impact": 3,
+   "effort": "S",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#10",
+   "corrected": [
+    "1) Persist the processed image at compute time.\n- In useProject.compute() (around useProject.ts:321-346), downscale `proc` to at most about 2048 px on the long side.\n- Encode it with canvasToJpeg(…, 0.85) and save it in IndexedDB next to the mosaic. Either add a new key in the store used by saveMosaic/loadMosaic, or add a field `processedJpeg` on the image record. Do this in the same Promise.all.\n- In the load effect (useProject.ts:85-98), after setComputed, decode it into a canvas and call setProcessed.\n- For projects computed before this change, offer a \"Foto für Vergleich neu erzeugen\" action. It runs renderCropped plus worker applyAdjustments using the adjust, regions and layout parsed from rec.computedWith, not the current rec.adjust.\n- Fix StepPreview.tsx:94. Show 'originalAfterCompute' only when !api.computed. When the mosaic is computed but no image is stored, show a distinct \"not stored, regenerate\" message.\n\n2) Compare view in Viewer.\n- Add an optional `compareImage?: CanvasImageSource` and `compareSplit?: number` (0..1 of finishedW) prop.\n- In draw() after renderMosaic: ctx.save(); clip a rect from (ox, oy) of width split*finishedW*scale and height finishedH*scale; drawImage(compareImage, ox, oy, finishedW*scale, finishedH*scale); draw a 1px divider line; ctx.restore().\n- Add a range slider and a \"hold to show photo\" button in StepPreview.\n- Move the thumbnail above the legend, or drop it once the slider exists.\n\n3) Deviation map that stays correct after manual edits.\n- Persist the per-cell target colour instead of a frozen ΔE. Store c1Lab, and c2Lab when shapes are on; both are already quantized Uint8 arrays in computeMosaic. For SUB cells, store the per-piece target from subLab.\n- Compute ΔE for each cell on demand against the stone's current palette colour, recomputing on `version` changes. Use the max over the cell's pieces, with the same deltaE metric as the settings.\n- Render it as an overlay toggle \"Abweichung Bild ↔ Stein (ΔE)\" with the existing ΔE thresholds from compute.deHint as the legend.\n- Add a \"größte Abweichungen\" list that jumps via viewer.center(colX, rowY, 12) and opens StoneDialog.\n- If settings.dither > 0, show a note that dithering intentionally creates local deviations.\n- Never compute these values from current settings that differ from computedWith. While api.stale is true, show the existing stale badge on the overlay.\n\nEffort M (each part S to M); impact 3.",
+    "A) Keep the reference image (S).\n- In useProject.compute(), after the worker returns, also write a JPEG of res.processed, downscaled to at most 2048 px on the long side (canvasToJpeg(proc, 0.9)). Store it in the project's image record, e.g. ImageRecord.processedJpeg, or in a separate 'reference' key in db.ts.\n- In the load effect, decode it into the `processed` canvas.\n- For projects computed before this change, offer a button \"Referenz neu erzeugen\" when !stale. It runs renderCropped + applyAdjustments exactly as compute() does, but without computeMosaic and without touching the mosaic or progress.\n- Copy and backup must carry the new field: projects.ts:43 (copy) and projects.ts:112 (import).\n- Fix the placeholder text. When no reference exists and the project is computed, show \"Referenzbild nicht gespeichert – ohne Neuberechnung wiederherstellen\". When stale, label the image \"Stand der letzten Berechnung\".\n\nB) Compare slider in Viewer (S).\n- Add a prop `reference?: CanvasImageSource` and `compareSplit?: number` (0..1 of the canvas width).\n- In draw(), after renderMosaic(), call ctx.save(); clip to rect(0, 0, split*view.width, view.height); ctx.drawImage(reference, ox, oy, finishedW*scale, finishedH*scale); then draw a vertical handle line.\n- Add a \"Vergleich Foto/Mosaik\" toggle and an input[type=range] in StepPreview. Also offer a 50% opacity \"Überblenden\" mode.\n- Move the \"Bearbeitetes Foto\" thumbnail above the legend, or drop it once the slider exists.\n\nC) Deviation map that stays correct after edits (M). Do not store compute-time ΔE.\n- Persist each piece's photo target colour instead. computeMosaic already builds it as quantised Lab: c1Lab and c2Lab are 3 bytes each, and subLab exists for SUB cells. Return these in ComputeResult and add optional fields to StoredMosaic (tLab1, tLab2, tSubLab), handled in pack/unpack.\n- Compute deviation live as ΔE(target, palette[current colour]), using the project's ΔE formula, in the stats worker or lazily on the main thread. A manual stone change or a palette edit then updates it automatically.\n- Free-form pieces, and projects without stored targets, are shown as \"keine Fotoreferenz\" (hatched). Never estimate a value for them.\n- Show the map as a toggle \"Abweichung zum Foto (ΔE)\" with a fixed legend (<2, 2-5, 5-10, >10). When dither > 0, add the note \"Rasterung (Dithering) erhöht die Einzelabweichung absichtlich\".\n- Add a list \"Größte Abweichungen\" (top 50 stones by ΔE, with stone ID) that uses Viewer.center() and opens StoneDialog.\n- In StoneDialog, show \"Fotofarbe [swatch] vs. Steinfarbe [swatch], ΔE x.x\" and the nearest better palette colour as a suggestion.\n- Purely visual and read-only: no change to layout, pieces, counts, stats or PDF.\n- Tests: deviation for an unedited mosaic equals the diagnostics mean and max within quantisation (<0.5 ΔE); after an edited stone its deviation is recomputed; pack/unpack round-trips the target fields."
+   ]
+  },
+  {
+   "title": "No undo/redo and no area or batch editing: every correction is one irreversible single-stone click",
+   "kind": "missing-feature",
+   "problem": "Requirement 13 (manually change stones, e.g. 'lighter blue') can only be done one piece at a time, and nothing can be undone. Removing a palette colour remaps every stone permanently. A shape change clears that cell's laying progress. A core function to replace a colour within a range already exists but is not reachable from the UI. Correcting a sky or a background means hundreds of separate clicks with no safety net.",
+   "evidence": "Reproduction /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/b1.cjs. Output: 'color before: 03 | after change: 04 | after ctrl+z: 04'. Grep finds no undo in src except 'free.undoPoint' (the freeform point editor). replaceColor in src/core/edits.ts:209 has no caller in src/ui. removePaletteColor is called from src/ui/project/StepColors.tsx:112. setCellKind sets progress to 0 (src/core/edits.ts:77). The README table lists 'Rückgängig (Undo): nicht vorhanden'.",
+   "proposal": "Add an EditJournal in src/core/edits.ts. Each operation stores CellSnapshot{idx, kind, c1, c2, sub?, line?, free?, progress} before and after; only the few affected Map entries are cloned. Palette operations store the previous palette plus the (idx, piece, oldColor) tuples they changed. Cap the stack at about 200 operations or 32 MB. Add ↶/↷ buttons in Preview and Plan, Ctrl/Cmd+Z and Ctrl+Shift+Z, and 'letzten Tap zurück' in laying mode. Add a selection tool in Viewer: a rectangle or lasso in mm, selecting by piece-centroid test. Actions on the selection or section: 'Farbe A → B' (reuse replaceColor with Range); 'heller/dunkler', which picks the palette colour with the smallest ΔE among those with L* ≥ current+3 or ≤ current−3; and 'Form zurücksetzen'. Each batch is one journal entry. Stats are recomputed by the existing worker path.",
+   "files": [
+    "src/core/edits.ts",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/StepPreview.tsx",
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StoneDialog.tsx",
+    "src/ui/project/StepColors.tsx"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#3",
+   "corrected": [
+    "Deliver this in three phases. Phase A is cheapest and helps most.\n\n**Phase A (S): batch colour replacement and two data-loss fixes.**\n- **Section panel** (StepPlan.tsx, next to the existing mark/reset buttons, around lines 205-225): add \"Farbe A → B in diesem Abschnitt\". Section already has r0/r1/c0/c1, so pass it straight to replaceColor(c.layout, c.data, from, to, sec), then call api.touchMosaic() and show the returned count.\n- **Palette table** (StepColors.tsx): add \"alle Steine dieser Farbe → Farbe X\" for the whole mosaic, without deleting the colour (replaceColor with no range).\n- **Confirm before deleting a colour** (StepColors.tsx remove()): show a confirm() that names the stone count and the target colour code.\n- **Stop needless progress resets** (edits.ts setCellKind): return early without touching anything when the kind is unchanged (for LINE, also with the same parameters; for SUB, also with the same k). Also keep progress for a FULL ↔ DIAG change only if a future decision allows it. The minimum fix is: do not clear progress on a no-op.\n\n**Phase B (M): undo and redo.**\n- **Journal module.** Add src/core/editJournal.ts, kept in memory and cleared whenever computeMosaic produces new data.\n- **Cell operations.** For setPieceColor, setCellKind, setFreePieces, togglePiecePlaced, setCellPlaced, setRangePlaced and replaceColor, store per-cell before/after snapshots: {idx, kind, c1, c2, progress, sub?, line?, free?}, with the Map entries cloned. A batch operation becomes one entry holding many snapshots.\n- **Palette operations.** For removePaletteColor (and updatePaletteColor), store the previous palette array. For removal, also store only the pieces that had the removed colour, as (idx, piece). Undo works in two steps: first map every colour value v ≥ removedIndex back to v + 1 across c1, c2, sub and free (the inverse of remapAll), then restore the recorded pieces to removedIndex. As a simpler alternative, snapshot packMosaic(data) for palette operations only; that is about 8 MB at 2 M cells.\n- **Limits.** Cap the journal at about 200 entries or about 32 MB and drop the oldest first.\n- **UI.** Add ↶/↷ buttons in StepPreview and StepPlan. Bind Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z only when focus is not in an input field. After every undo or redo, call touchMosaic or touchProgress so stats are recomputed through the existing worker effect (useProject.ts:239ff) and the change is saved.\n\n**Phase C (M): rectangle selection in Viewer.**\n- **Selection mode.** A toggle that turns drag-to-pan into drag-to-select. Convert the mm rectangle into a row/col Range using layout.colX and layout.rowY, so stats.Range is reused.\n- **Actions.** \"Farbe A → B\" (replaceColor with that range), \"Form zurücksetzen\" (setCellKind FULL for each cell), and \"heller/dunkler\". For each piece, \"heller/dunkler\" picks the existing palette colour with the smallest ΔE2000 among those with L* ≥ L*cur + 3 (or ≤ L*cur − 3). Pieces with no such colour stay unchanged and are counted in the result message. No new colours are ever invented.\n- **Undo.** Each action is one journal entry.\n- **Lasso.** Defer it. If it is added later, select pieces by a centroid-in-polygon test.\n\n**Tests.** In tests/, check that undo after each operation restores packMosaic output byte for byte, and that progress totals are unchanged after undo.",
+    "Phase 0 (S, ship first): guard the destructive actions.\n- StepColors.tsx:108 remove(): count how many stones use the colour (api.stats.perColor[i].pieces) and find the target through the same NearestColorMatcher as removePaletteColor. Then call confirm(t('colors.removeConfirm', {n, code, name, targetCode, targetName})), e.g. \"203 Steine von 09 Hellblau werden zu 10 Blau. Fortfahren?\". Also let the user choose the replacement colour; removePaletteColor already takes a `replacement` argument.\n- StepPlan.tsx:210 \"Abschnitt fertig\": ask confirm() when the section already has partial progress.\n\nPhase 1 (M): EditJournal, a new file src/core/journal.ts, pure TS with vitest tests.\n- Entry types:\n  - CellsEntry: struct-of-arrays, not objects. idx: Uint32Array; kind/c1/c2/progress before and after as typed arrays; side maps of sub/line/free clones only for the affected idx. Used for setPieceColor, setCellKind, setFreePieces, replaceColor in a range, and batch shape reset.\n  - PaletteRemoveEntry: {prevPalette, removedIndex, target, slots}. `slots` holds only the raw slots that held removedIndex: c1 indices, c2 indices, (subIdx, q) and (freeIdx, k). Undo = shift every index ≥ removedIndex up by 1, then write removedIndex back into those slots, then restore prevPalette. This round-trips exactly (verified in /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/value-spec-gaps-3/journal-proto.ts) and its memory grows with the number of stones of that one colour, not the whole project.\n  - PaletteEntry {prev, next} for updatePaletteColor, matchAll and add.\n- Rules:\n  - The stack is LIFO and redo is cleared on every new entry.\n  - compute() in useProject.ts clears both stacks. Optional extra: keep the previous packMosaic plus palette as one \"Neuberechnung rückgängig\" entry, stored in IndexedDB under 'mosaic-prev' so it is not held in RAM.\n  - Cap by bytes (~32 MB) and by entries (~200), dropping the oldest.\n  - The journal lives in memory only and is cleared when the project is closed; say so in the README.\n- useProject exposes undo()/redo()/canUndo/canRedo. Applying an entry calls touchMosaic() (and setPalette for palette entries), so the existing worker stats path recomputes totals. No count or geometry is derived from the journal itself.\n- UI:\n  - ↶/↷ buttons in StepPreview, StepPlan and StoneDialog.\n  - Ctrl/Cmd+Z and Ctrl+Shift+Z / Ctrl+Y, ignored while focus is in an input.\n  - StoneDialog re-reads its cell after undo.\n- Progress gets its own separate small stack in StepPlan laying mode, with a button \"Letzten Tap zurück\" (togglePiecePlaced is its own inverse; setRangePlaced stores the previous progress slice as a Uint16Array per section row range).\n- Update README.md:152 to describe the new state.\n\nPhase 2 (M): batch editing.\n- Viewer gets a \"Auswählen\" toggle. Only in that mode does a one-finger/mouse drag draw a rectangle instead of panning. The rectangle snaps to whole cells via indexAt and yields a Range {r0, r1, c0, c1}.\n- Scope choices: selection, current section (existing sec range), or whole project.\n- Actions, each one CellsEntry:\n  1. \"Farbe A → B\" through replaceColor(layout, data, from, to, range). Before applying, show the number of affected stones as a dry run.\n  2. \"Heller/Dunkler\": per source colour in the selection, pick the palette colour with the smallest ΔE among palette colours with L* ≥ L+3 (or ≤ L−3). Only existing palette colours are used. If none qualifies, show \"Keine hellere Farbe in der Palette – bitte Farbe hinzufügen\" instead of inventing one. Before applying, show the mapping, e.g. \"09 → 05 (ΔE 4,1)\".\n  3. \"Form zurücksetzen (ganzer Stein)\" through setCellKind FULL. Warn when the selection contains laid stones, because their progress will be cleared (undo restores it).\n- Lasso selection and per-piece selection are deferred to a later step.\n- Tests:\n  - undo/redo round-trip equality of packMosaic after mixed sequences (colour, kind, free, palette remove, range replace).\n  - stats.pieces unchanged by colour batches, and per-colour counts sum to the total.\n  - memory of a palette-remove entry ≤ 8 bytes × stones of that colour."
+   ]
+  },
+  {
+   "title": "Plans and cut templates can only be exported as PDF or CSV; there is no vector SVG or image PNG export",
+   "kind": "missing-feature",
+   "problem": "Professional users print templates on large-format plotters, cut stencils, or put a plan on a tablet as an image. The exact polygons exist (cellPieces, analyzeCut) and are drawn on screen as SVG (CutTemplateSvg), but they cannot be exported as SVG at true scale in mm or as a PNG preview. The only outputs are a multi-page PDF and a coordinate CSV.",
+   "evidence": "Grep over src finds no PNG or SVG export, only JPEG thumbnails (src/ui/project/imagePrep.ts:140). Exports are the PDF (src/ui/project/StepPdf.tsx) and CSV (src/ui/project/StepPlan.tsx exportCsv). src/ui/project/CutTemplateSvg.tsx renders on screen only.",
+   "proposal": "Add a worker job 'svg' that builds, for the whole project or one section, an SVG with width/height in mm and viewBox in mm, from cellPieces polygons at exact coordinates. Layers (<g>): stone fills (palette HEX), colour codes, cell IDs, joint and grid lines, section joining marks. Add a 'Schnittvorlagen.svg' that groups templates by analyzeCut signature: polyInRaw, cutLines and edge-length labels, each with its count. Add PNG export of the preview at a chosen px/mm via renderFull with canvas.toBlob('image/png'). Save through the existing downloadBlob or platform share.",
+   "files": [
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts",
+    "src/core/pieces.ts",
+    "src/ui/project/StepPdf.tsx",
+    "src/ui/project/StepPlan.tsx",
+    "src/core/render.ts"
+   ],
+   "impact": 2,
+   "effort": "S",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#12",
+   "corrected": [
+    "Drop the SVG part, since the vector PDF at 1:1 on A0 or custom paper and its template pages already cover plotters and stencils. If anything is built, make it a small \"save preview as PNG\" button only:\n- **Where:** add the button in StepPreview or Viewer.\n- **How:** render the full mosaic through the existing render.ts full-render path onto an OffscreenCanvas at a pixel density the user picks (for example 2/4/8 px per mm). Cap the long side at about 8000 px and show the actual px per mm used. Export with convertToBlob({type:'image/png'}).\n- **Saving:** go through the existing downloadBlob, which already uses Capacitor saveNative/Share on Android (components.tsx:157, platform.ts:20-31).\n- **Labelling:** mark the file as a preview image, not a true-scale plan, so it is never mistaken for cut dimensions (requirement 18).\n\nEffort S, impact 1-2.",
+    "Low priority, built in this order.\n\n(A) PNG preview export (effort S, do first). In StepPreview.tsx and StepPdf.tsx, add a button \"Vorschau als Bild (PNG)\".\n- Call renderFull(layout, data, palette, maxPx, {groutHex, realistic, surface}).\n- Let the user pick maxPx from 2000, 4000 or 8000 (8000 on desktop only). Clamp so that W*H stays at or below 40 MP, and use 16 MP when isNative().\n- Encode with cv.convertToBlob({type:'image/png'}), name the file <name>_vorschau.png and save it via the existing downloadBlob, which already handles Capacitor share.\n- Also offer it for one selected section by rendering a View clipped to the section rect.\n- Label it \"Vorschau – kein maßstäblicher Plan\". A bitmap at arbitrary px is not a 1:1 plan.\n\n(B) SVG export, per section or a selected range only (effort M). Add a worker job 'svg' in protocol.ts and compute.worker.ts, with a pure function buildSectionSvg(layout, data, palette, rect) in a new src/core/svg.ts.\n- Root element: `<svg width=\"{w}mm\" height=\"{h}mm\" viewBox=\"X0 Y0 w h\">`, with coordinates in mm from the project origin. This keeps it consistent with the CSV and PDF coordinates.\n- Stone polygons: use cellPieces directly, with no simplification, and coordinates written with 3 decimals.\n- Layers as `<g id>`: stones (fill = palette hex), codes, IDs, grid, section and joining marks.\n- Refuse, with a message pointing to the PDF and CSV, when the range has more than about 150k stones, or when the estimated output is over about 50 MB.\n\n(C) Cut-template SVG. Reuse collectTemplates(layout, data, palette, materials, cache) from pdf.ts so that the T-numbers and counts match the PDF and the stone dialog exactly.\n- Draw each group at 1:1 in mm: dashed rawW x rawH rectangle, the polyInRaw contour, the red cutLines, the edge labels from ci.edges, and \"T{no} · {count}×\".\n- Lay the groups out in a simple grid.\n- Groups where ci.fits is false or the piece cannot be cut must carry the same warning text as the PDF. No dimensions may be shown that differ from analyzeCut.\n\n(D) Hint in the UI: \"Für 1:1-Druck PDF mit 'Tatsächliche Größe' verwenden; SVG für Vektorprogramme/Schneideplotter\" (use the PDF at actual size for 1:1 printing; SVG is for vector programs and cutting plotters).\n\n(E) Tests:\n- The number of polygons in the SVG equals the stats stone count for that range.\n- Every polygon equals cellPieces to within 0.001 mm.\n- Template group numbers and counts are identical to collectTemplates.\n- The width and height attributes equal the range size in mm.\n- The PNG dimensions respect the cap."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w6-fine-tiles",
+   "title": "Fine stones in real buyable sizes for faces and details (mixed sizes, stage 1)",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/types.ts",
+    "src/core/stats.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepColors.tsx",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w6-colour-measure",
+   "title": "Measure material colours from a photo on any device",
+   "ownedFiles": [
+    "src/ui/Materials.tsx",
+    "src/core/materialsCsv.ts"
+   ]
+  },
+  {
+   "id": "w6-plan-exports",
+   "title": "Streaming CSV for millions of stones and paper-matched section presets",
+   "ownedFiles": [
+    "src/core/csv.ts",
+    "src/workers/client.ts",
+    "src/ui/project/StepPlan.tsx"
+   ]
+  },
+  {
+   "id": "w6-pdf-finish",
+   "title": "Exact page counts, labelled parts, coordinate mode choice, PDF on the fast stats engine",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "src/core/pdfPlan.ts",
+    "tests/pdf.test.ts",
+    "src/workers/compute.worker.ts",
+    "src/workers/protocol.ts",
+    "src/ui/project/StepPdf.tsx"
+   ]
+  }
+ ]
+}

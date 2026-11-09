@@ -1,0 +1,190 @@
+{
+ "wave": 3,
+ "waveName": "Wave 3 – Mosaic colour quality, live preview, freeform, face guidance, viewer features, PDF foundations, portability",
+ "package": {
+  "id": "w3-colour-quality",
+  "title": "Smoother colour gradients without stray colours, better 'own materials' palettes",
+  "goal": "The default output has smoother skin and sky gradients with no stones in an unrelated hue. 'Automatisch → eigene Materialien' really uses the requested number of materials and picks them well. Image colours the owned tiles cannot match are listed honestly.",
+  "findingIds": [
+   "algo-quality#1",
+   "algo-quality#7",
+   "spec-gaps#4"
+  ],
+  "ownedFiles": [
+   "src/core/mosaic.ts",
+   "src/core/color.ts",
+   "src/core/kmeans.ts",
+   "src/core/types.ts",
+   "src/ui/project/StepColors.tsx",
+   "tests/pipeline.test.ts",
+   "tests/golden/mosaic-hashes.json"
+  ],
+  "newFiles": [
+   "tests/w3-colour-quality.test.ts",
+   "src/i18n/ext/w3-colour-quality.ts"
+  ],
+  "steps": [
+   "color.ts: add NearestColorMatcher.candidates(l, a, b, T=3). It returns up to 6 Euclidean-nearest allowed colours whose ΔE is within ΔE(nearest)+T, cached with the same quantised key as nearest().",
+   "mosaic.ts, FULL branch of Floyd-Steinberg: get the candidates from the cell's UNDITHERED analysed colour. Pick the candidate with the minimum ΔE to colour + error. Diffuse the residual exactly as today (7/5/3/1 split, ±25 clamp, scaled by the dither factor). Leave SUB, LINE and DIAG unchanged.",
+   "types.ts: set DEFAULT_SETTINGS.dither to 0.5. This affects new projects only. Override colors.ditherHint with the honest trade-off text ('weichere Verläufe, aber mehr Farbwechsel beim Legen; 0 % = einfarbige Flächen'). Override compute.meanDE to 'ΔE je Stein'.",
+   "Contract for wave 4: add ProjectSettings.pinnedColors?: {hex:string; name?:string}[] and ComputeParams.pinnedColors?: FixedColor[]. Both stay unused in this wave.",
+   "auto-snap: replace snap-and-merge.\n- Summarise the weighted samples with kmeansLab at K' = min(256, n) and weight each centre.\n- Precompute D[K'×materials] with params.deltaE.\n- Seed with the snap set, then add greedily until k is reached or nothing adds gain.\n- Run at most 2 FastPAM swap passes, with nearest/second-nearest caches and a 1.5 s cap.\n- Cost is measured with the same matcher as the final assignment.\n- Guard: keep the new set only if its cost is ≤ the snap set's cost.\n- Deterministic for a given seed.\n- Optional tie-break of -0.5 ΔE for FixedColor.stock > 0, applied in selection only.",
+   "Missing colours: in auto-snap, centres whose nearest material is more than ΔE 5 away go into diagnostics.missingColors {hex, lab, stones, nearestMaterialId, deltaE}. Count stones exactly with a nearest-centre pass in the assignment loop. StepColors shows them in a panel 'Fehlende Farben – Farbton zum Nachkaufen (Zielwert)'. Never name a product."
+  ],
+  "acceptance": [
+   "Dither 0 vs 1 on the portrait sample: data.kind is identical, and stats pieces, gridPositions and the per-colour sum are identical.",
+   "At dither 1, stones whose colour is more than 5 ΔE worse than the nearest palette colour number at most the dither-0 count plus 1 % of stones.",
+   "Perceived ΔE (blur σ = 1 cell, linear light) at 0.5 is ≤ the value at 0 on all 4 samples.",
+   "Scratch bench at 2M cells, 200 colours: the assign phase at dither 0.5 is faster than today's 11 s. Report the number.",
+   "auto-snap with a 336-colour gamut catalogue and k=24 on 4 samples:\n- palette.length = min(24, colours that receive stones);\n- mean ΔE ≤ the old snap result;\n- kind arrays are identical to the snap path;\n- every materialId is in the pool;\n- deterministic.",
+   "Golden fixture updated deliberately, with the diff explained."
+  ],
+  "risk": "Effort M-L. Changing the default dither changes the look of new projects; the hint states the trade-off. The selection must be bounded in time for large material DBs."
+ },
+ "findings": [
+  {
+   "title": "Dithering scatters off-colour stones (orange in cheeks, black in hair); restricting it to similar colours keeps most of the benefit",
+   "kind": "quality",
+   "problem": "On real photos, reducing to the palette is the largest error source. With unlimited colours the same geometry reaches a perceived ΔE of 0.29–0.32; with 32 k-means colours it is 1.38–1.93 (4–6×). This shows up as large flat patches and false contours in smooth backgrounds and skin. The only remedy, Floyd-Steinberg (mosaic.ts:493-519), picks the colour nearest to target + error from the whole palette, with errors clamped only at ±25. It therefore drops stones of a different hue into faces and hair. It also diffuses error only through FULL cells (split and SUB cells neither receive nor pass it on) and scans in one direction only. The default is 0 %, so most users get the banding.",
+   "evidence": "Script /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/exp-proto.ts, with prototype .../algo-quality/proto/mosaic-proto.ts (a copy of mosaic.ts plus options); output .../out/results/exp-proto.txt. Figures are perceived ΔE (σ = 1 pitch, stones only) / outlier stones (assigned colour more than 10 ΔE worse than the nearest palette colour). Astronaut: baseline 1.93/70, app FS 100 % 1.62/102, constrained FS (T=3) 1.74/70. Obama: 1.38/28 → FS 1.16/38 → constrained 1.21/28. Portrait sample: 0.97/53 → 0.49/57 → 0.57/53. Visual: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/out/astro-fs-vs-t3.png (left: app FS, with orange cheek stones and black/white specks in the hair; right: constrained) and .../out/astro-dither-cmp.png (patches without dithering).",
+   "proposal": "In the assignment loop of computeMosaic, restrict the FS candidates to palette colours whose ΔE00 to the cell's own undithered colour is ≤ d_nearest + T (T ≈ 3, exposed as 'Mischstärke'). Precompute the K nearest palette neighbours per colour so the cost stays O(N·K). Scan serpentine. Diffuse error also into and through LINE/DIAG/SUB pieces, weighted by area. Halve the error inside face regions and on strong edges (dmap > 0.6) to keep contours crisp. Then make about 50 % the default. Expected: 10–45 % lower perceived ΔE than today's default with no added off-colour stones (verify with the outlier count above in a unit test).",
+   "files": [
+    "src/core/mosaic.ts",
+    "src/core/color.ts",
+    "src/core/types.ts",
+    "src/ui/project/StepColors.tsx"
+   ],
+   "impact": 4,
+   "effort": "S",
+   "dim": "algo-quality",
+   "id": "algo-quality#1",
+   "corrected": [
+    "Drop the constrained-candidate machinery and the new 'Mischstärke' option: at the proposed 50 % default they change nothing measurable. If anything, make one low-cost change. In src/core/mosaic.ts, at the FS branch (line ~500), reject a candidate whose ΔE00 to the cell's own undithered colour exceeds d_nearest + 5. This only takes effect above about 60 % and keeps the 100 % setting from placing orange or black stones in skin and hair (about 0.1–0.4 % of stones at 5 mm / 32 colours). Compute it in the same palette loop as nearestExact, so the cost stays O(P). Keep the default at 0 %. Alternatively, offer an explicit before/after toggle in StepColors.tsx so the user decides between smoother gradients and fewer single stones. Do not ship it as a silent default change. If the default is changed, say honestly that it brings about 5–19 % lower perceived ΔE but 1.2–10× more single-colour stones. Do not quote the 10–45 % figure.",
+    "Keep it to three changes. Do not diffuse error into or through split/SUB cells. Skip serpentine scanning and face/edge damping. Do not add a second slider.\n\n1) Constrained, fast candidate choice (src/core/color.ts and src/core/mosaic.ts:493-519). Add NearestColorMatcher.candidates(l, a, b, T). It returns the indices of the K=6 Euclidean-nearest allowed palette colours (as nearestExact already finds them) for which ΔE(l, q) ≤ ΔE(l, nearest) + T. Cache the list with the same quantised key as nearest(). In the FULL branch of the assignment loop, call it with the UNDITHERED analysed colour (fromQ(c1Lab, idx)). Then choose the candidate with minimum ΔE to target = colour + error, and diffuse the residual exactly as today: 7/5/3/1 split, ±25 clamp, scaled by the dither factor. Fix T at 3 ΔE00 as an internal constant. Leave the SUB and LINE/DIAG branches unchanged, so split cells still stop error at contours and do not end up with two halves of the same colour.\n\n2) Default (src/core/types.ts:202): set dither to 0.5. This affects only new projects, because stored projects keep their value (src/storage/projects.ts:12-19). Change colors.ditherHint in de/en/tr to describe the trade-off honestly. For example in German: 'Mischt benachbarte, ähnliche Farbtöne für weichere Verläufe (Haut, Himmel). Höher = weniger Farbflächen, aber mehr Farbwechsel beim Legen. 0 % = einfarbige Flächen.' Optionally label the ΔE row in StepCompute.tsx:90 as 'ΔE je Stein'.\n\n3) Tests (tests/pipeline.test.ts).\n(a) For the portrait sample at dither 0 vs 1, data.kind must be identical, and computeStats pieces, gridPositions and the per-colour sum must be identical. This proves geometry and counts are unaffected.\n(b) At dither=1, the number of stones whose assigned colour is more than 5 ΔE00 worse than the nearest palette colour (relative to the cell's analysed colour, which can be exposed as diagnostics.ditherExcessMax or as a count) must be at most the dither=0 count plus 1 % of stones.\n(c) Performance guard: on the 2-million-position test with dither 0.5, the assign phase must not be slower than today's measured 11 s, and the target is a few seconds.\n\nExpected result, measured with the scratch prototype: perceived ΔE 9–30 % lower than today's default on five test images (astronaut −9 %, Obama −9 %, portrait −30 %, cat −11 %, landscape −25 %). No additional off-colour stones at any slider position. Geometry, cut templates and all counts unchanged."
+   ]
+  },
+  {
+   "title": "'Automatisch → eigene Materialien' silently delivers far fewer colours than requested",
+   "kind": "quality",
+   "problem": "auto-snap (mosaic.ts:443-462) snaps each k-means centre to its nearest material and removes duplicates. When several centres map to the same material, the user gets fewer colours than requested, and the UI does not say so (StepColors only shows the final palette.length). Because the material set is never searched directly, the chosen subset is also not optimal.",
+   "evidence": "Script /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/exp-snap.ts, run against a 336-colour synthetic catalogue (Lab grid inside the sRGB gamut). Colours delivered: chelsea (CC0 cat photo) 24 requested → 13, 32 → 14; obama 24 → 17, 32 → 21; astronaut 32 → 29. Direct subset selection (greedy + swap on area-weighted ΔE00 over the catalogue) uses all 24/32 colours and lowers perceived ΔE: chelsea 3.66 → 3.38 (−8 %), obama 3.94 → 3.79 and 3.83 → 3.68, astronaut 4.28 → 4.09 (32 colours).",
+   "proposal": "Replace snapping with k-medoids over the material set: greedy max-gain initialisation, then PAM swap passes over at most about 20 k sampled piece colours with the existing area/region weights, distances via NearestColorMatcher/ΔE00. Add a small cost bonus for materials in stock (requirement 8: prefer owned colours). Show 'angefordert 24 – verwendet 24' and warn if the material set has fewer usable colours than requested.",
+   "files": [
+    "src/core/mosaic.ts",
+    "src/ui/project/StepColors.tsx"
+   ],
+   "impact": 3,
+   "effort": "M",
+   "dim": "algo-quality",
+   "id": "algo-quality#7",
+   "corrected": [
+    "1) src/core/mosaic.ts, 'auto-snap' branch: replace the snap-and-merge step (lines 443-462) with direct subset selection from the material pool. Keep it fast by working on a histogram instead of raw samples.\n   (a) Reuse the existing weighted samples (pts/ws). Map each sample to its nearest material with a NearestColorMatcher built over `fixed`, using the project's deltaE setting, and add its weight to that material. The result is the set U of materials that are useful for this image, each with a weight.\n   (b) If |U| ≤ colorCount, take all of U.\n   (c) Otherwise run weighted k-medoids. Points are the materials in U with their weights; candidates are all materials in `fixed`. Precompute the distance matrix |U|×|fixed| with ΔE00 (or ΔE76). Start greedily with the candidate that lowers cost the most, then do at most 2 swap passes with nearest/second-nearest caching. If |U|·|fixed|·k > ~5e7, stop after the greedy step.\n   Validated in repro3.ts: it always delivers the requested count when enough useful materials exist, and mean ΔE00 drops about 3% compared with snapping.\n2) Optional stock preference (requirement 8): add `stock?: number` to FixedColor and fill it in useProject.ts:290-292. In the medoid cost, multiply the distance for materials with stock > 0 by a small factor (e.g. 0.97). Use only real materials, so no invented colours enter the palette (requirement 18).\n3) Return `requestedColors` and `usableMaterialColors` (= |U|) in ComputeDiagnostics. In StepColors and StepPreview, show \"angefordert 24 – verwendet 24\" (de/en/tr). If |U| < requested, show a warn Badge: \"Für dieses Bild passen nur N Ihrer Materialien – mehr Farben im Materialbestand anlegen oder Modus 'Automatisch' wählen.\"\n4) In StepCompute.tsx:41, show the used count after computing instead of only s.colorCount. Update the 'colors.mode.auto-snap.hint' strings so they no longer promise a 1:1 replacement.\n5) Add a vitest in tests/: with a ≥100-colour catalogue and colorCount=24, auto-snap returns min(24, |U|) colours, and its meanDeltaE is ≤ the old snap result on a sample image.\nEffort: M. Impact: 3. The user clearly notices \"32 requested, 14 delivered\"; the ΔE improvement is small.",
+    "1) src/core/mosaic.ts, 'auto-snap' branch: keep the existing weighted sample (pts/ws). Build a weighted summary with kmeansLab(pts, ws, K'=min(256, n)) and weight each centre by its assigned sample weight (sum of ws). Precompute D[K'×nMaterials] with the formula in params.deltaE.\n- Seed the selection with the current snap set, so it never starts with fewer colours. Then greedily add the material with the largest weighted gain until k is reached or no material adds positive gain.\n- Then run at most 2 swap passes, FastPAM-style with nearest/second-nearest caches and a time cap of about 1.5 s; stop early on no improvement. Keep the result deterministic: no randomness beyond params.seed.\n- Compute the cost exactly as the final assignment will see it, with NearestColorMatcher or exact ΔE00 after fix 2. Keep the new set only if its summary cost is no higher than the snap set's (guard).\n\n2) Prerequisite in src/core/color.ts, NearestColorMatcher.nearestExact: the top-6 Euclidean prefilter misses the ΔE00-nearest colour for about 35 % of samples on coarse material palettes. Use exact ΔE00 over all entries when the palette has ≤ 64 colours, and raise the prefilter K to about 24 otherwise. The quantised cache already bounds the cost for dither=0. Add a vitest comparing it with brute force (≥ 99.5 % agreement on random Lab points for a 78-colour gamut grid).\n\n3) Optional preference for stocked materials (requirement 8), as a tie-breaker in the selection only: subtract a small fixed ΔE bonus such as 0.5 for materials with stock > 0. Never apply it in the per-stone assignment. Say so in the hint text.\n\n4) Honest reporting:\n- Add requestedColors and usedColors (palette.length after unused colours are removed) to ComputeDiagnostics.\n- StepCompute.tsx:41 and the preview summary show \"angefordert 24 – verwendet 24\". When used < requested, show a warn Badge: \"Nur 17 Ihrer Materialien verbessern das Bild – weitere Farben würden keine Steine erhalten\" (or \"Materialauswahl hat nur N Farben\").\n- Update the colors.mode.auto-snap.hint text in de/en/tr.\n\n5) Tests in tests/*.test.ts:\n- palette.length === min(k, colours that receive stones); every palette entry's materialId is in the pool.\n- data.kind is identical to the snap path, and per-colour stone counts add up to the stone total.\n- Deterministic for a fixed seed.\n- Selection summary cost ≤ snap summary cost on portrait/landscape/animal/city with a 78- and a 336-colour gamut catalogue."
+   ]
+  },
+  {
+   "title": "Material matching ignores stock, silently merges colours and never reports which image colours the owned tiles cannot match (req. 8)",
+   "kind": "missing-feature",
+   "problem": "Requirement 8 asks the app to prefer owned colours and to suggest the nearest one when a colour is missing. In 'auto → eigene Materialien' mode, several image colours that snap to the same material are merged without notice. The ΔE gap is computed and then thrown away (PaletteColor.deltaE is declared but never set). Material.stock is never used in the assignment, so over-use only shows up afterwards as a red minus number. There is no notion of owned versus to-buy, and no list of colours to buy.",
+   "evidence": "/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/spec-gaps/core3.ts (output in core3.out), using 12 generic test-only materials with stock 200: '32 requested → auto-snap palette size 10'; mean ΔE 1.58 → 9.99 (p95 16); 'deltaE fields populated: 0'. Worst gap: image colour #2D503C, nearest material #2E7D32, ΔE 19.1. Every over-used colour exceeds its stock, e.g. '#6FA8DC needs 1610 raw, stock 200 → short by 1410 (assignment ignored stock)'. Code: FixedColor has no stock (src/core/mosaic.ts:16-21). useProject.ts:292 drops stock when building the palette. Stock is only shown afterwards (src/ui/project/StepPlan.tsx:419-421). types.ts:59 declares deltaE, and nothing assigns it.",
+   "proposal": "1) In auto-snap, write the centre→material ΔE (already computed as bd in mosaic.ts around line 450) into PaletteColor.deltaE. Report merges, e.g. '32 angefragt → 10 Materialfarben (22 Bildfarben zusammengelegt)'. 2) Add a 'Fehlende Farben' panel listing image colours whose nearest owned material is > ΔE 5 away, with Lab, HEX and stone count. This is an honest shopping specification and invents no product. 3) Add Material.owned (or treat stock>0 as owned) and a 'bevorzugen' weight: cost = ΔE + λ·[nicht vorhanden]. 4) Add a stock-constrained post-pass in the worker. Keep the per-piece source Lab, which is already quantised as c1Lab/c2Lab/subLab in computeMosaic. For each colour whose need exceeds stock, reassign the pieces with the smallest ΔE increase to the next colours that still have stock (greedy by marginal cost, or min-cost flow), until need ≤ stock. Report the stones changed and the new mean or p95 ΔE. If no assignment is possible, say so instead of hiding it.",
+   "files": [
+    "src/core/mosaic.ts",
+    "src/core/types.ts",
+    "src/ui/project/useProject.ts",
+    "src/ui/project/StepColors.tsx",
+    "src/ui/Materials.tsx",
+    "src/workers/compute.worker.ts"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "spec-gaps",
+   "id": "spec-gaps#4",
+   "corrected": [
+    "1) Honest per-colour ΔE (S), in src/core/mosaic.ts.\n- In `track()` (around line 481), keep per-palette-index arrays `sumDE[pi]`, `maxDE[pi]` and `cnt[pi]`.\n- When building the palette (line 572), set `deltaE = sumDE/cnt` (rounded) and add an optional `maxDeltaE` field to `PaletteColor` in types.ts. This is the real stone-to-assigned-colour gap and works in every mode.\n- In auto-snap, also store `mergedFrom` = the number of k-means centres that snapped to each material (from the existing `used` map).\n\n2) Fix the misleading UI column (S), in src/ui/project/StepColors.tsx around lines 178-200.\n- In auto-snap and materials mode, show `p.deltaE` (mean, with max as tooltip), warning above 5, instead of the trivial palette-to-material ΔE of 0,0.\n- Above the palette table, add a notice such as \"32 angefragt → 10 Materialfarben (22 Bildfarben zusammengelegt)\" when `palette.length < colorCount`.\n- Add the i18n keys to de, en and tr.\n\n3) \"Fehlende Farben\" list (S-M).\n- In auto-snap, also return the k-means centres from `computeMosaic`, each with its Lab, HEX, nearest material and ΔE, and its stone weight. For the weight, count the sampled weights `ws` per centre with a nearest-centre pass over `pts`.\n- Show every centre whose nearest-material ΔE is above 5 as a shopping specification: HEX, Lab, approximate stone share, and \"nächstes eigenes Material XY, ΔE n\". Label it as a colour target, not a product. Add it to the PDF material list as well.\n- In plain auto mode, reuse the existing link-materials ΔE instead.\n\n4) Stock (default unchanged).\n- Add a summary banner in StepPlan and StepColors listing every colour where raw tiles with reserve exceed `stock` (stock > 0 only, so empty stock still means unknown), with the total shortfall to buy.\n- Optional, opt-in setting \"Nur vorhandenen Bestand verwenden\" (L), implemented inside `computeMosaic`, which holds the per-piece Lab:\n  - after the normal assignment, compute raw-tile need per colour using the same yields as stats.ts (diagonal triangle = 2 pieces per tile, etc.) plus the reserve;\n  - greedily move the pieces with the smallest ΔE increase to the next-nearest colour that still has stock until need ≤ stock;\n  - report the number of stones changed and the new mean and p95 ΔE;\n  - if total stock is below total need, refuse with an explicit message instead of producing a partial result.\n\nDrop the separate `Material.owned` flag. The DB is already the user's own stock.",
+    "Order: honest reporting first (S/M), then preferring owned colours (S). Any automatic stock rebalancing stays opt-in.\n\nA) Exact ΔE per colour from the real stones (mosaic.ts, assignment loop at lines ~479-548).\n- Next to `track(l, pi)`, keep per palette index: piece count, sum of ΔE, max ΔE, and the number of pieces above ΔE 5 and above ΔE 10. Use the source Lab, which the loop already has (c1Lab, c2Lab, subLab), not the dithered target.\n- Remap these through `keep`/`remap` and store them on PaletteColor as `matchDeltaE?: { mean, max, over5, over10 }`. Either repurpose the existing `deltaE?` field or replace it.\n- In StepColors, for 'auto-snap' and 'materials' mode, show \"Ø ΔE x / max y (n Steine > 5)\" instead of the palette-vs-own-material ΔE, which is always 0.\n- Clear `matchDeltaE` in `updatePaletteColor` when the hex or material changes, in single-stone recolours, and in `removePaletteColor` (src/core/edits.ts). Then show \"– (nach manueller Änderung neu berechnen)\" rather than a stale number.\n- In StepCompute, add \"32 angefragt → 10 Materialfarben (22 Bildfarben zusammengelegt)\". These numbers come from km.centers.length and used.size.\n\nB) Panel \"Fehlende Farben / Einkaufsempfehlung\" (auto-snap mode).\n- Run the k-means as today, plus a second NearestColorMatcher over km.centers. In the assignment loop, find each piece's nearest centre from its source Lab and count pieces per centre exactly. Do not use the sampled k-means weights, which are estimates.\n- For each centre whose nearest material is more than ΔE 5 away (adjustable), list: HEX, Lab, exact stone count, the material used instead, and the ΔE.\n- Label it \"Farbton zum Nachkaufen (Zielwert)\". Never name a product.\n- For 'materials' mode: run k-means only on pieces whose ΔE is above the threshold, list the resulting centres the same way, or mark this as \"nicht verfügbar\" in the README limitations table.\n\nC) Owned versus to-buy.\n- Add an explicit `Material.owned?: boolean`, default true, to keep existing data. Add a checkbox in Materials.tsx and a CSV column.\n- In auto-snap, pick the material by cost = ΔE + λ·[not owned], with a \"bevorzugen\" slider (0 = only colour accuracy). Report how many centres switched to an owned colour and the ΔE change.\n\nD) Instead of the automatic stock post-pass, an exact shortfall and shopping list (StepPlan, computed with stats.ts).\n- Per material: need incl. reserve, stock, shortfall in pieces, packs to buy (ceil(shortfall/piecesPerPack)), and cost from price.\n- Treat stock 0 as \"nicht vorrätig\". Fix the `stock > 0` condition at StepPlan.tsx:419, which currently hides a stock-0 shortfall.\n- Add a CSV/PDF export of this list.\n- Optional manual action \"Bestand reicht nicht → Steine dieser Farbe teilweise ersetzen\". Preview the count and the ΔE increase from per-piece source Lab, exclude face/eye regions by default, re-run stats afterwards, and refuse with a clear message when total stock is below total need.\n- Any automatic stock-constrained reassignment must use the stats.ts raw-yield function, not piece counts, so stock and need stay in the same unit.\n\nTests:\n- `matchDeltaE` counts add up to the total piece count.\n- Missing-colour stone counts add up to the total piece count.\n- After edits, `matchDeltaE` is cleared.\n- The shortfall equals rawWithReserve − stock, including stock = 0."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w3-live-preview",
+   "title": "Live mosaic preview in steps 2-6, instant 'Übernehmen', compute that survives navigation",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/workers/client.ts",
+    "src/ui/project/Workspace.tsx",
+    "src/ui/project/StepCompute.tsx"
+   ]
+  },
+  {
+   "id": "w3-freeform-editor",
+   "title": "Reliable freeform validation and a usable contour editor",
+   "ownedFiles": [
+    "src/core/edits.ts",
+    "src/core/geometry.ts",
+    "src/core/pieces.ts",
+    "src/ui/project/StoneDialog.tsx"
+   ]
+  },
+  {
+   "id": "w3-face-guidance",
+   "title": "Face resolution guidance, detail meter, safe region drawing, translated layout errors",
+   "ownedFiles": [
+    "src/core/layout.ts",
+    "src/ui/project/StepGeometry.tsx",
+    "src/ui/project/StepShapes.tsx"
+   ]
+  },
+  {
+   "id": "w3-viewer-features",
+   "title": "Rulers, section focus, paint/rectangle modes and photo comparison in the viewer",
+   "ownedFiles": [
+    "src/core/render.ts",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/StepPreview.tsx"
+   ]
+  },
+  {
+   "id": "w3-pdf-foundations",
+   "title": "Readable tables, correct labels, honest truncation, bookmarks and print-at-100 %",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "tests/pdf.test.ts"
+   ]
+  },
+  {
+   "id": "w3-project-portability",
+   "title": "Project export/import carries its materials",
+   "ownedFiles": [
+    "src/storage/projects.ts",
+    "src/ui/Projects.tsx"
+   ]
+  }
+ ]
+}

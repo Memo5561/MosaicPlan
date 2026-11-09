@@ -1,0 +1,166 @@
+{
+ "wave": 4,
+ "waveName": "Wave 4 – Cut placement & accents, laying workbench, progress engine, PDF sheet structure, offline face detection",
+ "package": {
+  "id": "w4-cut-placement-accents",
+  "title": "Cuts where they matter, colours the face needs, optional continuous contours",
+  "goal": "The user can focus cutting work on marked faces and details. Small but essential colours such as pupils can be detected and pinned. Contour cuts can optionally line up across neighbouring stones. Diagnostics show where the cuts went.",
+  "findingIds": [
+   "algo-quality#3",
+   "algo-quality#6",
+   "algo-quality#5"
+  ],
+  "ownedFiles": [
+   "src/core/mosaic.ts",
+   "src/core/types.ts",
+   "src/core/kmeans.ts",
+   "src/ui/project/StepShapes.tsx",
+   "src/ui/project/StepColors.tsx",
+   "src/ui/project/StepCompute.tsx",
+   "tests/golden/mosaic-hashes.json"
+  ],
+  "newFiles": [
+   "tests/w4-cut-placement-accents.test.ts",
+   "src/i18n/ext/w4-cut-placement-accents.ts"
+  ],
+  "steps": [
+   "types.ts ShapeOptions: add bgCutFactor?: number (undefined means 1) and contourContinuity?: boolean (default false). mosaic.ts: only when a face or detail region exists and the cell is outside all regions, multiply lambda by bgCutFactor. When bgCutFactor > 1, disallow SUB outside regions. Without regions the output stays bit-identical.",
+   "Diagnostics: count splitCellsInRegions and subCellsInRegions exactly from data.kind. StepCompute shows 'Zellen mit Schnitt: X (davon Y in markierten Bereichen)'.",
+   "StepShapes: add a slider 'Schnitte außerhalb markierter Bereiche' from 'viele' (×1) to 'wenige' (×6), shown only when regions exist. Add a preset 'Schnitte auf Gesicht konzentrieren' (×3) and the hint to mark hair and contours as detail regions.",
+   "Accents: after assignment, collect stones whose analysed colour is more than ΔE 10 from their assigned colour. Group them greedily by ΔE76 < 6, keep groups of at least 2 stones, and put the top 3 in diagnostics.missingAccents {lab, hex, stones, meanDE, cellIds}. The suggested colour is the measured mean.",
+   "pinnedColors (the field from wave 3, passed by w4-progress-engine): in auto and auto-snap mode, run k-means with k − pinned and add the pinned colours unchanged (snapped to the nearest material in auto-snap). The existing unused-colour filter may drop them; StepColors then says the colour was not needed.",
+   "StepColors: add a pinned-colour list (add a hex, remove). StepCompute and StepColors show missingAccents, e.g. '8 Steine (z. B. Pupillen) ohne passende Farbe (ΔE 13,6) – Vorschlag #1D1F1B', with the stone IDs and an 'Als Pflichtfarbe übernehmen' button. That button only changes settings, so the project becomes stale.",
+   "Optional contourContinuity:\n- Store each LINE cell's line in page coordinates.\n- For the left and top neighbours, find anchor points on the joint midline and give a bonus of 0.6·λ·NS to candidates on the existing 0.5 mm grid that pass within 0.5 mm of an anchor. Halve the bonus inside faces.\n- Do not add off-grid offsets."
+  ],
+  "acceptance": [
+   "Portrait sample with its face region, bgCutFactor 3: cut cells outside the region drop by ≥30 % and cut cells inside drop by ≤25 %. Without regions the output equals golden for every factor.",
+   "Portrait at 32 colours: missingAccents contains an entry with L* < 15 and at least 2 stones. After pinning its hex, the pupil stones' ΔE00 is ≤ 3 and meanDeltaE rises by ≤ 0.05. A pinned hex appears unchanged in the palette whenever stones use it.",
+   "contourContinuity off equals golden. When on, on the portrait sample at 5×5 mm: the share of facing cut pairs that align within 1 mm is ≥ 65 %, distinct cut-template signatures rise by ≤ 10 %, and meanDeltaE rises by ≤ 0.1.",
+   "All count and geometry invariants hold, and the golden fixture is updated deliberately."
+  ],
+  "risk": "Effort L. Keep all three features off or neutral by default so existing projects compute the same unless the user opts in."
+ },
+ "findings": [
+  {
+   "title": "Cutting effort goes to backgrounds and textures, not to the face; a background penalty halves the cuts at no visible cost",
+   "kind": "quality",
+   "problem": "The cut cost λ depends only on the detail map and on face/detail regions (mosaic.ts:228-233). There is no penalty for the background and no global cut budget, so flags, wood grain and reflections get as many cuts as the face. The user is handed thousands of cut stones (astronaut 60×60 cm: 2,590), most of them in unimportant areas.",
+   "evidence": "Script /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/exp-misc.ts (output .../out/results/exp-misc.txt). Obama with face region: 1,462 cut pieces, only 20 % inside the face box (which is 16 % of the area). Astronaut without a region: 4.5 % of 2,590 cut pieces in the face (5.7 % of the area). Prototype in .../algo-quality/exp-proto.ts, variants 'background lambda x3' and 'x6' (λ multiplied outside the face region). Obama cut pieces drop 1,394 → 740 (−47 %) and → 372 (−73 %), while face perceived ΔE stays 1.30 → 1.31 / 1.28 and the whole image goes 1.38 → 1.42 / 1.47. Portrait sample: 658 → 592 / 454 cut pieces, perceived ΔE 0.97 → 0.85 / 0.71. Visual: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/out/coffee-spoon-cmp.png shows a fan of shards on a reflective spoon.",
+   "proposal": "Add an importance map: face 1.0, detail regions 0.8, everything else set by a 'Schnitte im Hintergrund' slider (default 0.33); use λ_eff = λ / importance. Better, add a two-pass global budget. Pass 1 stores, for each cell, the best split candidate with gain = SSE_full − SSE_split, which the current loop already computes. Pass 2 accepts candidates in descending gain·importance/cost order until the user's budget ('max. Schnittsteine' or % of stones) is reached. Show the estimated number of cuts and cutting time on the compute step so the user can trade effort against detail.",
+   "files": [
+    "src/core/mosaic.ts",
+    "src/core/types.ts",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepCompute.tsx"
+   ],
+   "impact": 4,
+   "effort": "M",
+   "dim": "algo-quality",
+   "id": "algo-quality#3",
+   "corrected": [
+    "1) Add `bgCutFactor: number` to ShapeOptions in src/core/types.ts.\n   - Default is 1, which keeps today's output.\n   - In serialize.ts, fill in 1 for older projects that lack the field.\n\n2) In src/core/mosaic.ts, add one line after line 232:\n   `if ((faceMask || detMask) && !inFace && !inDetail) lambda /= Math.max(0.15, shapes.bgCutFactor);`\n   - It must only apply when at least one face or detail region exists. Without regions it just repeats the detail slider (measured: same cuts, same face ΔE) and would remove cuts from hair and contours.\n\n3) In src/ui/project/StepShapes.tsx, add a slider \"Schnitte außerhalb markierter Bereiche\" (100 % to 20 %, maps to bgCutFactor 1.0 to 0.2).\n   - Show it only when regions.length > 0.\n   - Add a one-click preset \"Schnitte auf Gesicht konzentrieren\" that sets 0.33.\n   - Add the hint: \"Haare/Konturen als Detailbereich markieren, damit sie Schnitte behalten\".\n   - Add the strings to de, en and tr.\n\n4) Next to the existing splitCells row (StepCompute.tsx:97), add a row \"davon in Gesicht/Detailbereichen: X\". This needs a new `splitCellsInRegions` counter in ComputeDiagnostics, so the user can see where the cutting effort goes.\n\n5) Optional, effort M: a hard budget `maxCutCells` (absolute, or a % of cells).\n   - During the tile loop, store per cell `gain = fullSSE - bestScoreWithoutPenalty` (Float32Array N) and the full-cell mean (Uint8Array N*3).\n   - After the loop and before palette k-means, quickselect the top-K cells by `gain * importance`, where importance is face 1, detail 0.8, else bgCutFactor. Count SUB cells in the budget too.\n   - Revert every other non-FULL cell to FULL with the stored mean, delete its `line`/sub entries, and recount splitCells and subCells.\n   - Cut templates are derived from the final kinds, so no wrong cut dimensions can appear (requirement 18).\n\n6) Tests in tests/*.test.ts:\n   - With a face region and bgCutFactor 0.33, cut cells outside the region drop by at least 30 % while cut cells inside change by no more than 15 %.\n   - With no regions, the result is byte-identical for any bgCutFactor.\n   - The budget is never exceeded, and kind counts match the piece geometry.",
+    "Phase 1 (effort S, do first):\n1. types.ts ShapeOptions: add `bgCutFactor: number` (1–6, default 3). Make serialize/load fill in the default for older projects.\n2. mosaic.ts, right after line 233: `const anyRegion = !!(faceMask || detMask); if (anyRegion && !inFace && !inDetail) lambda *= shapes.bgCutFactor;`\n   - Keep the existing face ×0.4 and detail ×0.5 multipliers.\n   - Without regions the factor has no effect, so results for projects without regions stay the same and the existing tests stay valid.\n3. Gate subdivision the same way. At line 357, outside regions (when anyRegion) also require `shapes.bgCutFactor <= 1 || det > 0.5 + 0.1*(bgCutFactor-1)`, or simply disallow SUB outside regions once the factor is above 1. Otherwise it is only a recommendation (Rec.FINER), which stays honest.\n4. StepShapes.tsx, under the region editor: add a slider 'Schnitte außerhalb markierter Bereiche' with the ends 'viele' (×1) and 'wenige' (×6). It is active only when at least one region exists; if none exists, show a hint 'Erst Gesicht/Detailbereich markieren'.\n5. Diagnostics, all exact counts taken from data.kind, never estimated:\n   - mosaic.ts diagnostics: add splitCellsInRegions / subCellsInRegions next to splitCells / subCells.\n   - StepCompute.tsx: show 'Zellen mit Schnitt: X (davon Y in markierten Bereichen)'.\n   - Optional: a viewer toggle 'Schnittsteine hervorheben', so the user can see where the cutting work goes.\n   - Show no cutting-time figure, unless the user enters 'Sekunden pro Schnitt' in Settings and it is clearly labelled 'Schätzung'.\n6. Tests:\n   - With a face region, background cut cells drop at least 30 % at factor 3, and face cut cells drop at most 25 % (Obama-like fixture or the portrait sample).\n   - Without regions, the result is bit-identical to factor 1.\n   - All existing geometry, area and count invariants are unchanged.\n7. i18n de/en/tr strings for the new controls.\n\nPhase 2 (optional, effort M): a global budget 'max. Schnittzellen'.\n- Pass 1 stores per cell the best split candidate at the minimum λ: kind, colours, line, and gain = fullSSE − (splitSSE + λ_ref·NS·cost). It also stores the FULL mean separately.\n- Pass 2, before the palette step, accepts candidates in descending order of gain × regionWeight until the budget is reached; the rest become FULL.\n- After that, run the same diagnostics and invariant tests."
+   ]
+  },
+  {
+   "title": "Small but essential colours disappear from the palette: no black for pupils, weak lip and highlight colours",
+   "kind": "quality",
+   "problem": "k-means (kmeans.ts, sample weights from mosaic.ts:425-440) minimises area-weighted squared error. Tiny but crucial features — pupils, catchlights, the darkest lip line — are merged into large clusters, even with face weight 3. Eyes are the most important part of a portrait, and they lose their pupils.",
+   "evidence": "Script /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/exp-misc.ts (output .../out/results/exp-misc.txt, check 'portrait-small-features'), on the bundled portrait sample with its face region and 32 colours. Pupil (L* = 3): nearest palette colour is #321D12, ΔE00 14.1, so there is no black in the palette. Catchlight 5.6, lips 7.5; large skin areas 0.7–0.9. Visual: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/out/portrait-face-cmp.png (irises without pupils or highlights; the left iris becomes a diagonal-triangle 'arrow'). A crude prototype, 'reserve 3 colours' in .../algo-quality/exp-proto.ts (k−3 k-means plus 3 farthest-point colours supported by at least 2 cells), lowers the pupil ΔE from 14.1 to 8.3 at +0.05 global perceived ΔE. On the astronaut photo it raises face p95 by 0.3, so a proper objective is needed rather than a bolt-on.",
+   "proposal": "Weight palette samples by importance: w = area · (1 + 2·det) · faceWeight. After Lloyd, run an error-driven swap: repeatedly try replacing the palette colour with the smallest marginal loss by the weighted mean of the worst-represented cluster (samples with ΔE00 > 10). Keep the swap only if total weighted ΔE00 (not squared) decreases. Seed near-black and near-white automatically when at least 0.2 % of samples have L* < 15 or > 95. Add a regression test: portrait-sample pupil ΔE < 6 while the global mean rises by no more than 0.05.",
+   "files": [
+    "src/core/kmeans.ts",
+    "src/core/mosaic.ts"
+   ],
+   "impact": 3,
+   "effort": "M",
+   "dim": "algo-quality",
+   "id": "algo-quality#6",
+   "corrected": [
+    "Add a post-Lloyd palette refinement in src/core/kmeans.ts, e.g. refinePalette(pts, w, centers, opts), and call it from mosaic.ts after kmeansLab for paletteMode 'auto' and 'auto-snap'.\n\n1. Assign every sample with ΔE00, the same metric NearestColorMatcher uses. For each sample keep the best distance d1, the second-best d2 and the assigned centre a1.\n\n2. Build candidate groups, in this order:\n   - (a) Dark extremes: samples with L* < 15 and d1 > 6.\n   - (b) Light extremes: samples with L* > 92 and d1 > 6.\n   - (c) General outliers: cluster the samples with d1 > 10 into up to 4 groups with a small k-means.\n   Each group needs at least 3 stones, counted by number, not by weight. The candidate colour is the group's weighted mean.\n\n3. For each candidate:\n   - Compute each palette colour's marginal loss as Σ w·(d2 − d1) over its members, and replace the colour with the smallest loss.\n   - Accept the swap if the weighted mean ΔE00 (L1, not squared) rises by at most 0.05 for an extreme group (a or b), or does not rise at all for a general group (c).\n   - Do NOT stop at the first rejected candidate. Allow at most about 4 accepted swaps.\n   - Freeze accepted centres so further Lloyd steps cannot pull them back into the hair-brown cluster.\n   - Re-evaluate only the members of the replaced colour plus the candidate group, so this stays fast at k = 200.\n\n4. In auto-snap mode the rescued centre then snaps to the nearest material, so a black tile is used if one is in stock.\n\n5. Add a vitest, e.g. tests/palette-extremes.test.ts:\n   - On the bundled portrait with the face ellipse (0.27/0.25/0.46/0.5) at 32 colours, the stones covering the pupil pixels near (337,440) have ΔE00 < 6, and the overall weighted mean ΔE00 is at most 0.05 above the current baseline.\n   - On a synthetic image with a small black disc (at least 3 stones) on a light background, the palette contains a colour with L* < 10.\n\n6. Optional, cheap UI help in StepColors PaletteEditor: when a colour is added after computing, offer 'assign closer stones' (assign this colour to every stone whose ΔE to it is lower than to its current colour). Totals update as usual, so the user can add black for the pupils in one step instead of clicking every stone.\n\n7. Drop or separately benchmark the untested (1+2·det) weight change.\n\nImpact 3 for portraits whose photo has no large dark area elsewhere; otherwise it changes little. Effort M.",
+    "Main part: \"Akzentfarben\" (must-keep colours), shown to the user and confirmed by the user (impact 3, effort M):\n1. Detect in src/core/mosaic.ts. After the assignment loop, while c1Lab/c2Lab/subLab still exist, collect stones whose analysis colour is more than ΔE00 10 from the colour they were given.\n   - Group them greedily: start at the stone with the largest weight×ΔE and take all stones within ΔE76 < 6.\n   - Keep groups of at least 2 stones.\n   - Return the top 3 in diagnostics as missingAccents: {lab, hex, stones, meanDE, cellIdx[]}.\n   - The suggested colour is the measured mean of those stones' own analysis colours, so nothing is invented.\n2. Show in StepCompute/StepColors, e.g. \"8 Steine (z. B. Pupillen) haben keine passende Farbe (ΔE 13,6) – Vorschlag #1D1F1B\".\n   - Add a button that highlights these stones in the Viewer.\n   - Add a button \"Als Pflichtfarbe übernehmen & neu berechnen\".\n3. Add settings.pinnedColors: FixedColor[] for the auto and auto-snap modes.\n   - Users can also add black and white here by hand. Today colours added in auto mode are lost on recompute (useProject.ts:289-297).\n   - Pass it to the worker in useProject.ts.\n   - In mosaic.ts, run kmeansLab with k − pinned.length and add the pinned colours unchanged, so Lloyd never moves them.\n   - In auto-snap, snap them to the nearest material like the other colours.\n   - The existing unused-colour filter (mosaic.ts ~l.560) may drop a pinned colour. If so, the UI says it was not needed.\n   - Counts and statistics still come from the data, so all totals stay exact.\n\nOptional algorithm part (impact 2, effort M):\n- After Lloyd, run a bounded swap pass in kmeans.ts with no detail weighting and no forced black/white seeds.\n- Candidate: the weighted mean of the densest group of outlier samples.\n- Colour to remove: the one with the smallest marginal loss, using cached nearest and second-nearest squared-Lab distances (O(n·k) per swap).\n- At most 4 swaps.\n- Accept a swap only if the weighted mean ΔE00 does not rise and the error inside face regions does not rise. Obama got worse without that gate.\n\nTests:\n- Portrait at 32 colours: missingAccents includes an entry with L* < 15 and at least 2 stones.\n- With that colour pinned, the pupil stones' ΔE00 must be ≤ 3 and diagnostics.meanDeltaE may rise by at most 0.05.\n- A pinned hex value appears unchanged in the palette whenever at least one stone uses it.\n- The existing pipeline invariants still hold: no unused colours, unique codes, totals equal to geometry."
+   ]
+  },
+  {
+   "title": "Edge cuts point the right way but do not join up between neighbouring stones, so contours look staggered",
+   "kind": "quality",
+   "problem": "Each cell chooses its LINE cut independently (mosaic.ts:283-349): orientation from the cell's own gradient tensor, 3 angles in 15° steps, and offsets on a 0.5 mm grid. The orientation is accurate, so the 15° steps are adequate. But neighbouring cells' offsets do not line up, so a contour is drawn as short segments that stop at a joint and continue shifted in the next stone. A mosaicist would cut the contour as one continuous line.",
+   "evidence": "Script /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/algo-quality/exp-orient.ts (output .../out/results/exp-orient.txt): cut orientation differs from the smoothed image edge orientation by a median of 6–8°, and only 5–10 % are off by more than 22.5°. Script .../algo-quality/exp-cuts.ts (.../out/results/exp-cuts.txt): only 22–42 % of cut-line ends on an inner cell edge continue (within 1 mm) in the neighbouring cell (coffee 22.4 %, obama 30.8 %, astronaut 36.6 %, portrait sample 41 %). Prototype 'neighbour bonus 0.6' in .../algo-quality/exp-proto.ts: score −0.6·λ·NS for each endpoint that matches an already decided left/top neighbour. Continuity rises for obama 30.8→45.9 %, astronaut 36.6→48.4 %, portrait 41→47.7 %, while perceived ΔE changes by +0.07, −0.01 and −0.11.",
+   "proposal": "Short term (S/M): in the LINE search, also try lines that pass exactly through the left/top neighbour's endpoint, in addition to the 0.5 mm grid, and add a continuity bonus. Cells are already processed in row-major order inside each 64-cell tile, so left/top neighbours are always decided. Longer term: extract edge polylines once at image level (Canny on L* with hysteresis, linking, Douglas–Peucker at about 0.5 tile). Then derive each crossed cell's cut from the polyline segment inside it, which gives continuous contours by construction. Pieces stay exact half-plane-clipped polygons, so cut templates remain correct. Track the continuity metric above in a test; target > 70 %.",
+   "files": [
+    "src/core/mosaic.ts",
+    "src/core/imageOps.ts"
+   ],
+   "impact": 3,
+   "effort": "M",
+   "dim": "algo-quality",
+   "id": "algo-quality#5",
+   "corrected": [
+    "In `src/core/mosaic.ts`, LINE search (lines 280-349), effort S:\n\n1. **Store each cut line.** When a cell ends up as LINE (around line 393), save its centre line in page coordinates: `[nx, ny, nx*cx + ny*cy + d]`, where `cx`, `cy` are the cell centre. A Map keyed by idx, or a Float32Array, is enough.\n2. **Find anchor points.** Before the offset loop, check the left neighbour (idx−1) and the top neighbour (idx−cols). If one is LINE, extend its line to the joint midline (x = r.x − g/2 for left, y = r.y − g/2 for top). If that point lies inside this cell's side, keep it as an anchor.\n3. **Add the bonus.** Keep the existing 0.5 mm offset grid and the 3 angles unchanged. For each candidate (nx, ny, dq), subtract `0.6·λ·NS` for every anchor that lies within 0.5 mm of the candidate line, i.e. |nx·ax + ny·ay − ncen − dq| < 0.5.\n4. **Do not add exact-through-endpoint offsets.** Measured, they bring no extra continuity but 18–41 % more distinct cut templates (`pdf.ts:62` groups templates by signature). Leave every other check as it is (`pieceCuttable`, `lineSplit`), so cut templates stay exact.\n\n**Test.** Add a vitest case on the portrait sample (400 mm, 5×5 mm tiles, 1 mm joint, face region):\n- Count pairs where both neighbours have a cut facing the shared edge. Compare the two lines at the joint midline.\n- Assert at least 65 % line up within 1 mm. Today it is about 60 %; with the bonus about 69 %.\n- Assert `diagnostics.meanDeltaE` does not rise by more than 0.1.\n- Assert the number of distinct cut-template signatures rises by no more than 10 %.\n\nDo not use \"% of all cut ends\" as the measure. About 40 % of ends border uncut stones, and that is not misalignment.\n\n**Optional later (L effort, unproven).** Trace edge polylines across the whole image and derive each cell's cut from them, still with offsets snapped to the 0.5 mm grid.",
+    "Low priority (impact 2, effort S/M). Keep the 0.5 mm offset grid and the 15° angles (README.md:151) so cut templates still repeat.\n\n1) Add a \"Konturen durchgehend schneiden\" option (a ShapeOptions flag, default OFF) to the shapes step (StepShapes.tsx).\n\n2) In the LINE search in mosaic.ts:300-347, for the left neighbour (idx−1) and the top neighbour (idx−cols), when that neighbour is a LINE cell with the same angle:\n- Compute the collinear offset: d* = d_nb + n·(c_nb − c), where c is the cell centre. Snap d* to the 0.5 mm grid.\n- Add it to the candidate list only if it is not already there and it passes pieceCuttable.\n\n3) Add a continuity bonus only for collinear matches. A match means the neighbour's line, extended across the joint along its own direction, meets this cell's endpoint within 0.6 mm, with an angle difference under 16°. Use weight 0.3-0.6·λ·NS. Do not apply the bonus inside face regions (inFace), or scale it down there, to protect requirement 6.\n\n4) Do NOT add off-grid \"through-endpoint\" offsets. Measured: +16 to +56 template groups for under 1 percentage point of continuity gain (/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/value-algo-quality-5/out/exp.txt).\n\n5) Add a vitest test with the collinear continuity metric. On the four samples it must check:\n- continuity does not drop when the option is on (realistic target: about +8 to +15 percentage points over the baseline of about 15-23 %, not 70 %);\n- face-region mean ΔE does not get worse by more than 0.05;\n- the number of template groups (collectTemplates) does not grow by more than 10 %;\n- the existing area/count/ID invariants still hold.\n\n6) Drop the image-level Canny/polyline idea, or defer it as a separate effort-L research item. If it is ever done, the cuts must still snap to the 15° angles and 0.5 mm grid, and the README limitations row must be updated."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w4-laying-workbench",
+   "title": "Laying workbench: section focus, brush/rectangle marking, next stone, undo taps, material view switch",
+   "ownedFiles": [
+    "src/ui/project/StepPlan.tsx",
+    "src/ui/project/StoneDialog.tsx"
+   ]
+  },
+  {
+   "id": "w4-progress-engine",
+   "title": "Instant progress counts, no stats storms, progress carried over on recompute, progress in project lists",
+   "ownedFiles": [
+    "src/ui/project/useProject.ts",
+    "src/storage/db.ts",
+    "src/ui/Projects.tsx",
+    "src/ui/Home.tsx",
+    "src/ui/project/Workspace.tsx"
+   ]
+  },
+  {
+   "id": "w4-pdf-sheets",
+   "title": "PDF sheet structure: no paper-wasting strips, cut templates traceable from every sheet, code plans for tiny stones",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "tests/pdf.test.ts"
+   ]
+  },
+  {
+   "id": "w4-face-detector",
+   "title": "Offline face suggestions when the browser has no FaceDetector",
+   "ownedFiles": [
+    "vite.config.ts",
+    "src/ui/project/RegionEditor.tsx"
+   ]
+  }
+ ]
+}

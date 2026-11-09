@@ -1,0 +1,173 @@
+{
+ "wave": 3,
+ "waveName": "Wave 3 – Mosaic colour quality, live preview, freeform, face guidance, viewer features, PDF foundations, portability",
+ "package": {
+  "id": "w3-live-preview",
+  "title": "Live mosaic preview in steps 2-6, instant 'Übernehmen', compute that survives navigation",
+  "goal": "While choosing size, tiles, joint, colours and shapes, the user sees the mosaic update live, and nothing is saved until they commit. A compute keeps running and stays visible when the user leaves and reopens the project.",
+  "findingIds": [
+   "ux-desktop#1",
+   "correctness-ui-state#0"
+  ],
+  "ownedFiles": [
+   "src/ui/project/useProject.ts",
+   "src/workers/client.ts",
+   "src/ui/project/Workspace.tsx",
+   "src/ui/project/StepCompute.tsx"
+  ],
+  "newFiles": [
+   "src/ui/project/LivePreview.tsx",
+   "src/workers/jobs.ts",
+   "src/ui/css/w3-live-preview.css",
+   "tests/w3-live-preview.test.ts",
+   "e2e/w3-live-preview.e2e.cjs",
+   "src/i18n/ext/w3-live-preview.ts"
+  ],
+  "steps": [
+   "client.ts: add 'preview' to the Channel type. Cancelling with cancelChannel('preview') never affects compute or PDF jobs.",
+   "useProject:\n- Factor prepareInputs(r) (crop, working size, renderCropped, canvasToRaw, fixed palette incl. stock: m.stock), with the raw image cached by {adjust, crop, ws, imageRev}.\n- runCompute(r, channel) → {key, lang, materialsSig, ws, layout, layoutParams, data, palette, diagnostics, processed}.\n- commit(result) = the wave-1 commitComputed path.",
+   "Preview state:\n- On computeKey change, debounce (about 500 ms for chips, 800 ms for typed numbers), call cancelChannel('preview'), and use a request counter so stale results are dropped.\n- Run automatically only while cells ≤ 60k (≤ 30k when hardwareConcurrency ≤ 4 or the pointer is coarse) and the last preview took < 1.5 s. Otherwise show a 'Vorschau aktualisieren' button with an estimated time.\n- The preview never writes to IndexedDB, rec.palette, computedWith or progress.",
+   "jobs.ts registry, Map<projectId, {progress, promise, cancel}> plus subscribe:\n- startCompute moves the worker call and the commit out of the component.\n- useProject subscribes on mount, so a reopened project shows the phase, progress and Cancel button and adopts the result when it resolves.\n- Only one compute runs app-wide. Other projects show 'Berechnung für „X“ läuft noch' with Abbrechen.",
+   "Contract for wave 4: touchProgress(dirtyCells?: number[]) and touchMosaic(dirtyCells?: number[]) accept an optional parameter that is ignored for now.",
+   "LivePreview:\n- renderFull at about 640 px with groutHex, surface and realistic.\n- A permanent badge 'Vorschau – noch nicht übernommen'.\n- The old image is dimmed with a spinner while updating.\n- Photo/mosaic toggle.\n- A compact stat strip with exact geometry values only; no per-colour counts.\n- Workspace mounts it for steps size, tiles, joint, colors and shapes: as a right-hand panel on desktop, sticky at about 35vh above the controls at ≤980 px, and collapsible on the shapes step so the region editor stays usable.",
+   "StepCompute becomes 'Übernehmen / Berechnen':\n- If preview.key, lang, materials and ws match, commit the preview directly with no second compute.\n- The wave-2 recompute guard still applies.\n- Auto-commit on entering the preview step only when nothing has been computed yet.\n- Show diagnostics.usedColors/requestedColors in the summary."
+  ],
+  "acceptance": [
+   "Vitest: for the 4 samples, runCompute output for a key equals the committed output byte for byte (packMosaic, fixed seed).",
+   "e2e: in step tiles a canvas appears and changes when switching 4→8 mm. computedWith in IndexedDB stays unchanged until 'Übernehmen'.",
+   "e2e: on a project with laid stones, visiting steps 2-6 keeps progress-pct unchanged.",
+   "e2e: after a matching preview, 'Übernehmen' finishes in under 300 ms and posts no second compute message (Worker.postMessage counted via an init script).",
+   "e2e: leaving during a compute and reopening shows the progress bar and Cancel. Starting a compute in another project shows the 'läuft noch' message."
+  ],
+  "risk": "Effort L. Preview and commit must use one shared pipeline so that what the user sees is exactly what is saved. Test that the job registry keeps working after a reload."
+ },
+ "findings": [
+  {
+   "title": "Steps 2-6 are blind: no picture of the mosaic until step 7, although computing takes only 0.25-1.4 s",
+   "kind": "ux",
+   "problem": "Size, tile size, joint, colours and shapes are all chosen against numbers only (\"Raster 34 × 42\", \"Fugenanteil 20,7 %\"). The hobbyist cannot see how a 4 mm vs 8 mm tile or 16 vs 48 colours changes the picture without going to step 7, computing, looking at step 8 and coming back. Computing is fast enough for live feedback, so the separate compute step is mostly friction.",
+   "evidence": "Timing via the real UI, /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/ux-desktop/journey5.out: 4,453 positions 251 ms; 12,322 positions 336 ms; 33,901 positions 832 ms; 194,886 positions 1,355 ms (compute plus navigation). The default 30×40 cm project shows 'Rechenzeit 0,1 s' (shots/j1-08-compute-result.png). Steps without any visual: shots/j1-05-size.png, j1-05-tiles.png, j1-05-joint.png, j1-05-colors.png. The right column holds only LayoutSummary (src/ui/project/StepGeometry.tsx:9-61).",
+   "proposal": "Keep the required 10 steps but make steps 2-6 live. Add useProject.previewCompute(): it runs the existing 'compute' worker job without persisting and without touching computedWith or progress, debounced about 600 ms on computeKey(rec) changes, and only when cols*rows < about 250k (above that, show a 'Vorschau aktualisieren' button). Render the result with renderFull() into a <LivePreview> canvas that becomes the main right-hand visual in StepSize/StepTiles/StepJoint/StepColors/StepShapes. LayoutSummary shrinks to a compact stat strip under it. Add an optional before/after toggle (photo vs mosaic). Step 7 then becomes 'Übernehmen/Berechnen' (commit), and the first commit can happen automatically when the user reaches step 8.",
+   "files": [
+    "src/ui/project/useProject.ts",
+    "src/ui/project/StepGeometry.tsx",
+    "src/ui/project/StepColors.tsx",
+    "src/ui/project/StepShapes.tsx",
+    "src/ui/project/StepCompute.tsx",
+    "src/workers/compute.worker.ts"
+   ],
+   "impact": 5,
+   "effort": "M",
+   "dim": "ux-desktop",
+   "id": "ux-desktop#1",
+   "corrected": [
+    "Keep the 10 steps and add a live preview that is never saved, in steps 2-6.\n\n1. Split useProject.compute() (src/ui/project/useProject.ts) into two parts:\n   - runCompute(r, channel): crop the photo, build the fixed palette, call runWorker, unpack the result. It returns {key: computeKey(r), layout, layoutParams, data, palette, diagnostics, processed}.\n   - commit(result): everything that is saved today, i.e. setRec with palette, diagnostics and computedWith, the thumbnail, saveProject, saveMosaic and saveProgress.\n   compute() becomes commit(await runCompute(r, 'compute')).\n\n2. Add a 'preview' channel to the Channel type in src/workers/client.ts. compute.worker.ts needs no change. Cancelling a stale preview with cancelChannel('preview') then never kills a real compute or a PDF job.\n\n3. Add a preview state to useProject:\n   - Watch computeKey(rec). Wait about 600 ms after the last change, cancel any running preview, then start runCompute(rec, 'preview').\n   - Keep a request counter and drop results whose key no longer matches.\n   - Start previews automatically only while cols*rows is at most about 250k AND the last preview took under about 2 s, since slow Android phones may be 3-5x slower than the desktop timings. Otherwise show a 'Vorschau aktualisieren' button.\n   - Never write to IndexedDB. Never touch rec.palette, computedWith, computed or progress.\n\n4. Add a new <LivePreview api> component:\n   - Render preview.data with renderFull(layout, data, palette, ~640, {groutHex, surface, realistic: true}) into a canvas.\n   - Show a small badge 'Vorschau – noch nicht übernommen', a spinner while the next preview runs, and a photo/mosaic toggle.\n   - Make it the main right-hand visual in StepSize, StepTiles and StepJoint, with LayoutSummary as a compact stat strip below it.\n   - In StepColors, put it above the palette editor. It may also show the preview palette as read-only swatches labelled as a preview.\n   - In StepShapes, add it as a third view or a toggle next to the region editor. Do not replace the editor.\n\n5. StepCompute becomes 'Übernehmen':\n   - If preview.key === computeKey(rec), commit(preview) directly, with no second computation. Otherwise run the normal compute.\n   - Keep the existing overwriteWarn. When api.computed already has manual edits or progress, ask for confirmation before overwriting.\n   - Only when nothing has been computed yet (no api.computed) may the matching preview be committed automatically on entering step 8.\n   - Never commit automatically over an existing mosaic, because that would destroy manual edits and laying progress.\n\n6. Tests:\n   - A unit test that runCompute output with the same key equals the committed data. The k-means seed is deterministic.\n   - An e2e check that a canvas appears in step-tiles and changes when switching 4 mm to 8 mm, with no project write before 'Übernehmen'. For example, the computed badge and computedWith stay unchanged.",
+    "Add a live mosaic preview to steps 2-6 that never changes saved data, and make step 7 an explicit \"Übernehmen\" (commit).\n\n1) Separate worker channel. In src/workers/client.ts extend Channel to 'compute' | 'stats' | 'pdf' | 'preview'. Before each new preview request call cancelChannel('preview'). This terminates a stale job immediately, so jobs never queue up, and cancelCompute() no longer affects previews (or the other way round). Reuse the existing 'compute' worker message type; no worker change is needed.\n\n2) Add useProject.previewCompute(), a pure function with no side effects.\n- Factor the input preparation of compute() (crop, workingSize, renderCropped, canvasToRaw, fixed palette; useProject.ts:280-302) into a shared helper.\n- Cache the raw working image keyed by JSON {adjust, crop, ws}. Changes to colours, shapes or joint often keep the same ws, and then skip the main-thread resize.\n- Store the result in preview state {key: computeKey(rec), lang, materialsRef, ws, layout, data, palette, diagnostics}.\n- Never call setRec, setPalette, saveProject, saveMosaic or saveProgress, and never touch computedWith or the thumbnail.\n\n3) Trigger with an adaptive limit instead of a fixed 250k.\n- Debounce on computeKey(rec) changes: about 500 ms for chips and presets, about 800 ms for typed numbers.\n- Run automatically only while cells are at most about 60k (about 30k when navigator.hardwareConcurrency is 4 or less, or on a coarse pointer), and only while the last preview took under about 1.5 s.\n- Otherwise show a \"Vorschau aktualisieren\" button with an estimated duration.\n- Measured basis: a 12 MP photo needs 0.95 s at 37k positions and 2.6 s at 214k on desktop.\n\n4) Add a <LivePreview> component.\n- Render with renderFull(layout, data, palette, ~640, {groutHex, surface, realistic: true}) and a before/after toggle (processed photo vs mosaic).\n- Label it permanently \"Vorschau – noch nicht übernommen\".\n- While a new preview is running, dim the old image and show a spinner, so an outdated picture never looks current.\n- Under it, show a compact stat strip with the existing LayoutSummary values, which are exact geometry.\n- Do not show per-colour stone counts or material needs from the preview. Those keep coming only from the committed stats worker.\n\n5) Placement per step.\n- StepSize, StepTiles, StepJoint: LivePreview on top of the right column, LayoutSummary condensed under it.\n- StepColors: add a two-column layout with LivePreview plus a read-only strip of preview swatches (number + HEX). The editable PaletteEditor stays bound to the committed palette.\n- StepShapes: keep RegionEditor and add a \"Foto / Mosaik\" toggle on the same canvas. Regions are normalised to effectiveCrop, the same frame as the mosaic, so the overlay lines up and the user sees the effect of face/detail regions.\n- Below 980 px: make the preview a sticky, compact element (about 35vh) above the controls, so phone users see changes as they tap.\n\n6) Commit rules (protecting progress and manual edits).\n- Step 7 \"Übernehmen\": if the preview's key, lang, materials and ws equal the current values, persist the preview result directly through the same code as compute() (palette, diagnostics, computedWith, thumbnail, mosaic, progress). This is instant and identical to what the user saw, because k-means is seeded (mosaic.ts:441). Otherwise run compute() as today.\n- Auto-commit on entering step 8 is allowed only when no mosaic exists yet (!rec.computedWith && !api.computed).\n- If a committed mosaic exists and the settings differ, never auto-recompute. Show the preview as \"neue Einstellungen\" next to the stale badge. Require an explicit Übernehmen with the existing 'compute.overwriteWarn' plus the number of laid stones and manual edits that would be lost. compute() resets progress at useProject.ts:346.\n\n7) Tests.\n- Vitest: previewCompute leaves rec, palette, computedWith and the IndexedDB stores unchanged.\n- Vitest: an adopted preview equals a fresh compute() byte for byte (colorIdx, shapes, pieces) for all four sample projects.\n- E2E: changing the tile size in step 3 updates the mosaic-preview canvas without the step 7 compute button.\n- E2E: a project with laid stones keeps its progress after visiting steps 2-6 with live preview.\n\nEffort: M (closer to M/L with the image cache and the mobile layout). Impact: 5."
+   ]
+  },
+  {
+   "title": "Leaving a project while it is still computing, then reopening it, corrupts the saved project: the mosaic is rendered and printed with the wrong palette",
+   "kind": "bug",
+   "problem": "compute() runs in a module-level worker channel and keeps running after the Workspace unmounts. When it finishes, it saves its own record and mosaic. If the user reopens the project in the meantime, the new useProject instance loads the OLD record and mosaic. It shows no 'computing' indicator. Its next save of the record (any rename or setting change) overwrites the record written by compute but leaves compute's new mosaic in place. Record and mosaic are saved by unrelated, non-atomic puts. Nothing ties them together (no revision), so the loader accepts any pair that has the same cols×rows. As a result, colour indices from one compute are mapped onto the palette of another. The same race applies to two open browser tabs.",
+   "evidence": "Repro: /tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad/audit/correctness-ui-state/t10_leave_during_compute.cjs, output in t10_output.txt in the same folder. City sample, 260,241 positions. Compute with 16 colours, then switch to 8 colours and recompute. Leave via 'Meine Projekte', reopen ('palette rows = 16, computing indicator visible: false'), rename, reload. Result: 'palette rows = 16', and the legend shows 01..08 used and 09..16 with 0 stones. The city is rendered in pink/yellow; screenshot t10-after-reload.png in the same folder. Code: useProject.ts:331-346 (compute saves rec, mosaic and progress with Promise.all as 3 separate transactions, from the snapshot r); useProject.ts:86-94 (loader only checks layout.cols/rows); client.ts:5-12 (one global 'compute' worker, with no per-project job state); db.ts:96-102 (independent puts).",
+   "proposal": "(1) Track jobs per project in a small module-level registry, e.g. src/workers/jobs.ts with Map<projectId, {promise, progress}>. useProject subscribes on mount, so a reopened Workspace shows the running compute and its Cancel button and refreshes when the job finishes. (2) Add db.saveComputed(id, rec, mosaic, progress), which writes all three stores in ONE IndexedDB transaction (db.transaction(['projects','mosaics','progress'],'readwrite')). (3) Add a revision: rec.mosaicRev = uid() is written together with mosaic.rev. The loader shows the mosaic only if rec.mosaicRev === mosaic.rev && max colour index < palette.length. Otherwise it shows 'Gespeichertes Mosaik passt nicht zur Palette – bitte neu berechnen' instead of rendering wrong colours. (4) Optimistic concurrency in saveProject: inside one readwrite transaction, read the stored meta.rev, refuse to overwrite a newer revision, and tell the user (this also covers two tabs).",
+   "files": [
+    "src/ui/project/useProject.ts",
+    "src/workers/client.ts",
+    "src/storage/db.ts"
+   ],
+   "impact": 5,
+   "effort": "M",
+   "dim": "correctness-ui-state",
+   "id": "correctness-ui-state#0",
+   "corrected": [
+    "(1) Move compute ownership out of the component. Create src/workers/jobs.ts with Map<projectId, {promise, progress, cancel}>.\n- The job itself does the final persist, so it no longer depends on setRec/setComputed of a possibly unmounted hook.\n- useProject subscribes on mount. A reopened Workspace then shows the running progress and the Cancel button, and adopts the result (setRec + setComputed) when the job resolves.\n\n(2) Add saveComputed(id, computedFields, mosaic, progress) in src/storage/db.ts. It runs ONE readwrite transaction over ['projects','mosaics','progress']:\n- Read the CURRENT stored record.\n- Merge in only the compute-owned fields: palette, diagnostics, computedWith, meta.computed, meta.thumb, and a new mosaicRev = uid().\n- Put the record, the mosaic {...mosaic, rev: mosaicRev} and the progress in that same transaction.\nThis way a rename or other edit made during the compute is not lost, and record and mosaic can never be half-written.\n\n(3) Make the loader in useProject.ts:85-98 validate the pair. Accept the stored mosaic only if rec.mosaicRev === mosaic.rev AND every colour index (c1, c2, subCol, free[].color) is less than palette.length. Otherwise do not render it. Show a clear notice such as 'Gespeichertes Mosaik passt nicht zur Palette – bitte neu berechnen' and keep the Preview, Plan and PDF steps disabled until the user recomputes.\n- The palette-length check alone is not enough. In the photo-replace and two-tab repros the indices are within range and the stale badge is not shown.\n- Treat legacy records without a rev the same way: run the index-range check and show a soft warning.\n\n(4) For saves from other instances (useProject.update and flush, and the two-tab case), change saveProject to run as one readwrite transaction:\n- Read the stored record.\n- If stored.mosaicRev differs from the in-memory rec.mosaicRev, keep the stored compute-owned fields (palette, computedWith, diagnostics, mosaicRev, thumb) and apply only the user's edits on top. Do not silently refuse the save.\n- Post a BroadcastChannel('mosaicplan') message {id, mosaicRev} from saveComputed. Open tabs or instances of the same project then reload the record and mosaic, or show 'In einem anderen Tab neu berechnet – neu laden'.\n- Palette edits made after the compute (custom names, material assignment) must update mosaicRev only when the mapping from colour index to colour changes. Edits that only change names keep the rev.\n\n(5) Add an e2e test based on verify-correctness-ui-state-0/v1_leave_during_compute.cjs and v3_two_tabs.cjs. It must assert that after the reload the stored palette, the computedWith key and the mosaic all come from the same compute.",
+    "Fix in four parts, in this order of priority.\n\n1) Commit compute results atomically and safely (src/storage/db.ts).\n- Add commitComputed(id, patch, mosaic, progress, rev). It opens ONE transaction: db.transaction(['projects','mosaics','progress'], 'readwrite').\n- Inside onsuccess callbacks only (no await on non-IDB promises), it does: get('projects', id).\n  - If the record is missing (project was deleted), abort and reject with 'deleted'.\n  - Otherwise put {...latest, palette, diagnostics, computedWith, mosaicRev: rev, meta: {...latest.meta, computed: true, thumb, updatedAt}}.\n  - Then put mosaics[id] = {...packed, rev} and progress[id].\n- Prepare thumb, packMosaic and computeKey BEFORE opening the transaction.\n- computedWith = computeKey of the snapshot settings that were computed (in custom mode, together with the result palette), never of the merged record. This way, edits made during the compute correctly show as 'stale' and are not lost (this also fixes t2: rename and joint change during a compute).\n- Also add a multi-store tx helper. deleteProject should use one transaction over all four stores.\n\n2) Per-project job registry (new src/workers/jobs.ts).\n- Holds Map<projectId, {progress, promise, cancel}> plus a subscribe(id, cb) API.\n- Move the worker call and commitComputed out of the component closure into startCompute(id, input).\n- Allow only one compute at a time across the app. If a job for another project is running, the compute button shows 'Berechnung für „<Name>“ läuft noch' with Abbrechen.\n- useProject subscribes on mount:\n  - It shows the running job's phase/fraction and the Cancel button.\n  - On commit it does setRec(prev => ({...prev, palette, diagnostics, computedWith, mosaicRev, meta: {...prev.meta, computed: true, thumb}})).\n  - It replaces computedRef/state with the committed grid.\n  - It clears pending 'mosaic'/'progress' save timers that refer to the old grid.\n- While a job is running for the project, disable stone edits on the old grid in a reopened instance.\n- Projects.tsx: deleting a project with a running job cancels that job first.\n\n3) Integrity guard in the loader (useProject.ts:85-98).\n- Render the stored grid only if both conditions hold:\n  - (rec.mosaicRev === undefined && mosaic.rev === undefined) [legacy data], OR rec.mosaicRev === mosaic.rev;\n  - AND max colour index < rec.palette.length (a single pass over the Uint16 colour array).\n- Otherwise, set computed = null. Show a banner (de/en/tr): 'Gespeichertes Mosaik passt nicht zur Palette – bitte neu berechnen', with the Berechnen button. Never render, plan or print the mismatched pair.\n- Every writer that changes what colour indices mean must write both revs in one transaction: compute, palette compaction/removal, and import. Manual stone edits that only append palette entries keep the existing rev, so they cannot trigger false positives.\n- Include rev in export/duplicate. Imports without a rev take the legacy path.\n- Also block the PDF and plan steps when stale is true, or at least show a prominent warning on the PDF cover/first page.\n\n4) Instead of optimistic concurrency in saveProject, guard against two tabs with the Web Locks API.\n- Workspace calls navigator.locks.request('project:' + id, {ifAvailable: true}, lock => lock ? new Promise(release on unmount) : null).\n- If the lock is not granted, open the project read-only with the banner 'Dieses Projekt ist in einem anderen Tab geöffnet'.\n- This avoids the false-conflict and silent-save-refusal risk of rev checks on every debounced save.\n\nTests:\n- Extend e2e/run-e2e.cjs with these flows:\n  - Leave during compute, reopen, check that progress and Cancel are visible, then rename, reload, and check palette length == max index + 1 and colours as computed.\n  - The same, but set the colour count back, and check that no wrong grid is shown as 'berechnet'.\n  - Delete during compute, then check that the project does not come back.\n- Add a vitest unit test: the loader guard rejects a mismatched rev or an out-of-range index."
+   ]
+  }
+ ],
+ "missingFindingIds": [],
+ "globalRules": "Implementation plan for making MosaicPlan \"much, much better\": 7 waves, 33 work packages, ordered by user impact. The order is: (1) data safety and geometric correctness; (2) workspace safety UI, Android platform, honest colours, honest preview, photo intake and design system; (3) mosaic colour quality, live preview, freeform editor, face/detail guidance, viewer features, PDF foundations and project portability; (4) cut placement and accent colours, laying workbench, progress engine, PDF sheet structure, offline face detector; (5) undo/redo, single-pass stats, viewer back-buffer, PDF content, shopping view, target colours, PDF export UI; (6) deviation map and batch editing, fine-tile materials, colour measuring, streaming CSV, final PDF wiring; (7) docs and e2e consolidation.\n\nRULES FOR EVERY PACKAGE\n\nFiles and parallel work\n- Packages in the same wave run in parallel. They own disjoint existing files.\n- New files may be created freely, but each name must be unique to its package.\n- Some packages add optional fields or parameters only so that a package in the next wave can compile. Each one is marked \"contract for wave N\". Add them exactly as written, even if nothing in your package uses them.\n\nTranslations (i18n)\n- Put new keys in src/i18n/ext/<package-id>.ts and export {de, en, tr}. The aggregator in src/i18n/index.ts merges every ext file after the base dictionaries.\n- All three languages must have the same keys and the same placeholders. tests/i18n.test.ts checks this.\n- To change the wording of an existing key, override it in your own ext file. First grep src/i18n/ext to make sure no other ext file already overrides that key.\n- Never edit de.ts, en.ts or tr.ts.\n\nCSS\n- Only w2-design-system edits src/ui/styles.css.\n- Every other package puts its CSS in src/ui/css/<package-id>.css and imports it from a component it owns.\n\nTests\n- Unit tests go in tests/<package-id>*.test.ts.\n- Browser checks are standalone Playwright scripts at e2e/<package-id>.e2e.cjs, run against `npm run preview`.\n- Only w7-docs-e2e touches e2e/run-e2e.cjs and README.md.\n- The golden mosaic hash fixture is tests/golden/mosaic-hashes.json. It hashes kind, c1, c2, rec, sub, line, free and palette hex+code, but not names. It is owned by whichever package owns src/core/mosaic.ts in that wave. Any change to it must be deliberate and explained in the PR.\n\nQuality bar\n- Every package must leave `npm run typecheck`, `npm test`, `npm run build` and the existing `node e2e/run-e2e.cjs` green.\n- Every package must keep the exact-geometry and count guarantees: totals equal the geometry, and cut dimensions come only from analyzeCut on real polygons.\n- Anything estimated must be labelled 'Schätzung' or 'Richtwert'. Requirement 18 holds everywhere.",
+ "deferred": [
+  "Grout compensation in computeMosaic (algo-quality#0, part 4). Both reviewers called it optional and off by default, and recommending a grout plus an honest preview gives most of the benefit. Changing the factory grout default from #BDB8AE to #808080 is deferred too; the recommendation never overwrites the user's choice.",
+  "Linear-light averaging of stone target colours (algo-quality#10). Measured gains are within k-means noise on natural photos. Revisit it together with linear-light resizing in imageOps, with a measured A/B benchmark.",
+  "Mixed tile sizes stage 2: zones with their own grid (spec-gaps#2). Wave 6 delivers stage 1, real fine-tile materials for k×k sub-stones plus fine regions. Zones touch every per-cell structure (progress mask, IDs, sections, hit-testing, PDF), and the tiles-step badge stays honest until then.",
+  "Movable section boundaries and a seam optimiser (spec-gaps#9). This is impact 2-3 and needs new settings across layout, viewer, worker and PDF. Paper-matched section presets (wave 6) cover the main paper-waste pain.",
+  "Full SVG export of plans and templates (spec-gaps#12). The vector PDF at 1:1 or custom paper already covers plotters. Only PNG preview export is built (wave 6).",
+  "Diff-based incremental statistics in a worker that keeps its own mosaic copy, and dirty-pixel overview updates (performance-scale#5, parts 2-3). They are replaced by the 8-13x single-pass stats (wave 5), coalesced stats jobs and O(1) progress counters (wave 4). Revisit only if 5M-stone edits are still slower than about 1 s.",
+  "Splitting the shape analysis across several workers (performance-scale#7, part b). The hot-loop fix gives about 4x. SharedArrayBuffer is not available without COOP/COEP headers.",
+  "One CSV per section, delivered as a ZIP (performance-scale#1). Streaming CSV plus the Excel row-limit warning are built; a store-only ZIP can follow if users ask.",
+  "Automatic stock-constrained recolouring (spec-gaps#4, part 4). It would change how the image looks and is often impossible. Exact shortfall and shopping lists are built instead.",
+  "Error-driven k-means swap refinement and detail-weighted palette samples (algo-quality#6, optional part). Measured gains were inconsistent. Pinned accent colours confirmed by the user are built instead.",
+  "Dither error diffusion through split/SUB cells, serpentine scanning and face/edge damping (algo-quality#1). Measured as useless or harmful.",
+  "Global cut budget, 'max. Schnittzellen' (algo-quality#3, phase 2). The background cut factor in wave 4 gives most of the value.",
+  "Image-level Canny/polyline contour extraction (algo-quality#5). Unproven, and it would defeat template reuse. Only the opt-in grid-preserving continuity bonus is built.",
+  "Haptic feedback with the VIBRATE permission (ux-mobile-android#2). The text status line and flash highlight already give feedback.",
+  "A native 'pause' flush registry through @capacitor/app (ux-mobile-android#1). beforeunload with commit(), visibilitychange and minimizeApp already cover saving.",
+  "MediaPipe face detection. Its 14.6 MB wasm exceeds the PWA precache limit; pico.js is used instead (wave 4).",
+  "Colour-chart sheet mode for measuring many tiles from one photo (spec-gaps#7, phase 2).",
+  "First-fit-decreasing packing of mixed-width strips into shared raw tiles (correctness-core#5, optional). The current per-shape-group count is a safe upper bound.",
+  "Mixed page orientations per section and tighter print margins (pdf-print#4). Mixed orientations risk print-dialog auto-scaling, which breaks 1:1. Smaller margins clip on common printers.",
+  "Undo history that persists across reloads (ux-desktop#7). The journal is in memory for the session only, and the README will say so."
+ ],
+ "otherPackagesInThisWave": [
+  {
+   "id": "w3-colour-quality",
+   "title": "Smoother colour gradients without stray colours, better 'own materials' palettes",
+   "ownedFiles": [
+    "src/core/mosaic.ts",
+    "src/core/color.ts",
+    "src/core/kmeans.ts",
+    "src/core/types.ts",
+    "src/ui/project/StepColors.tsx",
+    "tests/pipeline.test.ts",
+    "tests/golden/mosaic-hashes.json"
+   ]
+  },
+  {
+   "id": "w3-freeform-editor",
+   "title": "Reliable freeform validation and a usable contour editor",
+   "ownedFiles": [
+    "src/core/edits.ts",
+    "src/core/geometry.ts",
+    "src/core/pieces.ts",
+    "src/ui/project/StoneDialog.tsx"
+   ]
+  },
+  {
+   "id": "w3-face-guidance",
+   "title": "Face resolution guidance, detail meter, safe region drawing, translated layout errors",
+   "ownedFiles": [
+    "src/core/layout.ts",
+    "src/ui/project/StepGeometry.tsx",
+    "src/ui/project/StepShapes.tsx"
+   ]
+  },
+  {
+   "id": "w3-viewer-features",
+   "title": "Rulers, section focus, paint/rectangle modes and photo comparison in the viewer",
+   "ownedFiles": [
+    "src/core/render.ts",
+    "src/ui/project/Viewer.tsx",
+    "src/ui/project/StepPreview.tsx"
+   ]
+  },
+  {
+   "id": "w3-pdf-foundations",
+   "title": "Readable tables, correct labels, honest truncation, bookmarks and print-at-100 %",
+   "ownedFiles": [
+    "src/core/pdf.ts",
+    "src/core/pdfOptions.ts",
+    "tests/pdf.test.ts"
+   ]
+  },
+  {
+   "id": "w3-project-portability",
+   "title": "Project export/import carries its materials",
+   "ownedFiles": [
+    "src/storage/projects.ts",
+    "src/ui/Projects.tsx"
+   ]
+  }
+ ]
+}

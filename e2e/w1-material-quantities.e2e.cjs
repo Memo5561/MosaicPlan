@@ -115,12 +115,14 @@ const MAT = {
         if (th && td) kv[th.textContent.trim()] = td.textContent.trim();
       }
       const colorTable = root.querySelector('[data-testid="mc-per-color"]');
+      // w5-material-shopping: Zellen über data-col lesen (Tabellen haben jetzt Name/Material bzw. Bedarf/Einkauf-Spalten)
+      const col = (tr, c) => ((tr.querySelector(`td[data-col="${c}"]`) || {}).textContent || '').trim();
       const rows = colorTable
-        ? [...colorTable.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()))
+        ? [...colorTable.querySelectorAll('tbody tr')].map((tr) => ['code', 'pieces', 'cut', 'raw', 'rawWithReserve'].map((c) => col(tr, c)))
         : [];
       const shop = [...root.querySelectorAll('[data-testid="mc-shop-row"]')].map((tr) => ({
         material: tr.getAttribute('data-material'),
-        cells: [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()),
+        cells: [col(tr, 'colors'), col(tr, 'need'), col(tr, 'toBuy'), ((tr.querySelector('[data-testid="mc-shop-packs"]') || {}).textContent || '–').trim(), col(tr, 'cost')],
         stock: (tr.querySelector('[data-testid="mc-shop-stock"]') || { textContent: '' }).textContent.trim(),
         short: tr.querySelector('[data-testid="mc-shop-tobuy"]').classList.contains('error'),
       }));

@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type TextareaHTMLAttributes } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
-import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, removePaletteColor, resetAutoName, updatePaletteColor } from '../../core/edits';
+import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, resetAutoName, updatePaletteColor } from '../../core/edits';
 import type { ComputeDiagnostics, MissingColor } from '../../core/mosaic';
-import { applyMaterialMerge, planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
+import { planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
 import { DEFAULT_SETTINGS, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import { computedDeltaE } from './staleReasons';
 import { AccentsPanel, PinnedColorsEditor } from './AccentColors';
+import { HistoryButtons, HistoryStatus, useHistoryShortcuts } from './HistoryControls';
 import type { ProjectApi } from './useProject';
 import type { Step } from './stepNav';
 import '../css/w1-mosaic-core.css';
@@ -252,6 +253,7 @@ type MergeDialog = { kind: 'merge'; plan: MaterialMergePlan; snap: Snapshot } | 
 
 export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; materials: Material[]; onGo?: (s: Step) => void }) {
   const { t, n, lang } = useI18n();
+  useHistoryShortcuts(api);
   const rec = api.rec!;
   const palette = rec.palette;
   const formula = rec.settings.deltaE;
@@ -323,10 +325,9 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
       setNotice(t('colors.rm.changed'));
       return;
     }
-    // Namen der verbleibenden Farben wieder eindeutig und so kurz wie möglich (z. B. „Rot (hell)“ → „Rot“)
-    const next = normalizePaletteNames(api.computed ? removePaletteColor(palette, api.computed.data, plan.index, target, formula) : palette.filter((_, k) => k !== plan.index), lang);
-    api.setPalette(next);
-    if (api.computed) api.touchMosaic();
+    // Namen der verbleibenden Farben wieder eindeutig und so kurz wie möglich (z. B. „Rot (hell)“ → „Rot“).
+    // Über paletteOp: Steine werden mitgeführt und das Entfernen kann rückgängig gemacht werden (w5-undo-editing).
+    const next = api.paletteOp('remove', (pal, x) => normalizePaletteNames(x.removeColor(pal, plan.index, target), lang)) ?? palette;
     const tpNow = next[target > plan.index ? target - 1 : target] ?? tp;
     setNotice(
       (api.computed && plan.pieces > 0
@@ -369,9 +370,8 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
       setNotice(tCount(t, 'colors.merge.replaced', merging.next.length, { n: merging.next.length }));
     } else if (api.computed && !merging.plan.unchanged && !merging.plan.noValidMaterials) {
       const plan = merging.plan;
-      const next = applyMaterialMerge(plan, api.computed.data, formula);
-      api.setPalette(normalizePaletteNames(next, lang));
-      api.touchMosaic();
+      // über paletteOp: wie applyMaterialMerge, mit Rückgängig (w5-undo-editing)
+      api.paletteOp('merge', (_pal, x) => normalizePaletteNames(x.merge(plan), lang));
       setNotice(t('colors.merge.done', { added: plan.added.length, removed: plan.removed.length, n: n(plan.movedStones), de: n(plan.maxDeltaE, 1) }));
     }
     setMerging(null);
@@ -391,6 +391,11 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
 
   return (
     <div className="palette-editor">
+      {/* Rückgängig/Wiederholen (auch Strg+Z) – gemeinsamer Verlauf mit den Steinänderungen (w5-undo-editing) */}
+      <div className="w5ue-toolbar sticky">
+        <HistoryButtons api={api} testIdPrefix="palette-history" />
+        <HistoryStatus api={api} testId="palette-history-status" />
+      </div>
       <div className="row-between">
         <h3>
           {t('colors.palette')} ({palette.length})

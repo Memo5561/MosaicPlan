@@ -11,12 +11,10 @@ import {
   layingOrder,
   nextUnplaced,
   orderPosOf,
-  ProgressUndo,
   rangeCounts,
   readLayingPrefs,
   refIdx,
   refPiece,
-  restoreSnapshot,
   rowBlock,
   setPiecesPlaced,
   writeLayingPrefs,
@@ -34,39 +32,31 @@ import { runWorker } from '../../workers/client';
 import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Swatch, Toggle } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
 import { FindStone } from './FindStone';
+import { historyEventText, HistoryButtons, historyLabelText, shortcutText, useHistoryShortcuts } from './HistoryControls';
 import { MaterialCalc } from './MaterialCalc';
 import { stepHash } from './stepNav';
 import { cutInstructionItems, StoneDialog } from './StoneDialog';
 import { MAX_SCALE } from './touchTap';
-import type { ProjectApi } from './useProject';
+import type { EditResult, ProjectApi } from './useProject';
+import type { HistoryFlash, HistoryLabel } from '../../core/journal';
 import { laidPercentAt } from '../../storage/db';
 import { Viewer, type OutsideTap, type PieceRef, type ViewerHandle, type ViewerMode } from './Viewer';
 import '../css/w1-review-fixes.css';
 import '../css/w4-laying-workbench.css';
 import '../css/w4-review-fixes.css';
+import '../css/w5-undo-editing.css';
 
 export { MaterialCalc } from './MaterialCalc';
 
-/** Eintrag im Rückgängig-Stapel: Text für die Statuszeile, ggf. der eine geänderte Stein (Hervorhebung) */
+/**
+ * Eintrag im Verlauf (Rückgängig/Wiederholen, gemeinsam mit Farb-, Form- und Palettenänderungen – siehe
+ * useProject/core/journal.ts): Text für die Statuszeile, ggf. der eine geänderte Stein (Hervorhebung). Der Verlauf
+ * gehört zum berechneten Mosaik und übersteht das Verlassen von Schritt 9; Neuberechnen, Verlassen des Projekts
+ * oder Neuladen leeren ihn.
+ */
 interface UndoMeta {
   label: string;
   flash?: PieceRef;
-}
-
-/**
- * Rückgängig-Stapel je Raster: gehört zum berechneten Mosaik (Objekt `computed` aus useProject) und dessen
- * Änderungsstand (`version`). So übersteht er das Verlassen von Schritt 9 (Schrittwechsel, Android-Zurück, Link
- * „anzeigen“) – eine neue Berechnung, eine Änderung an Steinen, Verlassen des Projekts oder Neuladen leeren ihn.
- * WeakMap: mit dem Raster wird auch der Stapel freigegeben.
- */
-const undoByGrid = new WeakMap<object, { version: number; undo: ProgressUndo<UndoMeta> }>();
-function undoFor(grid: object | null, version: number): ProgressUndo<UndoMeta> {
-  if (!grid) return new ProgressUndo<UndoMeta>(50);
-  const e = undoByGrid.get(grid);
-  if (e && e.version === version) return e.undo;
-  const undo = new ProgressUndo<UndoMeta>(50);
-  undoByGrid.set(grid, { version, undo });
-  return undo;
 }
 
 /** Mehr geänderte Zellen werden nicht einzeln gemeldet (useProject zählt dann neu) */
@@ -102,10 +92,8 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const [csvBusy, setCsvBusy] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
   const [, setTick] = useState(0);
-  // Stapel des aktuellen Rasters (übersteht das Verlassen von Schritt 9, siehe undoFor)
-  const undo = useRef<ProgressUndo<UndoMeta>>(undoFor(api.computed, api.version));
-  undo.current = undoFor(api.computed, api.version);
-  const [undoSize, setUndoSize] = useState(() => undo.current.size);
+  const undoSize = api.history.undoCount;
+  const redoSize = api.history.redoCount;
   const viewer = useRef<ViewerHandle>(null);
   const viewerBox = useRef<HTMLDivElement>(null);
   const cardBox = useRef<HTMLDivElement>(null);
@@ -137,11 +125,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   useEffect(() => {
     if (G && selected && !G.sections.some((x) => x.id === selected)) setSelected(null);
   }, [G, selected]);
-  // Rückgängig nur für den Fortschritt dieses Rasters: neue Berechnung oder Änderung am Mosaik → neuer, leerer Stapel
-  // (undoFor); beim erneuten Öffnen von Schritt 9 bleibt der bisherige Stapel samt Anzahl erhalten
-  useEffect(() => {
-    setUndoSize(undo.current.size);
-  }, [c, api.version]);
+  useHistoryShortcuts(api);
   // Statusmeldung nach einigen Sekunden ausblenden
   useEffect(() => {
     if (!status) return;
@@ -152,9 +136,10 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   /** offene/verlegte Steine je Farbe im Abschnitt (bzw. im ganzen Mosaik) – nach Änderungen nur nachgeführt */
   const counter = useMemo(
     () => (c ? ColorProgressCounter.build(c.layout, c.data, sec) : null),
-    // Mosaikänderungen (version) bauen neu auf; Fortschritt wird in commit()/doUndo() nachgeführt
+    // Mosaikänderungen (version) und angewendetes Rückgängig/Wiederholen (history.applied) bauen neu auf;
+    // eigene Fortschrittsänderungen werden in commit() bzw. onDialogEdit nachgeführt
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [c, api.version, sec],
+    [c, api.version, sec, api.history.applied],
   );
 
   /** Verlegereihenfolge der Karte „Nächster Stein“ (nur geöffnet) */
@@ -194,8 +179,19 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   }, [code, c]);
 
   const wake = useWakeLock(layActive);
-  const pickIdx = pick && c ? pick.row * c.layout.cols + pick.col : -1;
-  const dialogMask = useDialogMask(pickIdx, c?.data ?? null, api.version);
+
+  // Rückgängig/Wiederholen (Knöpfe, Strg+Z – auch aus Schritt 8): Statuszeile und Hervorhebung
+  const lastEv = api.history.last;
+  const seenEv = useRef(lastEv?.seq ?? 0);
+  useEffect(() => {
+    if (!lastEv || lastEv.seq === seenEv.current) return;
+    seenEv.current = lastEv.seq;
+    setStatusState({ text: historyEventText(lastEv, t), id: lastEv.seq + Math.random() });
+    if ((lastEv.kind === 'undo' || lastEv.kind === 'redo') && lastEv.flash) setFlash({ ...lastEv.flash });
+    setOutsideAsk(null);
+    // t wechselt nur mit der Sprache
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEv]);
 
   /**
    * Stein ins Bild holen: nur verschieben/zoomen, wenn er nicht gut sichtbar ist (oder `force`). „Sichtbar“ heißt
@@ -276,25 +272,20 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
       dirty.push(idx);
     });
     if (!dirty.length) return 0;
-    undo.current.push(snap, meta);
-    setUndoSize(undo.current.size);
+    // in den gemeinsamen Verlauf (Rückgängig/Wiederholen exakt, nur solange niemand die Steine anders geändert hat)
+    api.recordProgress(snap, { text: meta.label }, meta.flash);
     api.touchProgress(dirty.length > DIRTY_MAX ? undefined : dirty);
     setOutsideAsk(null);
     bump();
     return dirty.length;
   };
 
+  // Status und Hervorhebung kommen über api.history.last (siehe oben); Zähler über history.applied
   const doUndo = () => {
-    if (apiComputing()) return;
-    const e = undo.current.pop();
-    setUndoSize(undo.current.size);
-    if (!e) return;
-    const changed = restoreSnapshot(L, data, e.snap);
-    for (const x of changed) counter?.update(data, x.idx, x.before, x.after);
-    if (changed.length) api.touchProgress(changed.length > DIRTY_MAX ? undefined : changed.map((x) => x.idx));
-    setStatus(t('w4lw.undone', { what: e.meta.label }));
-    if (e.meta.flash) setFlash({ ...e.meta.flash });
-    bump();
+    if (!apiComputing()) api.undo();
+  };
+  const doRedo = () => {
+    if (!apiComputing()) api.redo();
   };
 
   // ---------------------------------------------------------------- Markieren
@@ -476,34 +467,21 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
     goTo(nextUnplaced(order, data, b));
   };
 
-  // ---------------------------------------------------------------- Steindetail (Fortschritt mit Rückgängig)
-  const onDialogProgress = () => {
-    if (pickIdx < 0) return;
-    const before = dialogMask.current;
-    const now = data.progress[pickIdx];
-    dialogMask.current = now;
-    if (before === now) return;
-    const snap: ProgressSnapshot = { kind: 'cells', cells: Int32Array.of(pickIdx), before: Uint16Array.of(before) };
-    const row = Math.floor(pickIdx / L.cols);
-    const col = pickIdx - row * L.cols;
-    const cnt = cellPieceCount(data, pickIdx);
-    const added = now & ~before;
-    const removed = before & ~now;
-    const bits = (v: number) => {
-      let k = 0;
-      for (let x = v; x; x &= x - 1) k++;
-      return k;
-    };
-    let label: string;
-    let fl: PieceRef | undefined;
-    if (bits(added) + bits(removed) === 1) {
-      const piece = Math.log2(added | removed);
-      label = t(added ? 'w4lw.st.laidOne' : 'w4lw.st.openOne', { id: pieceId(L, row, col, piece, cnt) });
-      fl = { idx: pickIdx, piece };
-    } else label = tCount(t, added ? 'w4lw.st.laidN' : 'w4lw.st.openN', bits(added | removed), { n: n(bits(added | removed)) });
-    commit(snap, { label, flash: fl });
-    setStatus(label);
+  // ---------------------------------------------------------------- Steindetail (jede Änderung mit Verlauf)
+  /** Änderung im Steindetail: über api.editCell (Verlauf); Farbzähler bei reiner Verlegeänderung nachführen */
+  const onDialogEdit = (idx: number, mutate: () => void, label: HistoryLabel, flash?: HistoryFlash): EditResult | null => {
+    const before = data.progress[idx];
+    const res = api.editCell(idx, mutate, label, flash);
+    if (res?.changed) {
+      // Formänderungen bauen die Zähler über api.version neu auf; nur „verlegt“ wird hier nachgeführt
+      if (!res.mosaic && res.progress) counter?.update(data, idx, before, data.progress[idx]);
+      setStatus(historyLabelText(label, t));
+      setOutsideAsk(null);
+    }
+    bump();
+    return res;
   };
+
 
   // ---------------------------------------------------------------- Exporte
   const exportCsv = async (ids: string[] | null) => {
@@ -558,6 +536,29 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
     // außerhalb des Verlegemodus wie Antippen: Steindetail öffnen (im Verlegemodus nur zeigen, nie verlegen)
     if (!layActive) setPick({ row, col, piece });
   };
+
+  /** Steindetail: auf breiten Bildschirmen anstelle der Seitenleiste (Mosaik bleibt bedienbar), sonst als Dialog */
+  const stone = pick && (
+    <StoneDialog
+      layout={L}
+      data={data}
+      palette={rec.palette}
+      materials={materials}
+      sections={G}
+      row={pick.row}
+      col={pick.col}
+      piece={pick.piece}
+      minPieceMm={s.shapes.minPieceMm}
+      readOnly={locked}
+      variant={wide && view === 'lay' ? 'panel' : 'modal'}
+      history={<HistoryButtons api={api} testIdPrefix="stone-history" compact />}
+      paletteMode={s.paletteMode}
+      deltaE={s.deltaE}
+      onClose={() => setPick(null)}
+      onNavigate={(row, col, piece) => setPick({ row, col, piece })}
+      onEdit={onDialogEdit}
+    />
+  );
 
   const openForCard = focusColor !== null ? counter?.counts.get(focusColor) : counter?.totals();
   const card = layActive && cardOpen && (
@@ -665,17 +666,30 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                   />
                 </div>
               )}
-              <button
-                type="button"
-                className="btn small w4lw-undo"
-                disabled={undoSize === 0 || locked}
-                onClick={doUndo}
-                title={t('w4lw.undoTitle')}
-                aria-label={t('w4lw.undo', { n: n(undoSize) })}
-                data-testid="lay-undo"
-              >
-                ↶ <span className="w4lw-undo-txt">{t('w4lw.undoLabel')}</span> ({n(undoSize)})
-              </button>
+              <span className="w4lw-hist" role="group" aria-label={t('w5ue.historyAria')} data-w5ue-history="">
+                <button
+                  type="button"
+                  className="btn small w4lw-undo"
+                  disabled={undoSize === 0 || locked}
+                  onClick={doUndo}
+                  title={`${undoSize ? `${t('w5ue.undoNext', { what: historyLabelText(api.history.undoLabel, t) })} (${shortcutText('undo', t)})\n` : ''}${t('w4lw.undoTitle')}`}
+                  aria-label={t('w4lw.undo', { n: n(undoSize) })}
+                  data-testid="lay-undo"
+                >
+                  ↶ <span className="w4lw-undo-txt">{t('w4lw.undoLabel')}</span> <span className="w5ue-count">({n(undoSize)})</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn small w4lw-undo"
+                  disabled={redoSize === 0 || locked}
+                  onClick={doRedo}
+                  title={redoSize ? `${t('w5ue.redoNext', { what: historyLabelText(api.history.redoLabel, t) })} (${shortcutText('redo', t)})` : t('w5ue.redoNone')}
+                  aria-label={`${t('w5ue.redoLabel')} (${n(redoSize)})`}
+                  data-testid="lay-redo"
+                >
+                  ↷ <span className="w4lw-undo-txt">{t('w5ue.redoLabel')}</span> <span className="w5ue-count">({n(redoSize)})</span>
+                </button>
+              </span>
             </div>
             {locked && (
               <p className="w1mc-notice w1fx-locked small" role="status" data-testid="edit-locked">
@@ -770,10 +784,13 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               </small>
               {layActive && sec && <small className="muted block">{t('w4lw.focusNote', { sec: sec.id })}</small>}
               {layActive && <WakeNote state={wake} />}
-              {(layActive || undoSize > 0) && <small className="muted block">{t('w4lw.undoNote')}</small>}
+              {(layActive || undoSize > 0 || redoSize > 0) && <small className="muted block">{t('w4lw.undoNote')}</small>}
             </div>
             {!wide && card}
           </div>
+          {wide && stone ? (
+            <aside className="side w5ue-side">{stone}</aside>
+          ) : (
           <aside className="side w4lw-side">
             {wide && card}
             <FindStone layout={L} data={data} onFound={onFound} />
@@ -916,26 +933,10 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               )}
             </details>
           </aside>
+          )}
         </div>
       )}
-      {pick && (
-        <StoneDialog
-          layout={L}
-          data={data}
-          palette={rec.palette}
-          materials={materials}
-          sections={G}
-          row={pick.row}
-          col={pick.col}
-          piece={pick.piece}
-          minPieceMm={s.shapes.minPieceMm}
-          readOnly={locked}
-          onClose={() => setPick(null)}
-          onNavigate={(row, col, piece) => setPick({ row, col, piece })}
-          onChanged={api.touchMosaic}
-          onProgress={onDialogProgress}
-        />
-      )}
+      {(!wide || view === 'material') && stone}
     </div>
   );
 }
@@ -964,15 +965,6 @@ function visibleBand(cv: HTMLElement, card: HTMLElement | null): { top: number; 
     if (b && b.bottom >= bottom - 1 && b.top < bottom) bottom = b.top;
   }
   return { top, bottom: Math.max(top, bottom) };
-}
-
-/** Maske der im Steindetail geöffneten Zelle vor einer Änderung dort (für Rückgängig) */
-function useDialogMask(idx: number, data: MosaicData | null, version: number) {
-  const ref = useRef(0);
-  useEffect(() => {
-    ref.current = idx >= 0 && data ? data.progress[idx] : 0;
-  }, [idx, data, version]);
-  return ref;
 }
 
 /** Offene Steine je Farbe (Abschnitt bzw. ganzes Mosaik); Antippen hebt die Farbe hervor */

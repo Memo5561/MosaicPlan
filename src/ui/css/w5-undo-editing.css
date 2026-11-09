@@ -1,0 +1,353 @@
+/* Paket w5-undo-editing: Rückgängig/Wiederholen, Steindetail neben dem Mosaik, Heller/Dunkler, Vergleichsfoto */
+
+/* ---------- Rückgängig / Wiederholen */
+.w5ue-history {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.w5ue-history .w5ue-hbtn {
+  white-space: nowrap;
+}
+.w5ue-history.compact .w5ue-btxt {
+  /* nur Symbol und Zähler – der Text steht im Tooltip und im aria-label */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.w5ue-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 6px;
+}
+.w5ue-hstatus {
+  min-height: 1.35em;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+.w5ue-toolbar .w5ue-hstatus {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.w5ue-hstatus.on {
+  color: var(--ink);
+}
+.w5ue-hstatus.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* ---------- Steindetail neben dem Mosaik (breite Bildschirme): klebt unter Kopfzeile und Schrittleiste */
+.w5ue-panel {
+  position: sticky;
+  top: calc(var(--w3lp-top, 0px) + 8px);
+  max-height: calc(100dvh - var(--w3lp-top, 0px) - 16px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.w5ue-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.w5ue-panel-head h3 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.w5ue-panel-body {
+  overflow: auto;
+  padding: 8px 12px 14px;
+  overscroll-behavior: contain;
+}
+
+/* ---------- Inhalt des Steindetails (eine Spalte) */
+.w5ue-stone.stone-grid {
+  display: block;
+}
+.w5ue-stone h4 {
+  margin: 0.35em 0 0.35em;
+}
+.w5ue-sec {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 4px;
+}
+.w5ue-sum {
+  background: var(--panel);
+}
+.w5ue-sum-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.w5ue-sum-head .swatch {
+  flex: 0 0 auto;
+  border-radius: 6px;
+}
+.w5ue-sum-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.3;
+}
+.w5ue-sum-id {
+  margin: 6px 0 4px;
+}
+.w5ue-pieces {
+  margin: 4px 0;
+}
+.w5ue-laid-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.w5ue-sum-hist {
+  margin-left: auto;
+}
+.w5ue-sum-hist .w5ue-history {
+  flex-wrap: nowrap;
+}
+/* kompakte Knöpfe (Steindetail): Pfeil und Zähler, fingergroß, aber schmal */
+.w5ue-history.compact {
+  gap: 2px;
+}
+.w5ue-history.compact .btn.small {
+  min-width: 44px;
+  padding-left: 5px;
+  padding-right: 5px;
+  justify-content: center;
+}
+.w5ue-history.compact .w5ue-count {
+  font-size: 0.76rem;
+}
+/* großer Schalter „verlegt“ (Kontrollkästchen in einer fingergroßen Fläche) */
+.w5ue-laid {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 14px 6px 10px;
+  border: 2px solid var(--field-line);
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+/* im Dialog teilt sich der Schalter die Zeile mit ↶/↷ (schmale Handys: Text bricht um statt die Knöpfe) */
+.w5ue-stone-modal .w5ue-laid {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.w5ue-laid input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--ok);
+}
+.w5ue-laid.on {
+  border-color: var(--ok);
+  background: #e3f3e7;
+  color: var(--ok);
+}
+.w5ue-laid.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.w5ue-laid:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Heller / Dunkler */
+.w5ue-shade {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+.w5ue-shade-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 5px 10px;
+  text-align: left;
+  min-width: 0;
+}
+.w5ue-shade-dir {
+  font-weight: 700;
+}
+.w5ue-shade-to {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 400;
+  font-size: 0.82rem;
+}
+.w5ue-shade-hint {
+  margin-top: 4px;
+}
+
+/* Farbreihe mit ▲/▼ */
+.w5ue-colors {
+  margin-top: 8px;
+}
+.w5ue-colors .cp {
+  position: relative;
+}
+.w5ue-mark {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  font-size: 0.58rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  pointer-events: none;
+}
+.w5ue-color-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.w5ue-selected {
+  margin: 0;
+  flex: 1 1 200px;
+}
+.w5ue-selected .swatch {
+  vertical-align: -2px;
+}
+.w5ue-tpl {
+  margin-top: 6px;
+}
+.w5ue-tpl .cut-svg {
+  max-height: 240px;
+  width: auto;
+}
+
+/* Dialog (schmale Bildschirme): Kurzinfo mit „verlegt“ bleibt beim Blättern oben */
+.modal-body .w5ue-sum {
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  margin: -12px -18px 0;
+  padding: 10px 18px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* Handy: Dialog als Blatt von unten, Farbreihe waagerecht blätterbar, Schnittvorlage kleiner */
+@media (max-width: 600px) {
+  .modal-backdrop:has(.w5ue-stone-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .modal:has(.w5ue-stone-modal) {
+    width: 100%;
+    /* oben bleibt ein Streifen des Mosaiks sichtbar (Zusammenhang des Steins) */
+    max-height: 80vh;
+    max-height: 80dvh;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .w5ue-colors:not(.all) {
+    flex-wrap: nowrap;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+  }
+  .w5ue-colors:not(.all) .cp {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+  .w5ue-tpl .cut-svg {
+    max-height: 180px;
+  }
+}
+
+/* Schritt Farben: Rückgängig bleibt beim Blättern durch die Farbtabelle erreichbar */
+.w5ue-toolbar.sticky {
+  position: sticky;
+  top: var(--w3lp-top, 0px);
+  z-index: 3;
+  background: var(--panel);
+  padding: 6px 0;
+  margin-top: -6px;
+}
+.modal-body .w5ue-sum + .w5ue-sec {
+  border-top: 0;
+}
+
+/* Schritt 9: Rückgängig/Wiederholen rechts in der Werkzeugzeile (eine Gruppe) */
+.w4lw-hist {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  margin-left: auto;
+}
+.w4lw-hist .w4lw-undo {
+  margin-left: 0;
+}
+/* Handy: Werkzeuge und beide Knöpfe passen in EINE Zeile (360–390 px) – das Mosaik rückt nicht nach unten */
+@media (max-width: 600px) {
+  .w4lw-toolbar {
+    column-gap: 10px;
+  }
+  .w4lw-tools .segmented button {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .w4lw-hist {
+    gap: 2px;
+  }
+  .w4lw-hist .btn.small {
+    min-width: 44px;
+    padding-left: 4px;
+    padding-right: 4px;
+    justify-content: center;
+  }
+  .w4lw-hist .w5ue-count {
+    font-size: 0.74rem;
+  }
+}
+
+/* Hinweis unter der Legende (Schritt 8) */
+.w5ue-hnote {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Vergleichsfoto */
+.w5ue-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.w5ue-ref-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

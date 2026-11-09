@@ -87,6 +87,22 @@ async function waitTotal(page, pred, ms = 10000) {
   return v;
 }
 
+/**
+ * w5-undo-editing: am Desktop steht das Steindetail als Seitenleiste anstelle der Legende – zum Ablesen der
+ * Steinzahlen kurz schließen (Esc) und danach denselben Stein wieder öffnen.
+ */
+async function withLegend(page, fn) {
+  const open = await page.$('[data-testid="stone-panel"]');
+  const id = open ? ((await page.textContent('[data-testid="stone-id"]')) || '').trim().split(/\s/)[0] : null;
+  if (open) {
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('[data-testid="legend-item"]');
+  }
+  const v = await fn();
+  if (id) await openStone(page, id);
+  return v;
+}
+
 async function stableTotal(page) {
   let prev = await legendTotal(page);
   for (let i = 0; i < 20; i++) {
@@ -122,7 +138,7 @@ async function clickMm(page, x, y) {
   await page.waitForTimeout(300);
   const idDiag = (await page.textContent('[data-testid="stone-id"]')).trim();
   check('Zelle als Diagonale ╲ (zwei Teile)', /-1/.test(idDiag) && /1\/2/.test(idDiag), idDiag.slice(0, 40));
-  const totalDiag = await stableTotal(page);
+  const totalDiag = await withLegend(page, () => stableTotal(page));
   const hint = (await page.textContent('.stone-grid')) || '';
   check('Kantenschnitt-Hinweis nennt die Richtungen', /0° = senkrecht/.test(hint) && /45° = ╱/.test(hint) && /135° = ╲/.test(hint));
 
@@ -279,7 +295,7 @@ async function clickMm(page, x, y) {
   const freeBtn = await page.getAttribute('[data-testid="kind-free"]', 'class');
   check('Formknopf „Freiform“ aktiv', /primary/.test(freeBtn || ''));
   await page.screenshot({ path: path.join(OUT, 'w3fe-07-saved-stone.png') });
-  const totalFree = await waitTotal(page, (v) => v === totalDiag - 1);
+  const totalFree = await withLegend(page, () => waitTotal(page, (v) => v === totalDiag - 1));
   check('Steinzahl: Diagonalzelle (2 Steine) → Freiform-Dreieck (1 Stein)', totalFree === totalDiag - 1, `${totalDiag} → ${totalFree}`);
 
   // ---------- Nach Neustart: Freiformteil exakt erhalten; Badge „Material fehlt“
@@ -332,7 +348,7 @@ async function clickMm(page, x, y) {
   const storedNote = (await page.isVisible('[data-testid="stone-free-issues"]')) ? await page.textContent('[data-testid="stone-free-issues"]') : '';
   const idTwo = (await page.textContent('[data-testid="stone-id"]')).trim();
   check('Gespeicherte Freiformzelle ohne Fuge: Steindetail nennt den Hinweis', /Hinweise zu dieser Freiform-Zelle/.test(storedNote) && /Teil 1 und Teil 2 berühren sich/.test(storedNote) && /1\/2/.test(idTwo), storedNote.slice(0, 100));
-  const totalTwo = await waitTotal(page, (v) => v === totalFree + 1);
+  const totalTwo = await withLegend(page, () => waitTotal(page, (v) => v === totalFree + 1));
   check('Steinzahl: zweites Freiformteil zählt als Stein', totalTwo === totalFree + 1, `${totalFree} → ${totalTwo}`);
   await page.screenshot({ path: path.join(OUT, 'w3fe-08a-stored-warning.png') });
   const missing = patched && (await page.isVisible('[data-testid="stone-material-missing"]')) ? await page.textContent('[data-testid="stone-material-missing"]') : '';

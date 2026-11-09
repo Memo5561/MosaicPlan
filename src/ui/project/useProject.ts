@@ -1,6 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hexToLab, isValidHex } from '../../core/color';
-import { invalidFreeCells, repairDegenerateCells } from '../../core/edits';
+import { hexToLab, isValidHex, type DeltaEFormula } from '../../core/color';
+import { invalidFreeCells, isLegacyPalette, normalizePaletteNames, repairDegenerateCells } from '../../core/edits';
+import {
+  captureCellSide,
+  cellsEntryFrom,
+  classifyPaletteChange,
+  EditJournal,
+  mergeRecorded,
+  paletteEntryFrom,
+  paletteIndexSig,
+  progressEntryFrom,
+  removeColorRecorded,
+  undoRemoveSteps,
+  uniqueCells,
+  type ApplyResult,
+  type HistoryFlash,
+  type HistoryLabel,
+  type JournalEntry,
+  type ProgressBefore,
+  type RemoveStep,
+} from '../../core/journal';
+import type { MaterialMergePlan } from '../../core/paletteOps';
 import { checkMosaicIntegrity } from '../../core/integrity';
 import { cellId, computeLayout, sectionsFor, type Layout, type LayoutParams, type SectionGrid } from '../../core/layout';
 import type { ComputeDiagnostics, FixedColor } from '../../core/mosaic';
@@ -17,6 +37,9 @@ import {
   isPaletteChangedError,
   keepStoredComputeFields,
   loadProjectState,
+  loadReference,
+  referenceFits,
+  saveReference,
   mergeComputeFields,
   onStoreEvent,
   PALETTE_CHANGED,
@@ -31,6 +54,7 @@ import {
   type ImageRecord,
   type ProgressSummary,
   type ProjectRecord,
+  type ReferenceImage,
   type SaveGuard,
   type SaveParts,
   type StoredMosaicNoProgress,
@@ -60,6 +84,7 @@ import { estimatePreviewMs, isSlowDevice, isTypingTarget, previewDebounceMs, pre
 import type { Lang } from '../../i18n';
 import { announceNotice } from '../SaveResultNote';
 import { sameComputeKey } from './staleReasons';
+import { decodeReference, encodeReference, processInWorker, recordAtCompute, regenerateBlock, type RegenerateBlock } from './referenceImage';
 
 export function layoutParamsOf(s: ProjectSettings): LayoutParams {
   return { widthMm: s.widthMm, heightMm: s.heightMm, tileW: s.tileW, tileH: s.tileH, joint: s.joint, edgeMode: s.edgeMode, minCutMm: s.minCutMm };
@@ -283,6 +308,8 @@ export interface PendingCommit {
   started: ProjectRecord;
   /** 'preview': übernommene Live-Vorschau (keine zweite Berechnung), 'compute': Berechnung über „Berechnen“ */
   origin: 'compute' | 'preview';
+  /** Vergleichsfoto als JPEG (≤ 2048 px) – wird mit dem Raster in derselben Transaktion gespeichert */
+  reference?: ReferenceImage;
 }
 
 /** Was über ein wartendes Ergebnis angezeigt wird. */
@@ -291,6 +318,65 @@ export interface PendingResult {
   at: number;
   /** Raster des wartenden Ergebnisses (ändert es sich, geht der Verlegefortschritt sicher ganz verloren) */
   lp?: LayoutParams;
+}
+
+// ---------- Verlauf (Rückgängig/Wiederholen, Paket w5-undo-editing)
+
+/** Was zuletzt mit dem Verlauf passiert ist (Statuszeile, Hervorhebung). */
+export interface HistoryEvent {
+  seq: number;
+  at: number;
+  /** 'undo'/'redo': angewendet · 'stale': verworfen, weil inzwischen anders geändert · 'too-large': zu groß für den Verlauf */
+  kind: 'undo' | 'redo' | 'stale' | 'too-large';
+  label: HistoryLabel;
+  flash?: HistoryFlash;
+  /** bei 'stale': Richtung */
+  dir?: 'undo' | 'redo';
+  entryType?: JournalEntry['type'];
+}
+
+/** Ergebnis von editCell/editCells */
+export interface EditResult {
+  changed: boolean;
+  /** Raster (Farbe, Form) geändert */
+  mosaic: boolean;
+  /** Verlegestatus geändert */
+  progress: boolean;
+}
+
+/** Stand des Verlaufs für die Anzeige */
+export interface HistoryInfo {
+  undoCount: number;
+  redoCount: number;
+  undoLabel: HistoryLabel | null;
+  redoLabel: HistoryLabel | null;
+  /** ändert sich bei jeder Änderung am Verlauf */
+  version: number;
+  /** ändert sich nur, wenn Rückgängig/Wiederholen angewendet wurde */
+  applied: number;
+  last: HistoryEvent | null;
+  /** gesperrt (Berechnung läuft) */
+  locked: boolean;
+}
+
+export type PaletteOpKind = 'add' | 'update' | 'remove' | 'replace' | 'merge';
+
+/** Werkzeuge für paletteOp: führen das Raster mit und merken die Umkehrung */
+export interface PaletteOpTools {
+  data: MosaicData | null;
+  formula: DeltaEFormula;
+  /** wie removePaletteColor: Steine der Farbe → `replacement` (bzw. exakt nächste Farbe) */
+  removeColor(palette: PaletteColor[], index: number, replacement?: number): PaletteColor[];
+  /** wie applyMaterialMerge */
+  merge(plan: MaterialMergePlan): PaletteColor[];
+}
+
+/** Beschriftung eines Paletteneintrags (Farbnummern zweistellig wie überall) */
+export function paletteLabel(kind: PaletteOpKind, codes: readonly number[]): HistoryLabel {
+  const list = codes.map((c) => String(c).padStart(2, '0')).join(', ');
+  if (kind === 'merge') return { key: 'w5ue.h.palMerge' };
+  if (kind === 'replace' || !list) return { key: 'w5ue.h.palReplace' };
+  return { key: kind === 'remove' ? 'w5ue.h.palRemove' : kind === 'add' ? 'w5ue.h.palAdd' : 'w5ue.h.palUpdate', params: { codes: list } };
 }
 
 /** Verlegte Steine im gespeicherten Fortschritt (nur wenn er zum gespeicherten Raster passt). */
@@ -598,7 +684,11 @@ export async function prepareCommit(out: ComputeOutput, groutHex: string, origin
   const thumbCanvas = renderFull(out.layout, out.data, out.palette, 320, { groutHex, realistic: false });
   const thumb = await canvasToJpeg(thumbCanvas, 0.8);
   const fields = commitFieldsOf(out, { thumb, now: Date.now(), rev: uid() });
-  return { fields, pk: packWithoutProgress(out.data, fields.mosaicRev), data: out.data, proc: rawToCanvas(out.processed), layout: out.layout, lp: out.layoutParams, started: out.snapshot, origin };
+  const proc = rawToCanvas(out.processed);
+  // Vergleichsfoto für die Zeit nach dem Neuladen (Paket w5-undo-editing); scheitert das Kodieren, fehlt es nur
+  const ref = await encodeReference(proc, 'compute');
+  const reference = ref ? { ...ref, rev: fields.mosaicRev } : undefined;
+  return { fields, pk: packWithoutProgress(out.data, fields.mosaicRev), data: out.data, proc, layout: out.layout, lp: out.layoutParams, started: out.snapshot, origin, reference };
 }
 
 /** Wie ein Auftrag endete. */
@@ -725,7 +815,7 @@ async function persistCommit(id: string, job: PendingCommit, fallbackSource: str
   let committed: ProjectRecord | null = null;
   let saveFailure: unknown = null;
   try {
-    committed = await commitComputed(id, job.fields, job.pk.mosaic, job.pk.progress, h0?.instance ?? fallbackSource, carry);
+    committed = await commitComputed(id, job.fields, job.pk.mosaic, job.pk.progress, h0?.instance ?? fallbackSource, carry, { reference: job.reference });
   } catch (e) {
     if (isDeletedError(e)) {
       // Projekt wurde während der Berechnung gelöscht: nichts speichern, nicht wieder anlegen
@@ -875,7 +965,11 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
    * Foto nach Bildoptimierung, mit dem das Raster `rev` berechnet wurde (Vergleich Foto/Mosaik). Angezeigt wird es nur,
    * solange genau dieses Raster gilt – nach dem Übernehmen eines anderswo berechneten Mosaiks nicht mehr.
    */
-  const [processedState, setProcessed] = useState<{ canvas: HTMLCanvasElement; rev: string | undefined } | null>(null);
+  const [processedState, setProcessed] = useState<{ canvas: HTMLCanvasElement; rev: string | undefined; origin: ReferenceImage['origin'] } | null>(null);
+  /** Vergleichsfoto wird gerade geladen (gespeichertes JPEG) bzw. neu erzeugt */
+  const [referenceBusy, setReferenceBusy] = useState<'loading' | 'regenerating' | null>(null);
+  /** letzter Fehler beim Neu-Erzeugen ('failed', 'inputs', 'not-saved' oder ein RegenerateBlock) */
+  const [referenceError, setReferenceError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [saveError, setSaveError] = useState<SaveError | null>(null);
   const [integrityError, setIntegrityError] = useState<IntegrityError | null>(null);
@@ -934,6 +1028,67 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const snapGenRef = useRef(0);
   /** Ergebnis, das vor dem Ende des Ladens ankam – wird danach übernommen */
   const deferredCommit = useRef<{ job: PendingCommit; committed: ProjectRecord | null; saveFailure: unknown } | null>(null);
+
+  /**
+   * Gespeichertes Vergleichsfoto des Rasters `rev` anzeigen (Laden, anderswo berechnetes Raster übernommen). Ein
+   * inzwischen vorhandenes Foto desselben Rasters (z. B. gerade berechnet) bleibt; gehört das Raster inzwischen zu einer
+   * anderen Revision, wird nichts angezeigt.
+   */
+  const showStoredRef = useRef((ref: ReferenceImage, rev: string | undefined) => {
+    setReferenceBusy((b) => b ?? 'loading');
+    decodeReference(ref)
+      .then(
+        (canvas) => {
+          if (!mounted.current || (recRef.current?.mosaicRev ?? null) !== (rev ?? null)) return;
+          setProcessed((prev) => (prev && (prev.rev ?? null) === (rev ?? null) ? prev : { canvas, rev, origin: ref.origin }));
+          // gehört zum Bild-Datensatz im Speicher (ein Fotowechsel behält es, solange dieses Raster gilt)
+          if (imageRef.current && !imageRef.current.reference) imageRef.current = { ...imageRef.current, reference: ref };
+        },
+        (e: unknown) => console.warn('Gespeichertes Vergleichsfoto konnte nicht gelesen werden', e),
+      )
+      .finally(() => {
+        if (mounted.current) setReferenceBusy((b) => (b === 'loading' ? null : b));
+      });
+  });
+
+  // ---------- Verlauf: Rückgängig/Wiederholen (Paket w5-undo-editing, siehe core/journal.ts)
+  // Der Verlauf gehört zum angezeigten Raster (Objekt `data`): ein neues Raster (Berechnung, anderswo berechnet, Laden)
+  // leert ihn. Er lebt nur im Arbeitsspeicher dieser Ansicht – Neuladen oder Verlassen des Projekts leeren ihn.
+  const journalRef = useRef<{ j: EditJournal; owner: MosaicData | null }>({ j: new EditJournal(), owner: null });
+  /** zählt jede Änderung am Verlauf (für die Anzeige der Knöpfe) */
+  const [historyVersion, setHistoryVersion] = useState(0);
+  /** zählt nur angewendete Rückgängig/Wiederholen-Schritte (Ansichten bauen ihre Zähler dann neu auf) */
+  const [historyApplied, setHistoryApplied] = useState(0);
+  const [historyEvent, setHistoryEvent] = useState<HistoryEvent | null>(null);
+  const historySeq = useRef(0);
+  const journal = useCallback((): EditJournal => {
+    const jr = journalRef.current;
+    const owner = computedRef.current?.data ?? null;
+    if (jr.owner !== owner) {
+      jr.j.clear();
+      jr.owner = owner;
+    }
+    return jr.j;
+  }, []);
+  const emitHistory = useCallback((ev: Omit<HistoryEvent, 'seq' | 'at'>) => {
+    setHistoryEvent({ ...ev, seq: ++historySeq.current, at: Date.now() });
+  }, []);
+  /** Verlauf leeren (neues Raster, Änderung ohne Verlauf) */
+  const clearHistory = useCallback(() => {
+    const jr = journalRef.current;
+    if (!jr.j.undoSize && !jr.j.redoSize && jr.owner === (computedRef.current?.data ?? null)) return;
+    jr.j.clear();
+    jr.owner = computedRef.current?.data ?? null;
+    setHistoryVersion((v) => v + 1);
+  }, []);
+  const pushHistory = useCallback(
+    (e: JournalEntry) => {
+      const out = journal().push(e);
+      if (out === 'too-large') emitHistory({ kind: 'too-large', label: e.label });
+      setHistoryVersion((v) => v + 1);
+    },
+    [journal, emitHistory],
+  );
 
   const setRecBoth = useCallback((next: ProjectRecord | null) => {
     recRef.current = next;
@@ -1319,6 +1474,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         }
       }
       setComputedBoth(res.computed);
+      // Vergleichsfoto des gespeicherten Rasters (nur, wenn es genau zu diesem Raster gehört)
+      if (res.computed && referenceFits(st.image?.reference, r.mosaicRev)) showStoredRef.current(st.image.reference, r.mosaicRev);
       if (res.mismatch) {
         console.warn('Gespeichertes Mosaik passt nicht zum Projekt:', res.mismatch);
         setIntegrityError('mismatch');
@@ -1409,14 +1566,25 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     discardGrid();
     const res = restoreComputed(st.rec, st.mosaic, st.progress);
     setComputedBoth(res.computed);
+    clearHistory();
     if (res.computed) syncSummary(false);
+    if (res.computed) {
+      // Vergleichsfoto des übernommenen Rasters (anderswo berechnet) – nur, wenn es genau dazu gehört
+      const rev = st.rec.mosaicRev;
+      void loadReference(id).then(
+        (ref) => {
+          if (referenceFits(ref, rev)) showStoredRef.current(ref, rev);
+        },
+        () => {},
+      );
+    }
     setIntegrityError(res.mismatch ? 'mismatch' : null);
     setRejected(res.mismatch && st.mosaic ? { reason: res.mismatch, cells: st.mosaic.cols * st.mosaic.rows, placed: placedInStored(st.mosaic, st.progress) } : null);
     setComputeError((prev) => (res.mismatch ? 'integrity' : prev === 'integrity' ? null : prev));
     setVersion((v) => v + 1);
     setProgressVersion((v) => v + 1);
     s.staleKnown = false;
-  }, [id, discardGrid, setError, setRecBoth, setComputedBoth, syncSummary]);
+  }, [id, discardGrid, setError, setRecBoth, setComputedBoth, syncSummary, clearHistory]);
   adoptRef.current = adopt;
 
   useEffect(
@@ -1452,14 +1620,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const setSettings = useCallback((patch: Partial<ProjectSettings>) => update((r) => ({ ...r, settings: { ...r.settings, ...patch } })), [update]);
   const setAdjust = useCallback((patch: Partial<ImageAdjust>) => update((r) => ({ ...r, adjust: { ...r.adjust, ...patch } })), [update]);
   const setRegions = useCallback((regions: Region[]) => update((r) => ({ ...r, regions })), [update]);
-  const setPalette = useCallback((palette: PaletteColor[]) => update((r) => ({ ...r, palette })), [update]);
-
   /**
-   * Nach manuellen Änderungen am Raster aufrufen (Steinfarbe/-form, Farbe entfernt).
+   * Nach manuellen Änderungen am Raster (ohne Verlaufseintrag – der kommt von editCells/paletteOp).
    * `dirtyCells`: geänderte Zellen (Zellindizes). Mit Liste werden die Fortschrittszähler nur für diese Zellen
    * nachgeführt (auch eine geänderte Teilezahl), ohne Liste beim nächsten Zugriff neu aufgebaut.
    */
-  const touchMosaic = useCallback(
+  const touchMosaicRaw = useCallback(
     (dirtyCells?: Iterable<number>) => {
       const cells = cellList(dirtyCells);
       const index = liveIndex();
@@ -1474,6 +1640,18 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       syncSummary(false);
     },
     [id, markDirty, update, liveIndex, syncSummary],
+  );
+
+  /**
+   * Nach manuellen Änderungen am Raster aufrufen, die NICHT über editCells/paletteOp liefen. Solche Änderungen kennt
+   * der Verlauf nicht: Er wird geleert, damit Rückgängig nie einen Stand herstellt, der nicht zu ihnen passt.
+   */
+  const touchMosaic = useCallback(
+    (dirtyCells?: Iterable<number>) => {
+      clearHistory();
+      touchMosaicRaw(cellList(dirtyCells) ?? undefined);
+    },
+    [clearHistory, touchMosaicRaw],
   );
 
   /**
@@ -1498,6 +1676,144 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     [id, markDirty, liveIndex, syncSummary],
   );
 
+  /** Bearbeitungen sind gesperrt, solange irgendwo eine Berechnung dieses Projekts läuft (das Mosaik wird ersetzt). */
+  const editLocked = useCallback(() => !!jobFor(id) || isComputing(id), [id]);
+
+  /**
+   * Bearbeitet Zellen MIT Verlaufseintrag: merkt den Zustand der Zellen, führt `mutate` aus (z. B. setPieceColor,
+   * setCellKind, setFreePieces, Verlegestatus), vergleicht und legt nur bei einer echten Änderung einen Eintrag an
+   * (Wiederholen wird dabei geleert). Danach wie jede Bearbeitung: Statistik, Zähler und Speichern über
+   * touchMosaic/touchProgress. Liefert, was sich geändert hat (null: nichts berechnet).
+   */
+  const editCells = useCallback(
+    (cells: Iterable<number>, mutate: () => unknown, label: HistoryLabel, flash?: HistoryFlash): EditResult | null => {
+      const c = computedRef.current;
+      const r = recRef.current;
+      if (!c || !r) return null;
+      const ids = uniqueCells(cells);
+      const before = captureCellSide(c.data, ids);
+      mutate();
+      const e = cellsEntryFrom(c.data, ids, before, { label, flash, sig: paletteIndexSig(r.palette) });
+      if (!e) return { changed: false, mosaic: false, progress: false };
+      pushHistory(e);
+      const dirty = Array.from(e.idx);
+      if (e.mosaicChanged) touchMosaicRaw(dirty);
+      if (e.progressChanged) touchProgress(dirty);
+      return { changed: true, mosaic: e.mosaicChanged, progress: e.progressChanged };
+    },
+    [pushHistory, touchMosaicRaw, touchProgress],
+  );
+  const editCell = useCallback((idx: number, mutate: () => unknown, label: HistoryLabel, flash?: HistoryFlash) => editCells([idx], mutate, label, flash), [editCells]);
+
+  /**
+   * Verlaufseintrag für eine bereits ausgeführte Änderung des Verlegestatus (Verlegemodus): `snap` = Masken vorher
+   * (laying.ts captureCells/captureRange), nachher = aktuell. Speichern/Zähler macht der Aufrufer (touchProgress).
+   */
+  const recordProgress = useCallback(
+    (snap: ProgressBefore, label: HistoryLabel, flash?: HistoryFlash): boolean => {
+      const c = computedRef.current;
+      const r = recRef.current;
+      if (!c || !r) return false;
+      const e = progressEntryFrom(c.data, c.layout.cols, snap, { label, flash, sig: paletteIndexSig(r.palette) });
+      if (!e) return false;
+      pushHistory(e);
+      return true;
+    },
+    [pushHistory],
+  );
+
+  /**
+   * Palette setzen (Schritt Farben, Akzentfarben …). Reine Inhaltsänderungen (HEX, Name, Material) und angehängte
+   * Farben kommen in den Verlauf (gleiche Farbe kurz hintereinander = ein Eintrag); automatische Namen in einer
+   * anderen Sprache nicht. Entfernt/umsortiert ohne paletteOp ändert die Bedeutung der Farbindizes im Raster, ohne
+   * dass der Verlauf es nachvollziehen kann – dann wird er geleert (ohne berechnetes Raster gibt es nichts umzurechnen).
+   */
+  const setPalette = useCallback(
+    (palette: PaletteColor[]) => {
+      const prev = recRef.current?.palette;
+      update((r) => ({ ...r, palette }));
+      if (!prev || prev === palette) return;
+      const ch = classifyPaletteChange(prev, palette);
+      if (ch.kind === 'cosmetic') return;
+      // einmalige Übernahme der Namen einer Palette von vor Welle 2 (normalizePaletteNames): keine Bearbeitung
+      if (ch.kind === 'update' && isLegacyPalette(prev) && prev.every((q, i) => q.hex.toUpperCase() === palette[i].hex.toUpperCase() && (q.materialId ?? '') === (palette[i].materialId ?? ''))) return;
+      if (ch.kind === 'reorder' && computedRef.current) {
+        clearHistory();
+        return;
+      }
+      const label = paletteLabel(ch.kind === 'update' ? 'update' : ch.kind === 'add' ? 'add' : 'replace', ch.codes);
+      pushHistory(paletteEntryFrom(prev, palette, [], { label, coalesce: ch.kind === 'update' ? `upd:${ch.codes.join(',')}` : undefined }));
+    },
+    [update, clearHistory, pushHistory],
+  );
+
+  /**
+   * Palettenaktion MIT Verlauf: `fn` bekommt die aktuelle Palette und Werkzeuge, die das Raster mitführen und dabei die
+   * Umkehrung merken (removeColor: Farbe entfernen, Steine → Ersatzfarbe; merge: „Palette aus Materialien“). Liefert
+   * die neue Palette (null: kein Projekt). Scheitert `fn`, wird das Raster exakt zurückgesetzt und der Fehler geworfen.
+   */
+  const paletteOp = useCallback(
+    (kind: PaletteOpKind, fn: (palette: PaletteColor[], tools: PaletteOpTools) => PaletteColor[]): PaletteColor[] | null => {
+      const r = recRef.current;
+      if (!r) return null;
+      const c = computedRef.current;
+      const formula = r.settings.deltaE;
+      const steps: RemoveStep[] = [];
+      const data = c?.data ?? null;
+      const tools: PaletteOpTools = {
+        data,
+        formula,
+        removeColor: (pal, index, replacement) => (data ? removeColorRecorded(pal, data, index, replacement, formula, steps) : pal.filter((_, i) => i !== index)),
+        merge: (plan) => mergeRecorded(plan, data, formula, steps),
+      };
+      const prev = r.palette;
+      let next: PaletteColor[];
+      try {
+        next = fn(prev, tools);
+      } catch (e) {
+        if (data && steps.length) undoRemoveSteps(data, steps);
+        throw e;
+      }
+      if (next === prev && !steps.length) return next;
+      update((x) => ({ ...x, palette: next }));
+      pushHistory(paletteEntryFrom(prev, next, steps, { label: paletteLabel(kind, classifyPaletteChange(prev, next).codes) }));
+      if (steps.length) touchMosaicRaw();
+      return next;
+    },
+    [update, pushHistory, touchMosaicRaw],
+  );
+
+  /** Wendet den letzten (undo) bzw. zuletzt zurückgenommenen (redo) Eintrag an – nur, wenn er noch passt. */
+  const applyHistory = useCallback(
+    (dir: 'undo' | 'redo'): ApplyResult['status'] | 'locked' => {
+      if (editLocked()) return 'locked';
+      const r = recRef.current;
+      if (!r) return 'empty';
+      const j = journal();
+      const target = { data: computedRef.current?.data ?? null, palette: r.palette };
+      const res = dir === 'undo' ? j.undo(target) : j.redo(target);
+      setHistoryVersion((v) => v + 1);
+      if (res.status === 'empty') return res.status;
+      if (res.status === 'stale') {
+        emitHistory({ kind: 'stale', dir, label: res.entry.label, entryType: res.entry.type });
+        return res.status;
+      }
+      // automatische Namen in der aktuellen Sprache (Inhalt unverändert, siehe samePaletteContent)
+      if (res.palette) {
+        const pal = normalizePaletteNames(res.palette, lang);
+        update((x) => ({ ...x, palette: pal }));
+      }
+      if (res.mosaicChanged) touchMosaicRaw(res.cells ?? undefined);
+      if (res.progressChanged) touchProgress(res.cells ?? undefined);
+      setHistoryApplied((v) => v + 1);
+      emitHistory({ kind: dir, label: res.entry.label, flash: res.entry.flash, entryType: res.entry.type });
+      return res.status;
+    },
+    [editLocked, journal, emitHistory, update, lang, touchMosaicRaw, touchProgress],
+  );
+  const undo = useCallback(() => applyHistory('undo'), [applyHistory]);
+  const redo = useCallback(() => applyHistory('redo'), [applyHistory]);
+
   // ---------- Foto
   /**
    * Ersetzt das Foto dieses Projekts. Wirft, wenn das Foto nicht gelesen werden kann – dann bleibt das
@@ -1513,7 +1829,9 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         wb.bitmap.close();
         return { saved: false };
       }
-      const img = { original: blob, name };
+      // Das Vergleichsfoto gehört zum Raster (nicht zum Foto): es bleibt, solange dieses Raster gilt
+      const keepRef = imageRef.current?.reference;
+      const img: ImageRecord = { original: blob, name, ...(keepRef ? { reference: keepRef } : {}) };
       imageRef.current = img;
       setImageState(img);
       setBitmap(wb.bitmap);
@@ -1803,8 +2121,10 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       }
       const { fields, data, proc, layout, lp } = job;
       snapGenRef.current++;
-      // Vergleichsfoto gehört genau zu diesem Raster
-      setProcessed({ canvas: proc, rev: fields.mosaicRev });
+      // Vergleichsfoto gehört genau zu diesem Raster (gespeichert als JPEG mit dem Raster, siehe prepareCommit)
+      setProcessed({ canvas: proc, rev: fields.mosaicRev, origin: 'compute' });
+      setReferenceError(null);
+      if (job.reference && imageRef.current) imageRef.current = { ...imageRef.current, reference: job.reference };
       data.rev = fields.mosaicRev;
       const latest = recRef.current ?? job.started;
       // Palette, die jetzt zum gespeicherten Raster gehört (bei eigener Palette ggf. mit Ergänzungen,
@@ -1828,6 +2148,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       setRecBoth(merged);
       paletteBaseRef.current = committed?.palette ?? fields.palette;
       setComputedBoth({ layout, layoutParams: lp, data });
+      // Verlauf gehört zum ersetzten Raster
+      clearHistory();
       setIntegrityError(null);
       setRejected(null);
       setComputeError(null);
@@ -1847,10 +2169,15 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         markDirty('rec');
         markDirty('mosaic');
         markDirty('progress');
+        // Vergleichsfoto ebenfalls nachspeichern (gehört zum Raster)
+        if (job.reference && imageRef.current) {
+          sref.pendingImage = imageRef.current;
+          markDirty('image');
+        }
         setError(classifySaveError(saveFailure));
       }
     },
-    [discardGrid, markDirty, setError, setRecBoth, setComputedBoth],
+    [discardGrid, markDirty, setError, setRecBoth, setComputedBoth, clearHistory],
   );
 
   // Diese Ansicht beim Auftragsregister anmelden: Ergebnisse (auch einer Berechnung, die vor dem erneuten Öffnen
@@ -2113,6 +2440,68 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
   const originalPreview = useCallback((maxPx: number) => (bitmap && rec ? renderRotated(bitmap, rec.adjust, maxPx) : null), [bitmap, rec]);
 
   /**
+   * „Referenz neu erzeugen“ (Projekte, die vor dem Speichern des Vergleichsfotos berechnet wurden): dieselbe
+   * Bildvorbereitung wie die Berechnung – Zuschnitt, Arbeitsauflösung und Bildbearbeitung mit den Einstellungen aus
+   * computedWith (nicht den aktuellen) – aber ohne Mosaikberechnung; Raster und Fortschritt bleiben unberührt. Nur mit
+   * demselben Foto wie bei der Berechnung. Das Ergebnis wird mit dem Raster gespeichert. Liefert true bei Erfolg.
+   */
+  const regenerateReference = useCallback(async (): Promise<boolean> => {
+    const r = recRef.current;
+    const c = computedRef.current;
+    const block = regenerateBlock(r, !!c, !!bitmap);
+    if (block || !r || !c) {
+      setReferenceError(block ?? 'not-computed');
+      return false;
+    }
+    const at = recordAtCompute(r);
+    const inp = at ? describeNow(at) : null;
+    if (!inp || !inp.ok || inp.layout.cols !== c.layout.cols || inp.layout.rows !== c.layout.rows) {
+      setReferenceError('inputs');
+      return false;
+    }
+    const rev = r.mosaicRev;
+    setReferenceBusy('regenerating');
+    setReferenceError(null);
+    try {
+      // eigener Zwischenspeicher (nicht der der Live-Vorschau); die Bildpunkte gehen ohne Kopie an den Worker
+      const raw = await rawFor(inp, { current: null }, imageRef.current?.original ?? null, true);
+      const out = await processInWorker(raw, inp.request.adjust, inp.request.regions);
+      if (!mounted.current || (recRef.current?.mosaicRev ?? null) !== (rev ?? null)) return false;
+      const canvas = rawToCanvas(out);
+      setProcessed({ canvas, rev, origin: 'regenerated' });
+      const ref = await encodeReference(canvas, 'regenerated');
+      if (ref) {
+        const full: ReferenceImage = { ...ref, rev };
+        if (imageRef.current) imageRef.current = { ...imageRef.current, reference: full };
+        const saved = await saveReference(id, full).catch(() => false);
+        if (!saved && mounted.current) setReferenceError('not-saved');
+      } else if (mounted.current) setReferenceError('not-saved');
+      return true;
+    } catch (e) {
+      console.warn('Vergleichsfoto konnte nicht erzeugt werden', e);
+      if (mounted.current) setReferenceError('failed');
+      return false;
+    } finally {
+      if (mounted.current) setReferenceBusy(null);
+    }
+  }, [id, bitmap, describeNow]);
+  const referenceBlock: RegenerateBlock | null = regenerateBlock(rec, !!computed, !!bitmap);
+  const processedNow = processedState && rec && processedState.rev === rec.mosaicRev ? processedState : null;
+
+  // Anzeige des Verlaufs (Zähler, nächste Einträge)
+  const jNow = journal();
+  const history: HistoryInfo = {
+    undoCount: jNow.undoSize,
+    redoCount: jNow.redoSize,
+    undoLabel: jNow.peekUndo()?.label ?? null,
+    redoLabel: jNow.peekRedo()?.label ?? null,
+    version: historyVersion,
+    applied: historyApplied,
+    last: historyEvent,
+    locked: !!computing || paletteLocked,
+  };
+
+  /**
    * Projektdatei aus dem Stand im ARBEITSSPEICHER (nicht aus dem Gerätespeicher) – zum Sichern,
    * wenn Speichern fehlschlägt.
    */
@@ -2180,7 +2569,20 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     refreshPreview,
     effectiveCrop,
     /** Foto nach Bildoptimierung des angezeigten Rasters (null: nicht vorhanden oder gehört zu einem anderen Raster) */
-    processed: processedState && rec && processedState.rev === rec.mosaicRev ? processedState.canvas : null,
+    processed: processedNow ? processedNow.canvas : null,
+    /**
+     * Vergleichsfoto Foto/Mosaik des angezeigten Rasters (Paket w5-undo-editing): `canvas` (null: keins), Herkunft
+     * ('compute': mit der Berechnung gespeichert, 'regenerated': nachträglich erzeugt), ob es gerade geladen bzw. erzeugt
+     * wird, ob es neu erzeugt werden kann (`block` = Grund, wenn nicht) und der letzte Fehler.
+     */
+    reference: {
+      canvas: processedNow ? processedNow.canvas : null,
+      origin: processedNow ? processedNow.origin : null,
+      busy: referenceBusy,
+      block: referenceBlock,
+      error: referenceError,
+    },
+    regenerateReference,
     /** Speicherstatus für die Anzeige („Gespeichert ✓ / Speichert … / Nicht gespeichert“) */
     saveState,
     saveError,
@@ -2218,6 +2620,14 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     createProjectFromPhoto,
     touchMosaic,
     touchProgress,
+    /** Bearbeiten mit Verlauf (Rückgängig/Wiederholen) */
+    editCell,
+    editCells,
+    recordProgress,
+    paletteOp,
+    undo,
+    redo,
+    history,
     compute,
     cancelCompute,
     originalPreview,

@@ -3,7 +3,7 @@ import type { LayoutParams, SectionSettings } from '../core/layout';
 import type { PdfImage } from '../core/pdf';
 import type { PdfOptions } from '../core/pdfOptions';
 import type { StoredMosaic } from '../core/serialize';
-import type { Stats, Range } from '../core/stats';
+import type { Stats } from '../core/stats';
 import type { ImageAdjust, Material, PaletteColor, ProjectSettings, Region } from '../core/types';
 
 export interface RawImage {
@@ -31,8 +31,16 @@ export type WorkerRequest =
       materials: Material[];
       reservePct: number;
       groutDepthMm: number;
-      /** zusätzliche Teilbereiche (optional; die App fragt nur die Gesamtstatistik ab) */
-      ranges?: { key: string; range: Range }[];
+      /**
+       * Mindestbreite eines Schnittteils (settings.shapes.minPieceMm). Nur damit zählt die Statistik
+       * thinPieces/thinFreePieces; ohne den Wert bleiben beide leer (nicht geprüft).
+       */
+      minPieceMm?: number;
+      /**
+       * Abschnittseinteilung (wie settings): dann liefert derselbe Durchlauf zusätzlich die Statistik je Abschnitt
+       * (perSection). Ohne: nur die Gesamtstatistik – so fragt die App heute an.
+       */
+      sections?: SectionSettings;
     }
   | {
       type: 'pdf';
@@ -69,6 +77,12 @@ export type WorkerResponse =
   | { type: 'progress'; id: number; phase: string; fraction: number }
   | { type: 'error'; id: number; message: string }
   | { type: 'compute'; id: number; mosaic: StoredMosaic; palette: PaletteColor[]; diagnostics: ComputeDiagnostics; processed: RawImage }
-  | { type: 'stats'; id: number; total: Stats; ranges: { key: string; stats: Stats }[] }
+  | {
+      type: 'stats';
+      id: number;
+      total: Stats;
+      /** je Abschnitt (Reihenfolge und id wie sectionsFor(...).sections); leer ohne `sections` in der Anfrage */
+      perSection: { id: string; stats: Stats }[];
+    }
   | { type: 'pdf'; id: number; pdf: ArrayBuffer }
   | { type: 'csv'; id: number; csv: string };

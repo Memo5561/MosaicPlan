@@ -11,11 +11,15 @@
  *
  * Packungen, Bestand und Kosten werden je Material gezählt (perMaterial), sodass ein
  * Material, das mehreren Farben zugeordnet ist, nicht doppelt gekauft wird.
+ *
+ * Gesamt- und Abschnittsstatistik entstehen in EINEM Durchlauf über das Raster (computeAllStats); gleiche
+ * Geometrien werden über ganzzahlige Klassen nur einmal analysiert. Die Zahlen sind exakt dieselben wie bei
+ * einer Zählung je Bereich – alle Maße stammen weiterhin aus analyzeCut auf den echten Polygonen.
  */
 import type { Pt, ShapeType } from './geometry';
-import type { Layout } from './layout';
+import type { Layout, SectionGrid } from './layout';
 import { invalidFreeCells } from './edits';
-import { analyzeCut, cellPieces, type CutInfo } from './pieces';
+import { analyzeCut, cellPieces, pieceWidthCheck, type CutInfo } from './pieces';
 import { CellKind, type Material, type MosaicData, type PaletteColor } from './types';
 
 export interface ColorStat {
@@ -133,6 +137,24 @@ export interface Stats {
   totalCost: number;
   /** false, sobald eine Farbe mit Steinen kein Material, keine Packungsgröße oder keinen Preis hat */
   costComplete: boolean;
+  /**
+   * Zellen, deren Teile zusammen mehr Fläche haben als die Zelle selbst (Σ Teilflächen > Zellfläche) – nur bei
+   * überlappenden oder über die Zelle hinausragenden Freiformteilen möglich (ältere/importierte Projekte). Reine
+   * Prüfzahl; muss 0 sein. Von computeStats/computeAllStats immer gesetzt (optional nur für ältere Objekte).
+   */
+  overlapCells?: number;
+  /**
+   * Teile automatischer Schnittzellen (Dreiecke, Kantenschnitt, Teilsteine) unter der Mindestbreite eines
+   * Schnittteils (pieceWidthCheck – dieselbe Regel wie Berechnung und Steindetail). Muss 0 sein; > 0 nur bei
+   * Projekten, die mit einer älteren Regel oder kleineren Mindestbreite berechnet wurden. Nur gesetzt, wenn
+   * opts.minPieceMm übergeben wurde – sonst nicht geprüft (undefined, nicht 0).
+   */
+  thinPieces?: number;
+  /**
+   * Freiformteile unter der Mindestbreite (gleiche Prüfung; bei nicht-konvexen Teilen nur näherungsweise über die
+   * konvexe Hülle). Getrennt von thinPieces gezählt, weil Freiform bewusst gezeichnet wird. Nur mit opts.minPieceMm.
+   */
+  thinFreePieces?: number;
 }
 
 /**
@@ -379,100 +401,685 @@ export function materialTotals(perColor: ColorStat[], layout: Layout): { perMate
   return { perMaterial: named, totalCost, costComplete };
 }
 
+/** Optionen der Statistik. */
+export interface StatsOptions {
+  reservePct: number;
+  groutDepthMm: number;
+  /**
+   * Mindestbreite eines Schnittteils (Schritt Steinformen, `settings.shapes.minPieceMm`). Nur damit werden
+   * thinPieces/thinFreePieces gezählt – ohne den Wert bleiben beide Felder leer (nicht geprüft, nicht 0).
+   */
+  minPieceMm?: number;
+}
+
+/** Gesamtstatistik und Statistik je Abschnitt aus EINEM Durchlauf (computeAllStats). */
+export interface AllStats {
+  total: Stats;
+  /** in der Reihenfolge von grid.sections; leer ohne Abschnittsraster */
+  perSection: Stats[];
+}
+
+const SHAPES: readonly ShapeType[] = ['square', 'rectangle', 'triangle', 'rhombus', 'trapezoid', 'parallelogram', 'custom'];
+const SHAPE_INDEX = new Map<ShapeType, number>(SHAPES.map((s, i) => [s, i]));
+
+/**
+ * Schnittinfo einer Geometrieklasse mit den für die Zählung vorberechneten Werten. Die CutInfo stammt
+ * unverändert aus analyzeCut auf dem echten Polygon (über den CutCache wie bei pieceCutInfo); hier wird nur
+ * einmal je Klasse abgeleitet, was sonst bei jedem Stein neu berechnet würde (Größenschlüssel, Rohsteingruppe).
+ */
+interface Entry {
+  ci: CutInfo;
+  invalid: boolean;
+  area: number;
+  needsCut: boolean;
+  fits: boolean;
+  /** Index in SHAPES */
+  shape: number;
+  /** Index des Größenschlüssels `${shape}|${w.toFixed(1)}|${h.toFixed(1)}` */
+  size: number;
+  /** Ausbeute je Rohstein */
+  y: number;
+  /** Index des Rohsteingruppen-Schlüssels (rawGroupKey), nur bei Ausbeute > 1, sonst −1 */
+  group: number;
+  /** Mindestbreite (pieceWidthCheck) eingehalten: −1 noch nicht geprüft, 0 nein, 1 ja */
+  widthOk: number;
+}
+
+// Kennzahlen je Bucket (Bucket 0 = Gesamt, Bucket 1 + s = Abschnitt s)
+const S_PIECES = 0;
+const S_PLACED = 1;
+const S_AREA = 2;
+const S_CUT = 3;
+const S_NOTFIT = 4;
+const S_BADCOLOR = 5;
+const S_INVALID = 6;
+const S_OVERLAP = 7;
+const S_THIN = 8;
+const S_THINFREE = 9;
+const S_BADFREE = 10;
+const NS = 11;
+
+/** Höchstzahl Teilstücke je Zelle im Ganzzahl-Cache (Fortschrittsmaske: 16 Bit); mehr → Einzelweg wie bisher */
+const PMAX = 16;
+
+// Zellarten als Modulkonstanten (in der heißen Schleife kein Objektzugriff)
+const K_FULL: number = CellKind.FULL;
+const K_DIAG_A: number = CellKind.DIAG_A;
+const K_DIAG_B: number = CellKind.DIAG_B;
+const K_LINE: number = CellKind.LINE;
+const K_SUB: number = CellKind.SUB;
+const K_FREE: number = CellKind.FREE;
+
+/** Obergrenze des Zähl-Arrays (Rohsteingruppe × Farbe) der Gesamtstatistik; darüber eine Map */
+const SHARED_ARRAY_MAX = 1 << 22;
+
+/** Murmur3-Mischung von sechs 32-Bit-Wörtern (Hash der exakten Kantenschnitt-Parameter). */
+function hash6(u: Uint32Array): number {
+  let h = 0x9747b28c;
+  for (let i = 0; i < 6; i++) {
+    let k = Math.imul(u[i], 0xcc9e2d51);
+    k = (k << 15) | (k >>> 17);
+    k = Math.imul(k, 0x1b873593);
+    h ^= k;
+    h = (h << 13) | (h >>> 19);
+    h = (Math.imul(h, 5) + 0xe6546b64) | 0;
+  }
+  h ^= 24;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  return h ^ (h >>> 16);
+}
+
+/** Int32Array auf mindestens n Einträge vergrößern (verdoppelnd, Inhalt bleibt). */
+function grown(a: Int32Array, n: number): Int32Array<ArrayBuffer> {
+  const b = new Int32Array(Math.max(n, a.length * 2, 16));
+  b.set(a);
+  return b;
+}
+
+/** Toleranz der Flächenprüfung je Zelle (Σ Teilflächen > Zellfläche) */
+const overlapTol = (cellArea: number) => 1e-6 + cellArea * 1e-9;
+
+/** Klassen gleicher Maße entlang einer Achse – dieselbe Gleichheit (toFixed(4)) wie im Geometrie-Schlüssel. */
+function axisClasses(sizes: Float64Array): { cls: Int32Array; n: number } {
+  const ids = new Map<string, number>();
+  const cls = new Int32Array(sizes.length);
+  for (let i = 0; i < sizes.length; i++) {
+    const k = sizes[i].toFixed(4);
+    let v = ids.get(k);
+    if (v === undefined) ids.set(k, (v = ids.size));
+    cls[i] = v;
+  }
+  return { cls, n: ids.size };
+}
+
+/** Abschnitt (Index in starts) je Zeile bzw. Spalte – wie sectionOfCell (letzter Start ≤ Index). */
+function sectionLookup(starts: number[], n: number): Int32Array {
+  const out = new Int32Array(n);
+  for (let s = 0; s < starts.length; s++) {
+    const a = Math.max(0, starts[s]);
+    const b = s + 1 < starts.length ? Math.min(n, starts[s + 1]) : n;
+    for (let i = a; i < b; i++) out[i] = s;
+  }
+  return out;
+}
+
+/**
+ * Statistik für das ganze Mosaik und – mit `grid` – für jeden Abschnitt, in EINEM Durchlauf über das Raster.
+ *
+ * Exakt dieselben Zahlen wie computeStats je Bereich (gleiche Gleitkomma-Reihenfolge, gleiche Reihenfolge in
+ * perSize): Die Gesamtsumme wird im selben Durchlauf direkt aufaddiert (nicht als Summe der Abschnitte), jeder
+ * Abschnitt in Zeilen-, dann Spaltenreihenfolge seiner Zellen. Gleiche Geometrien werden über ganzzahlige
+ * Schlüssel nur einmal analysiert:
+ *  - ganze Steine, Dreiecke und Teilsteine: (Art, k², Spaltenbreiten-Klasse, Zeilenhöhen-Klasse, Teil, Rohsteinmaß),
+ *  - Kantenschnitt: exakte Bitmuster von nx, ny, d (nie gerundet – manuelle Schnitte haben beliebige Winkel/Versätze),
+ *  - Freiform: immer einzeln.
+ * Jede Schnittinfo stammt weiterhin aus analyzeCut auf dem echten Polygon, geholt über `cache` mit demselben
+ * Schlüssel wie pieceCutInfo – ein gemeinsam genutzter CutCache liefert also dieselben Objekte wie bisher.
+ *
+ * Zusätzliche Prüfzähler (siehe Stats): overlapCells, thinPieces/thinFreePieces (nur mit opts.minPieceMm),
+ * invalidPieces.
+ */
+export function computeAllStats(
+  layout: Layout,
+  data: MosaicData,
+  palette: PaletteColor[],
+  materials: Material[],
+  opts: StatsOptions,
+  grid?: SectionGrid | null,
+  cache: CutCache = new CutCache(),
+): AllStats {
+  const full: Range = { r0: 0, r1: layout.rows, c0: 0, c1: layout.cols };
+  return statsPass(layout, data, palette, materials, opts, full, grid ?? null, cache);
+}
+
+/**
+ * Statistik eines Rasterbereichs (ohne `range`: ganzes Mosaik). Dünne Hülle um denselben Durchlauf wie
+ * computeAllStats – für Abschnitte in einem Rutsch computeAllStats mit dem Abschnittsraster verwenden.
+ */
 export function computeStats(
   layout: Layout,
   data: MosaicData,
   palette: PaletteColor[],
   materials: Material[],
-  opts: { reservePct: number; groutDepthMm: number },
+  opts: StatsOptions,
   range?: Range,
   cache: CutCache = new CutCache(),
 ): Stats {
-  const raw = makeRawSizeFn(layout, palette, materials);
+  return statsPass(layout, data, palette, materials, opts, range ?? { r0: 0, r1: layout.rows, c0: 0, c1: layout.cols }, null, cache).total;
+}
+
+function statsPass(
+  layout: Layout,
+  data: MosaicData,
+  palette: PaletteColor[],
+  materials: Material[],
+  opts: StatsOptions,
+  scan: Range,
+  grid: SectionGrid | null,
+  cache: CutCache,
+): AllStats {
+  const rawFn = makeRawSizeFn(layout, palette, materials);
   const reservePct = Number.isFinite(opts.reservePct) && opts.reservePct > 0 ? opts.reservePct : 0;
-  const rg = range ?? { r0: 0, r1: layout.rows, c0: 0, c1: layout.cols };
+  const minPiece = typeof opts.minPieceMm === 'number' && Number.isFinite(opts.minPieceMm) && opts.minPieceMm >= 0 ? opts.minPieceMm : null;
+  const thinOn = minPiece !== null;
+  const cols = layout.cols;
+  const nC = palette.length;
+  const nSec = grid ? grid.sections.length : 0;
+  const nB = 1 + nSec;
+  const hasSec = nSec > 0;
+
+  // ---------- Farbindizes und Rohsteinmaß-Klassen
+  // gültige Farbe ⇔ perColor[c] existiert (dieselbe Indexsemantik wie bisher: Uint8Array[c] === 1)
+  const okColor = new Uint8Array(nC).fill(1);
+  const rawIds = new Map<string, number>();
+  const rawClassOf = (r: RawSize) => {
+    const k = `${r.w}x${r.h}`;
+    let v = rawIds.get(k);
+    if (v === undefined) rawIds.set(k, (v = rawIds.size));
+    return v;
+  };
+  // rawOf[c + 1]: Klasse der Farbe c; rawOf[0]: ungültige Farbe (Rastermaß, wie makeRawSizeFn)
+  const rawOf = new Int32Array(nC + 1);
+  rawOf[0] = rawClassOf(rawFn(-1));
+  for (let c = 0; c < nC; c++) rawOf[c + 1] = rawClassOf(rawFn(c));
+  const nRaw = rawIds.size;
+
+  // ---------- Geometrie-Klassen
+  const colC = axisClasses(layout.colW);
+  const rowC = axisClasses(layout.rowH);
+  const colCls = colC.cls;
+  const rowCls = rowC.cls;
+  const nColCls = colC.n;
+  const nRowCls = rowC.n;
+  const perKind = nColCls * nRowCls * PMAX * nRaw;
+  // Ganze Steine, Dreiecke, Teilsteine: dichtes Array (Art-Slot außen, damit es wachsen kann); bei sehr vielen
+  // Klassen (nur bei ungewöhnlichen Layouts) eine Map
+  const useArray = perKind <= 1 << 16;
+  const denseArr: (Entry | undefined)[] = [];
+  const denseMap = new Map<number, Entry>();
+  const kindSlots = new Map<number, number>(); // Art-Code → Slot (0 ganz, 1 ╲, 2 ╱, 3+ Teilsteine je Länge)
+  const kindSlot = (code: number): number => {
+    let v = kindSlots.get(code);
+    if (v === undefined) {
+      v = kindSlots.size;
+      kindSlots.set(code, v);
+      if (useArray) for (let i = 0; i < perKind; i++) denseArr.push(undefined);
+    }
+    return v;
+  };
+  const SLOT_FULL = kindSlot(-1);
+  const SLOT_DIAG_A = kindSlot(-2);
+  const SLOT_DIAG_B = kindSlot(-3);
+  const lineEntries = new Map<number, Entry>();
+
+  // Kantenschnitt-Klassen: exaktes Bitmuster der drei Parameter (als Float64 – auch für Float32-Werte exakt)
+  const f64 = new Float64Array(3);
+  const u32 = new Uint32Array(f64.buffer);
+  const lineByHash = new Map<number, number>();
+  const lineBits: number[] = [];
+  const lineAlt = new Map<string, number>();
+  let lineCount = 0;
+  const lineIdOf = (p: ArrayLike<number>): number => {
+    f64[0] = p[0];
+    f64[1] = p[1];
+    f64[2] = p[2];
+    const h = hash6(u32);
+    const id = lineByHash.get(h);
+    if (id === undefined) {
+      const nid = lineCount++;
+      lineByHash.set(h, nid);
+      for (let i = 0; i < 6; i++) lineBits.push(u32[i]);
+      return nid;
+    }
+    const o = id * 6;
+    if (lineBits[o] === u32[0] && lineBits[o + 1] === u32[1] && lineBits[o + 2] === u32[2] && lineBits[o + 3] === u32[3] && lineBits[o + 4] === u32[4] && lineBits[o + 5] === u32[5]) return id;
+    // Hash-Kollision: exakter Textschlüssel der Bitmuster
+    const k = `${u32[0]},${u32[1]},${u32[2]},${u32[3]},${u32[4]},${u32[5]}`;
+    let v = lineAlt.get(k);
+    if (v === undefined) {
+      lineAlt.set(k, (v = lineCount++));
+      for (let i = 0; i < 6; i++) lineBits.push(u32[i]);
+    }
+    return v;
+  };
+
+  // ---------- Einträge (je CutInfo einmal)
+  const sizeIds = new Map<string, number>();
+  const sizeKeys: string[] = [];
+  const groupIds = new Map<string, number>();
+  const groupYield: number[] = [];
+  const entryOfCi = new Map<CutInfo, Entry>();
+  const makeEntry = (ci: CutInfo): Entry => {
+    let size = -1;
+    let group = -1;
+    if (!ci.invalid) {
+      const sk = `${ci.shape}|${ci.w.toFixed(1)}|${ci.h.toFixed(1)}`;
+      let s = sizeIds.get(sk);
+      if (s === undefined) {
+        sizeIds.set(sk, (s = sizeKeys.length));
+        sizeKeys.push(sk);
+      }
+      size = s;
+      if (ci.yieldPerRaw > 1) {
+        const gk = rawGroupKey(ci);
+        let g = groupIds.get(gk);
+        if (g === undefined) {
+          groupIds.set(gk, (g = groupYield.length));
+          groupYield.push(ci.yieldPerRaw);
+        }
+        group = g;
+      }
+    }
+    return {
+      ci,
+      invalid: !!ci.invalid,
+      area: ci.area,
+      needsCut: ci.needsCut,
+      fits: ci.fits,
+      shape: SHAPE_INDEX.get(ci.shape) ?? SHAPES.length - 1,
+      size,
+      y: ci.yieldPerRaw,
+      group,
+      widthOk: -1,
+    };
+  };
+  const entryFor = (ci: CutInfo): Entry => {
+    let e = entryOfCi.get(ci);
+    if (!e) entryOfCi.set(ci, (e = makeEntry(ci)));
+    return e;
+  };
+  /** Cache-Fehlschlag: Schnittinfo genau wie pieceCutInfo (gleicher Textschlüssel im CutCache) */
+  const resolve = (row: number, col: number, i: number, color: number): Entry => {
+    const p = cellPieces(layout, data, row, col)[i];
+    return entryFor(pieceCutInfo(cache, layout, data, row, col, i, p.poly, rawFn(color)));
+  };
+  /** Teil unter der Mindestbreite? (dieselbe Prüfung wie Berechnung und Steindetail, je Geometrieklasse einmal) */
+  const thinFlag = (e: Entry, row: number, col: number, i: number): boolean => {
+    if (e.widthOk < 0) e.widthOk = pieceWidthCheck(cellPieces(layout, data, row, col)[i].poly, minPiece as number).ok ? 1 : 0;
+    return e.widthOk === 0;
+  };
+
+  // ---------- Akkumulatoren
+  const SC = new Float64Array(nB * NS);
+  const SH = new Int32Array(nB * SHAPES.length);
+  const cPieces = new Int32Array(nB * nC);
+  const cUncut = new Int32Array(nB * nC);
+  const cCut = new Int32Array(nB * nC);
+  const cRaw = new Int32Array(nB * nC);
+  const cPlaced = new Int32Array(nB * nC);
+  const cArea = new Float64Array(nB * nC);
+  const cRawExact = new Float64Array(nB * nC);
+  // Teile mit Ausbeute > 1 je (Rohsteingruppe · nC + Farbe): Gesamt in einem wachsenden Array, Abschnitte in je
+  // einer Map mit Lauflängen-Puffer (gleiche Farbe und Form folgen in einer Zeile meist aufeinander)
+  let sharedTot = new Int32Array(Math.max(16, nC * 4));
+  let sharedTotMap: Map<number, number> | null = null;
+  const sharedSec: (Map<number, number> | undefined)[] = new Array(nB);
+  const lastKey = new Float64Array(nB).fill(-1);
+  const pend = new Int32Array(nB);
+  const flushShared = (b: number) => {
+    if (pend[b] > 0) {
+      let m = sharedSec[b];
+      if (!m) sharedSec[b] = m = new Map();
+      const k = lastKey[b];
+      m.set(k, (m.get(k) ?? 0) + pend[b]);
+      pend[b] = 0;
+    }
+  };
+  const addShared = (b: number, key: number) => {
+    if (b === 0) {
+      if (key < sharedTot.length) sharedTot[key]++;
+      else if (key < SHARED_ARRAY_MAX) {
+        sharedTot = grown(sharedTot, key + 1);
+        sharedTot[key]++;
+      } else {
+        if (!sharedTotMap) sharedTotMap = new Map();
+        sharedTotMap.set(key, (sharedTotMap.get(key) ?? 0) + 1);
+      }
+    } else if (lastKey[b] === key) pend[b]++;
+    else {
+      flushShared(b);
+      lastKey[b] = key;
+      pend[b] = 1;
+    }
+  };
+  // Größen je Bucket: Anzahl je Größenindex, Reihenfolge des ersten Auftretens und erste Schnittinfo
+  const sizeCnt: Int32Array[] = [];
+  const sizeOrd: number[][] = [];
+  const sizeRep: CutInfo[][] = [];
+  for (let b = 0; b < nB; b++) {
+    sizeCnt.push(new Int32Array(b === 0 ? 64 : 0));
+    sizeOrd.push([]);
+    sizeRep.push([]);
+  }
+
+  /**
+   * Ein Teil in Bucket b zählen. c: gültiger Farbindex oder −1. thin: 0 –, 1 automatisches Teil unter der
+   * Mindestbreite, 2 Freiformteil unter der Mindestbreite.
+   */
+  const addPiece = (b: number, e: Entry, c: number, placed: number, thin: number): void => {
+    const o = b * NS;
+    if (e.invalid) {
+      // kein Stein (keine Fläche): nicht zählen, nur melden
+      SC[o + S_INVALID]++;
+      return;
+    }
+    SC[o + S_PIECES]++;
+    SC[o + S_AREA] += e.area;
+    if (placed) SC[o + S_PLACED]++;
+    if (e.needsCut) SC[o + S_CUT]++;
+    if (!e.fits) SC[o + S_NOTFIT]++;
+    SH[b * 7 + e.shape]++;
+    let cnt = sizeCnt[b];
+    const sz = e.size;
+    if (sz >= cnt.length) sizeCnt[b] = cnt = grown(cnt, sizeKeys.length);
+    if (cnt[sz]++ === 0) {
+      sizeOrd[b].push(sz);
+      sizeRep[b].push(e.ci);
+    }
+    if (thin === 1) SC[o + S_THIN]++;
+    else if (thin === 2) SC[o + S_THINFREE]++;
+    if (c < 0) {
+      // Farbindex außerhalb der Palette: geometrisch gezählt, aber keiner Farbe zuzuordnen
+      SC[o + S_BADCOLOR]++;
+      return;
+    }
+    const k = b * nC + c;
+    cPieces[k]++;
+    cArea[k] += e.area;
+    if (placed) cPlaced[k]++;
+    if (e.needsCut) cCut[k]++;
+    else cUncut[k]++;
+    if (e.y > 1) {
+      addShared(b, e.group * nC + c);
+      cRawExact[k] += 1 / e.y;
+    } else {
+      // ganzer Stein (Ausbeute 1) oder passt nicht in den Rohstein (Ausbeute 0): je Teil ein Rohstein
+      cRaw[k]++;
+      cRawExact[k] += 1;
+    }
+  };
+  const flagOverlap = (b2: number, row: number, col: number, sum: number) => {
+    const ca = layout.colW[col] * layout.rowH[row];
+    if (sum > ca + overlapTol(ca)) {
+      SC[S_OVERLAP]++;
+      if (b2) SC[b2 * NS + S_OVERLAP]++;
+    }
+  };
+
+  // ---------- Abschnitte
+  const rowSec = grid && hasSec ? sectionLookup(grid.rowStarts, layout.rows) : null;
+  const colSec = grid && hasSec ? sectionLookup(grid.colStarts, cols) : null;
+  const scols = grid ? grid.scols : 0;
+
+  const K = data.kind;
+  const P = data.progress;
+  const C1 = data.c1;
+  const C2 = data.c2;
+  const colorOk = (c: number) => (okColor[c] === 1 ? c : -1);
+
+  /** Dichter Eintrag (ganze Steine, Dreiecke, Teilsteine) */
+  const denseEntry = (slot: number, cc: number, rc: number, i: number, cv: number, row: number, col: number): Entry => {
+    const key = slot * perKind + ((cc * nRowCls + rc) * PMAX + i) * nRaw + rawOf[cv + 1];
+    let e = useArray ? denseArr[key] : denseMap.get(key);
+    if (e === undefined) {
+      e = resolve(row, col, i, cv);
+      if (useArray) denseArr[key] = e;
+      else denseMap.set(key, e);
+    }
+    return e;
+  };
+
+  /** Alle Teile einer Zelle ohne Ganzzahl-Schlüssel (Freiform, unbekannte Art, Teilsteine > PMAX): wie bisher */
+  const slowCell = (row: number, col: number, kind: number, prog: number, b2: number) => {
+    const ps = cellPieces(layout, data, row, col);
+    const isFree = kind === K_FREE;
+    const isCutKind = kind === K_DIAG_A || kind === K_DIAG_B || kind === K_LINE || kind === K_SUB;
+    // nicht gecachte Teile (Freiform, unbekannte Art) einzeln, gecachte über den gemeinsamen Eintrag
+    const cached = cellGeomKey(layout, data, row, col) !== null;
+    let sum = 0;
+    for (let i = 0; i < ps.length; i++) {
+      const p = ps[i];
+      const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, rawFn(p.color));
+      const e = cached ? entryFor(ci) : makeEntry(ci);
+      const cv = okColor[p.color] === 1 ? p.color : -1;
+      let thin = 0;
+      if (thinOn && !e.invalid) {
+        if (isFree) thin = pieceWidthCheck(p.poly, minPiece as number).ok ? 0 : 2;
+        else if (isCutKind) thin = thinFlag(e, row, col, i) ? 1 : 0;
+      }
+      const bit = (prog >> i) & 1;
+      addPiece(0, e, cv, bit, thin);
+      if (b2) addPiece(b2, e, cv, bit, thin);
+      if (!e.invalid) sum += e.area;
+    }
+    if (ps.length > 1 || isFree) flagOverlap(b2, row, col, sum);
+  };
+
+  for (let row = scan.r0; row < scan.r1; row++) {
+    const rc = rowCls[row];
+    const bRow = rowSec ? 1 + rowSec[row] * scols : 0;
+    const rowBase = row * cols;
+    for (let col = scan.c0; col < scan.c1; col++) {
+      const idx = rowBase + col;
+      const b2 = colSec ? bRow + colSec[col] : 0;
+      const kind = K[idx];
+      const prog = P[idx];
+      if (kind === K_FULL) {
+        // häufigster Fall: ein ganzer Stein, Farbe c1
+        const cv = colorOk(C1[idx]);
+        const e = denseEntry(SLOT_FULL, colCls[col], rc, 0, cv, row, col);
+        const bit = prog & 1;
+        addPiece(0, e, cv, bit, 0);
+        if (b2) addPiece(b2, e, cv, bit, 0);
+        continue;
+      }
+      const cc = colCls[col];
+      if (kind === K_DIAG_A || kind === K_DIAG_B) {
+        const slot = kind === K_DIAG_A ? SLOT_DIAG_A : SLOT_DIAG_B;
+        const ca = colorOk(C1[idx]);
+        const cb = colorOk(C2[idx]);
+        const ea = denseEntry(slot, cc, rc, 0, ca, row, col);
+        const eb = denseEntry(slot, cc, rc, 1, cb, row, col);
+        const ta = thinOn && !ea.invalid && thinFlag(ea, row, col, 0) ? 1 : 0;
+        const tb = thinOn && !eb.invalid && thinFlag(eb, row, col, 1) ? 1 : 0;
+        addPiece(0, ea, ca, prog & 1, ta);
+        if (b2) addPiece(b2, ea, ca, prog & 1, ta);
+        addPiece(0, eb, cb, (prog >> 1) & 1, tb);
+        if (b2) addPiece(b2, eb, cb, (prog >> 1) & 1, tb);
+        flagOverlap(b2, row, col, (ea.invalid ? 0 : ea.area) + (eb.invalid ? 0 : eb.area));
+        continue;
+      }
+      if (kind === K_LINE) {
+        const prm = data.line.get(idx);
+        if (!prm) {
+          // ohne Parameter: ganzer Stein (cellPieces), gleicher Schlüssel wie ein ganzer Stein
+          const cv = colorOk(C1[idx]);
+          const e = denseEntry(SLOT_FULL, cc, rc, 0, cv, row, col);
+          const t = thinOn && !e.invalid && thinFlag(e, row, col, 0) ? 1 : 0;
+          addPiece(0, e, cv, prog & 1, t);
+          if (b2) addPiece(b2, e, cv, prog & 1, t);
+          continue;
+        }
+        const geo = (lineIdOf(prm) * nColCls + cc) * nRowCls + rc;
+        let sum = 0;
+        for (let i = 0; i < 2; i++) {
+          const cv = colorOk(i === 0 ? C1[idx] : C2[idx]);
+          const key = (geo * 2 + i) * nRaw + rawOf[cv + 1];
+          let e = lineEntries.get(key);
+          if (e === undefined) lineEntries.set(key, (e = resolve(row, col, i, cv)));
+          const t = thinOn && !e.invalid && thinFlag(e, row, col, i) ? 1 : 0;
+          const bit = (prog >> i) & 1;
+          addPiece(0, e, cv, bit, t);
+          if (b2) addPiece(b2, e, cv, bit, t);
+          if (!e.invalid) sum += e.area;
+        }
+        flagOverlap(b2, row, col, sum);
+        continue;
+      }
+      if (kind === K_SUB) {
+        const sub = data.sub.get(idx);
+        const len = sub ? sub.length : 1;
+        const k = sub ? Math.round(Math.sqrt(len)) : 1;
+        const n = sub ? k * k : 1;
+        if (n <= PMAX) {
+          const slot = kindSlot(len);
+          let sum = 0;
+          for (let i = 0; i < n; i++) {
+            const cv = colorOk(sub ? sub[i] : C1[idx]);
+            const e = denseEntry(slot, cc, rc, i, cv, row, col);
+            const t = thinOn && !e.invalid && thinFlag(e, row, col, i) ? 1 : 0;
+            const bit = (prog >> i) & 1;
+            addPiece(0, e, cv, bit, t);
+            if (b2) addPiece(b2, e, cv, bit, t);
+            if (!e.invalid) sum += e.area;
+          }
+          if (n > 1) flagOverlap(b2, row, col, sum);
+          continue;
+        }
+      }
+      slowCell(row, col, kind, prog, b2);
+    }
+  }
+
+  // Freiformzellen mit ungültigen Teilen (validateFreePieces) je Bucket
+  if (data.free.size) {
+    for (const f of invalidFreeCells(layout, data, scan)) {
+      SC[S_BADFREE]++;
+      if (rowSec && colSec) SC[(1 + rowSec[f.row] * scols + colSec[f.col]) * NS + S_BADFREE]++;
+    }
+  }
+
+  /** Zähler der Teile mit Ausbeute > 1 eines Buckets als Map (Schlüssel Rohsteingruppe · nC + Farbe) */
+  const sharedOf = (b: number): Map<number, number> | undefined => {
+    if (b > 0) {
+      flushShared(b);
+      return sharedSec[b];
+    }
+    const m = new Map<number, number>(sharedTotMap ?? []);
+    for (let i = 0; i < sharedTot.length; i++) if (sharedTot[i] > 0) m.set(i, sharedTot[i]);
+    return m;
+  };
+  const fin = (b: number, rg: Range): Stats =>
+    finalizeStats(layout, palette, rawFn, reservePct, opts.groutDepthMm, rg, {
+      sc: SC.subarray(b * NS, (b + 1) * NS),
+      shapes: SH.subarray(b * 7, (b + 1) * 7),
+      pieces: cPieces.subarray(b * nC, (b + 1) * nC),
+      uncut: cUncut.subarray(b * nC, (b + 1) * nC),
+      cut: cCut.subarray(b * nC, (b + 1) * nC),
+      raw: cRaw.subarray(b * nC, (b + 1) * nC),
+      placed: cPlaced.subarray(b * nC, (b + 1) * nC),
+      area: cArea.subarray(b * nC, (b + 1) * nC),
+      rawExact: cRawExact.subarray(b * nC, (b + 1) * nC),
+      shared: sharedOf(b),
+      groupYield,
+      sizeKeys,
+      sizeCount: sizeCnt[b],
+      sizeOrder: sizeOrd[b],
+      sizeRep: sizeRep[b],
+      thinOn,
+    });
+  return {
+    total: fin(0, scan),
+    perSection: grid && hasSec ? grid.sections.map((s, i) => fin(1 + i, { r0: s.r0, r1: s.r1, c0: s.c0, c1: s.c1 })) : [],
+  };
+}
+
+/** Rohdaten eines Buckets für finalizeStats */
+interface BucketView {
+  sc: Float64Array;
+  shapes: Int32Array;
+  pieces: Int32Array;
+  uncut: Int32Array;
+  cut: Int32Array;
+  /** Rohsteine aus Teilen mit Ausbeute ≤ 1 (je Teil einer) */
+  raw: Int32Array;
+  placed: Int32Array;
+  area: Float64Array;
+  rawExact: Float64Array;
+  /** (Rohsteingruppe · Farbanzahl + Farbe) → Anzahl Teile mit Ausbeute > 1 */
+  shared: Map<number, number> | undefined;
+  groupYield: number[];
+  sizeKeys: string[];
+  sizeCount: Int32Array;
+  sizeOrder: number[];
+  /** erste Schnittinfo je Größe (Reihenfolge wie sizeOrder) – liefert die gerundeten Maße wie bisher */
+  sizeRep: CutInfo[];
+  thinOn: boolean;
+}
+
+/**
+ * Abschluss einer Statistik aus den gezählten Werten eines Bereichs: Rohsteine je Schnittform-Gruppe,
+ * Reserve, Packungen/Kosten je Farbe und Material, Flächen, Verschnitt, Fugenmasse. Gleiche Rechnung für die
+ * Gesamtstatistik und jeden Abschnitt.
+ */
+function finalizeStats(
+  layout: Layout,
+  palette: PaletteColor[],
+  rawFn: RawSizeFn,
+  reservePct: number,
+  groutDepthMm: number,
+  rg: Range,
+  v: BucketView,
+): Stats {
+  const nC = palette.length;
   const perColor: ColorStat[] = palette.map((_, i) => {
-    const r = raw(i);
+    const r = rawFn(i);
     return {
       color: i,
-      pieces: 0,
-      uncut: 0,
-      cut: 0,
-      area: 0,
-      rawExact: 0,
-      raw: 0,
+      pieces: v.pieces[i],
+      uncut: v.uncut[i],
+      cut: v.cut[i],
+      area: v.area[i],
+      rawExact: v.rawExact[i],
+      raw: v.raw[i],
       rawWithReserve: 0,
       rawW: r.w,
       rawH: r.h,
       material: r.material,
       materialMissing: !!r.materialMissing,
       rawAssumedGrid: !!r.rawAssumedGrid,
-      placed: 0,
+      placed: v.placed[i],
     };
   });
-  // Teile mit Ausbeute > 1 je Farbe: Schnittinfo (Objektidentität, aus dem CutCache) → Anzahl
-  const shared: (Map<CutInfo, number> | undefined)[] = new Array(palette.length);
-  const perShape: Record<ShapeType, number> = { square: 0, rectangle: 0, triangle: 0, rhombus: 0, trapezoid: 0, parallelogram: 0, custom: 0 };
-  const perSize = new Map<string, SizeStat>();
-  let pieces = 0;
-  let placed = 0;
-  let stoneArea = 0;
-  let cutPieces = 0;
-  let notFitting = 0;
-  let invalidColorPieces = 0;
-  let invalidPieces = 0;
-
-  for (let row = rg.r0; row < rg.r1; row++) {
-    for (let col = rg.c0; col < rg.c1; col++) {
-      const idx = row * layout.cols + col;
-      const ps = cellPieces(layout, data, row, col);
-      const prog = data.progress[idx];
-      for (let i = 0; i < ps.length; i++) {
-        const p = ps[i];
-        const cs = perColor[p.color] as ColorStat | undefined;
-        const r = raw(p.color);
-        const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, r);
-        if (ci.invalid) {
-          // kein Stein (keine Fläche): nicht zählen, nur melden
-          invalidPieces++;
-          continue;
-        }
-        pieces++;
-        stoneArea += ci.area;
-        const isPlaced = (prog >> i) & 1;
-        if (isPlaced) placed++;
-        if (ci.needsCut) cutPieces++;
-        if (!ci.fits) notFitting++;
-        perShape[ci.shape]++;
-        const key = `${ci.shape}|${ci.w.toFixed(1)}|${ci.h.toFixed(1)}`;
-        const ss = perSize.get(key);
-        if (ss) ss.count++;
-        else perSize.set(key, { key, shape: ci.shape, w: Math.round(ci.w * 10) / 10, h: Math.round(ci.h * 10) / 10, count: 1 });
-        if (!cs) {
-          // Farbindex außerhalb der Palette: geometrisch gezählt, aber keiner Farbe zuzuordnen
-          invalidColorPieces++;
-          continue;
-        }
-        cs.pieces++;
-        cs.area += ci.area;
-        if (isPlaced) cs.placed++;
-        if (ci.needsCut) cs.cut++;
-        else cs.uncut++;
-        const y = ci.yieldPerRaw;
-        if (y > 1) {
-          let m = shared[p.color];
-          if (!m) shared[p.color] = m = new Map();
-          m.set(ci, (m.get(ci) ?? 0) + 1);
-          cs.rawExact += 1 / y;
-        } else {
-          // ganzer Stein (Ausbeute 1) oder passt nicht in den Rohstein (Ausbeute 0): je Teil ein Rohstein
-          cs.raw++;
-          cs.rawExact += 1;
-        }
-      }
+  // Teile mit Ausbeute > 1: gleiche Schnittformen je Farbe zusammenfassen, je Gruppe aufrunden (rawFromSharedCuts)
+  if (v.shared && nC > 0) {
+    const add = new Float64Array(nC);
+    for (const [key, n] of v.shared) {
+      const c = key % nC;
+      const g = (key - c) / nC;
+      add[c] += Math.ceil(n / v.groupYield[g]);
     }
+    for (let c = 0; c < nC; c++) perColor[c].raw += add[c];
   }
 
+  const sc = v.sc;
+  const pieces = sc[S_PIECES];
+  const stoneArea = sc[S_AREA];
+  const cutPieces = sc[S_CUT];
+  const invalidColorPieces = sc[S_BADCOLOR];
   const x0 = layout.colX[rg.c0];
   const y0 = layout.rowY[rg.r0];
   const fw = layout.colX[rg.c1 - 1] + layout.colW[rg.c1 - 1] - x0;
@@ -483,8 +1090,6 @@ export function computeStats(
   let colorStoneArea = 0;
   const missingMaterials: number[] = [];
   for (const cs of perColor) {
-    const m = shared[cs.color];
-    if (m) cs.raw += rawFromSharedCuts(m);
     cs.rawWithReserve = withReserve(cs.raw, reservePct);
     rawTotal += cs.raw;
     rawRes += cs.rawWithReserve;
@@ -498,31 +1103,35 @@ export function computeStats(
     }
   }
   const mt = materialTotals(perColor, layout);
-  const badFree = data.free.size ? invalidFreeCells(layout, data, rg).length : 0;
   const finishedArea = fw * fh;
   const jointArea = finishedArea - stoneArea;
-  const groutMl = (jointArea * opts.groutDepthMm) / 1000;
+  const groutMl = (jointArea * groutDepthMm) / 1000;
   // Verschnitt nur über Steine mit gültiger Farbe – nur für sie gibt es einen Rohsteinbedarf
   const wasteArea = Math.max(0, rawArea - colorStoneArea);
-  return {
+  const sh = v.shapes;
+  const perSize: SizeStat[] = v.sizeOrder.map((id, i) => {
+    const ci = v.sizeRep[i];
+    return { key: v.sizeKeys[id], shape: ci.shape, w: Math.round(ci.w * 10) / 10, h: Math.round(ci.h * 10) / 10, count: v.sizeCount[id] };
+  });
+  const out: Stats = {
     gridPositions: (rg.r1 - rg.r0) * (rg.c1 - rg.c0),
     pieces,
-    placed,
+    placed: sc[S_PLACED],
     finishedW: fw,
     finishedH: fh,
     finishedArea,
     stoneArea,
     jointArea,
-    invalidFreeCells: badFree,
+    invalidFreeCells: sc[S_BADFREE],
     perColor,
     perMaterial: mt.perMaterial,
-    perShape,
-    perSize: [...perSize.values()].sort((a, b) => b.count - a.count),
+    perShape: { square: sh[0], rectangle: sh[1], triangle: sh[2], rhombus: sh[3], trapezoid: sh[4], parallelogram: sh[5], custom: sh[6] },
+    perSize: perSize.sort((a, b) => b.count - a.count),
     cutPieces,
     uncutPieces: pieces - cutPieces,
-    notFitting,
+    notFitting: sc[S_NOTFIT],
     invalidColorPieces,
-    invalidPieces,
+    invalidPieces: sc[S_INVALID],
     missingMaterials,
     rawTotal,
     rawWithReserveTotal: rawRes,
@@ -535,7 +1144,13 @@ export function computeStats(
     groutKg: (groutMl / 1000) * 1.6,
     totalCost: mt.totalCost,
     costComplete: mt.costComplete && invalidColorPieces === 0,
+    overlapCells: sc[S_OVERLAP],
   };
+  if (v.thinOn) {
+    out.thinPieces = sc[S_THIN];
+    out.thinFreePieces = sc[S_THINFREE];
+  }
+  return out;
 }
 
 /** Verlegefortschritt eines Bereichs (schnell, ohne Geometrie). */

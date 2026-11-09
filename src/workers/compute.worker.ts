@@ -5,7 +5,7 @@ import { computeLayout, sectionsFor } from '../core/layout';
 import { computeMosaic } from '../core/mosaic';
 import { generatePdf } from '../core/pdf';
 import { packMosaic, transferablesOf, unpackMosaic } from '../core/serialize';
-import { computeStats, CutCache } from '../core/stats';
+import { computeAllStats } from '../core/stats';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -56,11 +56,12 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
       case 'stats': {
         const layout = computeLayout(msg.layoutParams);
         const data = unpackMosaic(msg.mosaic);
-        const cache = new CutCache();
-        const opts = { reservePct: msg.reservePct, groutDepthMm: msg.groutDepthMm };
-        const total = computeStats(layout, data, msg.palette, msg.materials, opts, undefined, cache);
-        const ranges = (msg.ranges ?? []).map((r) => ({ key: r.key, stats: computeStats(layout, data, msg.palette, msg.materials, opts, r.range, cache) }));
-        post({ type: 'stats', id: msg.id, total, ranges });
+        const opts = { reservePct: msg.reservePct, groutDepthMm: msg.groutDepthMm, minPieceMm: msg.minPieceMm };
+        // EIN Durchlauf für Gesamt und (falls angefragt) alle Abschnitte – exakt dieselben Zahlen wie je Bereich
+        const grid = msg.sections ? sectionsFor(layout, msg.sections) : null;
+        const all = computeAllStats(layout, data, msg.palette, msg.materials, opts, grid);
+        const perSection = grid ? grid.sections.map((s, i) => ({ id: s.id, stats: all.perSection[i] })) : [];
+        post({ type: 'stats', id: msg.id, total: all.total, perSection });
         break;
       }
       case 'pdf': {

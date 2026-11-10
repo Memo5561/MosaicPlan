@@ -47,6 +47,47 @@ export interface MosaicData {
   progress: Uint16Array;
   /** Empfehlungen (siehe Rec) */
   rec: Uint8Array;
+  /**
+   * Fotofarbe jedes Steins aus der Berechnung (siehe PhotoTargets) – Grundlage der Abweichung Foto ↔ Stein
+   * (src/core/deviation.ts). Fehlt bei Rastern, die vor dieser Funktion berechnet wurden; dann ist keine Abweichung je
+   * Stein bekannt (nie geschätzt) – eine neue Berechnung ergänzt sie.
+   */
+  targets?: PhotoTargets;
+}
+
+/**
+ * Fotofarben (Zielfarben) der Steine, gemessen bei der Berechnung: je Stein der Mittelwert der Fotopixel unter dem
+ * Stein, auf den die Farbzuordnung zielt (die eigene, unvermischte Farbe – vor einer Farbmischung). Damit lässt sich
+ * die Abweichung jederzeit neu rechnen, und zwar gegen die AKTUELLE Farbe des Steins: auch nach manuellen Änderungen
+ * oder geänderten Palettenfarben (src/core/deviation.ts).
+ *
+ * Es sind genau die Werte, gegen die die Berechnung selbst gemessen hat – für ein unverändertes Raster ergibt die
+ * Abweichung deshalb exakt die Zahlen der Berechnung (ComputeDiagnostics.meanDeltaE/maxDeltaE, MatchDeltaE je Farbe):
+ *  - ganze Steine und Zweiteiler: L*a*b* auf dem Speicherraster der Berechnung, 3 Byte je Farbe
+ *    (L*·2,55 · a*+128 · b*+128, gerundet) – mit diesen gerundeten Werten ordnet die Berechnung die Farben zu;
+ *  - k×k-Teilsteine: L*a*b* als Float32 (ungerundet), wie die Berechnung sie verwendet.
+ *
+ * Unveränderlich: Nach der Berechnung wird nichts davon geändert (Kopien dürfen die Felder gemeinsam benutzen).
+ * Eine Fotofarbe gilt nur für die Form, für die sie gemessen wurde. Wurde die Form einer Zelle seitdem geändert
+ * (andere Zellart, andere Schnittgerade, andere k×k-Teilung, Freiform), haben ihre Steine keine Fotoreferenz mehr –
+ * `kind`, `line` und `subLen` halten dafür die Form der Berechnung fest. Wird die Form wiederhergestellt
+ * (Rückgängig oder dieselbe Form erneut gewählt), gilt die Fotofarbe wieder.
+ *
+ * Speicherbedarf: 4 Byte je Zelle + 15 Byte je Zweiteiler + (1 + 12·k²) Byte je k×k-Zelle.
+ */
+export interface PhotoTargets {
+  /** Zellart bei der Berechnung (FULL, DIAG_A, DIAG_B, LINE oder SUB – nie FREE), 1 Byte je Zelle */
+  kind: Uint8Array;
+  /** Fotofarbe des ganzen Steins bzw. von Teil 1 eines Zweiteilers, 3 Byte je Zelle (bei k×k-Zellen unbenutzt) */
+  lab1: Uint8Array;
+  /** Fotofarbe von Teil 2 der Zweiteiler (kind DIAG_A/DIAG_B/LINE), in Zellreihenfolge, 3 Byte je Zweiteiler */
+  lab2: Uint8Array;
+  /** Schnittgerade [nx, ny, d] je Zweiteiler bei der Berechnung, in Zellreihenfolge (Diagonalen: 0, 0, 0) */
+  line: Float32Array;
+  /** Anzahl Teilsteine (k²) je k×k-Zelle (kind SUB), in Zellreihenfolge */
+  subLen: Uint8Array;
+  /** Fotofarben der Teilsteine aller k×k-Zellen hintereinander (Zellreihenfolge, je Zelle zeilenweise): L*, a*, b* je Teilstein */
+  subLab: Float32Array;
 }
 
 /**
@@ -266,6 +307,13 @@ export interface Material {
   piecesPerPack: number;
   stock?: number;
   notes?: string;
+  /**
+   * Herkunft des Farbwerts `hex` (Vertrag für Welle 6, „Farbe messen“): 'manual' = eingetippt, 'eyedropper' = Pipette,
+   * 'photo' = aus einem Kamerafoto gemessen – eine Näherung, nie kalibriert. `measuredAt` (ISO-Datum), `reference`
+   * (Weiß-/Graureferenz bei der Messung) und `spreadDE` (Streuung der Messfläche in ΔE) nur bei Messungen.
+   * Fehlt = unbekannt (ältere Materialien).
+   */
+  colorSource?: { kind: 'manual' | 'eyedropper' | 'photo'; measuredAt?: string; reference?: 'none' | 'white' | 'grey'; spreadDE?: number };
 }
 
 export const DEFAULT_SHAPES: ShapeOptions = {

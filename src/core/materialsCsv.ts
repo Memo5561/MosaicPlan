@@ -14,11 +14,13 @@ import type { Material } from './types';
 
 export type CsvLang = 'de' | 'en' | 'tr';
 export type MaterialType = Material['type'];
-/** Spalten, die der Import kennt: alle Materialfelder plus eine kombinierte Größenspalte („10×10×4“). */
-export type CsvField = keyof Material | 'size';
+/** Materialfelder mit CSV-Spalte: alle außer der Herkunft des Farbwerts (`colorSource` hat noch keine Spalte). */
+export type CsvMaterialField = Exclude<keyof Material, 'colorSource'>;
+/** Spalten, die der Import kennt: alle Materialfelder mit Spalte plus eine kombinierte Größenspalte („10×10×4“). */
+export type CsvField = CsvMaterialField | 'size';
 
 /** Reihenfolge der Spalten im Export (ID zuerst, damit ein erneuter Import eindeutig zuordnet). */
-export const MATERIAL_CSV_FIELDS: (keyof Material)[] = [
+export const MATERIAL_CSV_FIELDS: CsvMaterialField[] = [
   'id',
   'type',
   'manufacturer',
@@ -37,7 +39,7 @@ export const MATERIAL_CSV_FIELDS: (keyof Material)[] = [
 ];
 
 /** Lokalisierte Spaltennamen für Export und Vorlage. */
-export const MATERIAL_CSV_HEADERS: Record<CsvLang, Record<keyof Material, string>> = {
+export const MATERIAL_CSV_HEADERS: Record<CsvLang, Record<CsvMaterialField, string>> = {
   de: {
     id: 'ID',
     type: 'Materialart',
@@ -366,7 +368,7 @@ export interface MaterialsCsvOk {
   /** Maßspalten mit nicht unterstützter Einheit (z. B. „Länge (m)“, „Breite (inch)“) – ignoriert */
   unsupportedUnitColumns: string[];
   /** Materialfelder ohne Spalte in der Datei (ohne ID) */
-  missingFields: (keyof Material)[];
+  missingFields: CsvMaterialField[];
   /** Anzahl nicht leerer Datenzeilen */
   dataRows: number;
   rows: ParsedMaterialRow[];
@@ -755,7 +757,7 @@ export interface MaterialUpdate {
   line: number;
   before: Material;
   after: Material;
-  changed: (keyof Material)[];
+  changed: CsvMaterialField[];
 }
 
 export interface MaterialImportPlan {
@@ -772,7 +774,7 @@ export interface MaterialImportPlan {
   warnings: CsvWarning[];
 }
 
-const COMPARE_FIELDS = MATERIAL_CSV_FIELDS.filter((f): f is Exclude<keyof Material, 'id'> => f !== 'id');
+const COMPARE_FIELDS = MATERIAL_CSV_FIELDS.filter((f): f is Exclude<CsvMaterialField, 'id'> => f !== 'id');
 
 function sameValue(f: keyof Material, a: unknown, b: unknown): boolean {
   if (f === 'hex') return (normalizeHex(String(a ?? '')) ?? String(a ?? '')) === (normalizeHex(String(b ?? '')) ?? String(b ?? ''));
@@ -782,7 +784,7 @@ function sameValue(f: keyof Material, a: unknown, b: unknown): boolean {
 }
 
 /** Geänderte Felder zwischen zwei Materialständen (ohne ID). */
-export function changedFields(a: Material, b: Material): (keyof Material)[] {
+export function changedFields(a: Material, b: Material): CsvMaterialField[] {
   return COMPARE_FIELDS.filter((f) => !sameValue(f, a[f], b[f]));
 }
 

@@ -12,7 +12,7 @@ import { kmeansLab, kmeansLabFixed } from './kmeans';
 import { pieceId, type Layout } from './layout';
 import type { Pt } from './geometry';
 import { cellRect, diagA, diagB, lineSplit, pieceCuttable, subRects } from './pieces';
-import { bgCutFactorOf, CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type Region, type ShapeOptions } from './types';
+import { bgCutFactorOf, CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type PhotoTargets, type Region, type ShapeOptions } from './types';
 
 export interface FixedColor {
   lab: Lab;
@@ -1247,6 +1247,10 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     missingAccentsSkipped = skipped;
   }
 
+  // ---------------- Fotofarbe je Stein festhalten (Abweichung Foto ↔ Stein, src/core/deviation.ts)
+  // Genau die Werte, gegen die oben zugeordnet und gemessen wurde – ohne Einfluss auf das Ergebnis selbst.
+  data.targets = buildPhotoTargets(data, c1Lab, c2Lab, subLab);
+
   let acc = 0;
   let p95 = 0;
   for (let i = 0; i <= 100; i++) {
@@ -1286,6 +1290,52 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       ...(pinnedResults ? { pinnedColors: pinnedResults } : {}),
     },
   };
+}
+
+/**
+ * Fotofarben der Steine für MosaicData.targets (siehe PhotoTargets) aus den Lab-Werten der Analyse – unverändert, also
+ * genau die Werte, mit denen die Zuordnung gerechnet hat: c1Lab/c2Lab auf dem Speicherraster (3 Byte je Farbe; c1Lab wird
+ * ohne Kopie übernommen), die k×k-Teilsteine (subLab) als Float32. Zweiteiler und k×k-Zellen stehen in Zellreihenfolge;
+ * dazu die Form der Berechnung (Zellart, Schnittgerade, k²), damit eine spätere Formänderung erkannt wird.
+ */
+function buildPhotoTargets(data: MosaicData, c1Lab: Uint8Array, c2Lab: Uint8Array, subLab: Map<number, Float32Array>): PhotoTargets {
+  const N = data.kind.length;
+  let nSplit = 0;
+  let nSub = 0;
+  let nSubPieces = 0;
+  for (let i = 0; i < N; i++) {
+    const k = data.kind[i];
+    if (k === CellKind.DIAG_A || k === CellKind.DIAG_B || k === CellKind.LINE) nSplit++;
+    else if (k === CellKind.SUB) {
+      nSub++;
+      nSubPieces += subLab.get(i)!.length / 3;
+    }
+  }
+  const lab2 = new Uint8Array(nSplit * 3);
+  const line = new Float32Array(nSplit * 3);
+  const subLen = new Uint8Array(nSub);
+  const sub = new Float32Array(nSubPieces * 3);
+  let s = 0;
+  let u = 0;
+  let o = 0;
+  for (let i = 0; i < N; i++) {
+    const k = data.kind[i];
+    if (k === CellKind.DIAG_A || k === CellKind.DIAG_B || k === CellKind.LINE) {
+      lab2[s * 3] = c2Lab[i * 3];
+      lab2[s * 3 + 1] = c2Lab[i * 3 + 1];
+      lab2[s * 3 + 2] = c2Lab[i * 3 + 2];
+      const ln = k === CellKind.LINE ? data.line.get(i) : undefined;
+      if (ln) line.set(ln, s * 3);
+      s++;
+    } else if (k === CellKind.SUB) {
+      const arr = subLab.get(i)!;
+      subLen[u++] = arr.length / 3;
+      sub.set(arr, o);
+      o += arr.length;
+    }
+  }
+  // Zellart als Kopie: data.kind ändert sich bei manuellen Formänderungen, die Form der Berechnung nicht
+  return { kind: data.kind.slice(), lab1: c1Lab, lab2, line, subLen, subLab: sub };
 }
 
 // ---------------------------------------------------------------- Akzentfarben und Pflichtfarben

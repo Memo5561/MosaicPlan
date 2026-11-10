@@ -647,6 +647,167 @@ export function replaceColor(layout: Layout, data: MosaicData, from: number, to:
   return n;
 }
 
+// ---------------- Momentaufnahme einer Zelle (Rückgängig/Wiederholen, siehe core/journal.ts)
+
+/**
+ * Vollständiger Zustand einer Rasterzelle: Zellart, beide Farbindizes, Unterteilung (SUB), Kantenschnitt (LINE),
+ * Freiformteile (FREE) und Verlegestatus. Alles tief kopiert – eine Momentaufnahme ändert sich nie mehr, auch wenn
+ * die Zelle danach bearbeitet wird. Die Empfehlungen (rec) gehören zur Berechnung und werden nie bearbeitet.
+ */
+export interface CellSnapshot {
+  kind: CellKindValue;
+  c1: number;
+  c2: number;
+  sub?: Uint16Array;
+  line?: Float32Array;
+  free?: FreePiece[];
+  progress: number;
+}
+
+/** Tiefe Kopie von Freiformteilen (Polygone und Farbe). */
+export function cloneFreePieces(f: readonly FreePiece[]): FreePiece[] {
+  return f.map((p) => ({ poly: p.poly.map((q) => ({ x: q.x, y: q.y })), color: p.color }));
+}
+
+/** Momentaufnahme der Zelle `idx` (tiefe Kopie aller Felder). */
+export function snapshotCell(data: MosaicData, idx: number): CellSnapshot {
+  const s = data.sub.get(idx);
+  const l = data.line.get(idx);
+  const f = data.free.get(idx);
+  const snap: CellSnapshot = { kind: data.kind[idx] as CellKindValue, c1: data.c1[idx], c2: data.c2[idx], progress: data.progress[idx] };
+  if (s) snap.sub = s.slice();
+  if (l) snap.line = l.slice();
+  if (f) snap.free = cloneFreePieces(f);
+  return snap;
+}
+
+/**
+ * Schreibt eine Momentaufnahme exakt zurück: alle Felder; Einträge der Zusatzlisten (sub/line/free), die in der
+ * Momentaufnahme fehlen, werden gelöscht. Die Momentaufnahme selbst bleibt unverändert (es wird kopiert) – sie kann
+ * also mehrfach angewendet werden (Wiederholen nach Rückgängig).
+ */
+export function restoreCell(data: MosaicData, idx: number, snap: CellSnapshot): void {
+  data.kind[idx] = snap.kind;
+  data.c1[idx] = snap.c1;
+  data.c2[idx] = snap.c2;
+  data.progress[idx] = snap.progress;
+  if (snap.sub) data.sub.set(idx, snap.sub.slice());
+  else data.sub.delete(idx);
+  if (snap.line) data.line.set(idx, snap.line.slice());
+  else data.line.delete(idx);
+  if (snap.free) data.free.set(idx, cloneFreePieces(snap.free));
+  else data.free.delete(idx);
+}
+
+function typedEqual(a: ArrayLike<number> | undefined, b: ArrayLike<number> | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Gleiche Freiformteile (gleiche Polygone Punkt für Punkt und gleiche Farben)? */
+export function freePiecesEqual(a: readonly FreePiece[] | undefined, b: readonly FreePiece[] | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const p = a[i];
+    const q = b[i];
+    if (p.color !== q.color || p.poly.length !== q.poly.length) return false;
+    for (let k = 0; k < p.poly.length; k++) if (p.poly[k].x !== q.poly[k].x || p.poly[k].y !== q.poly[k].y) return false;
+  }
+  return true;
+}
+
+/** Sind zwei Momentaufnahmen in jedem Feld gleich? */
+export function cellEquals(a: CellSnapshot, b: CellSnapshot): boolean {
+  return (
+    a.kind === b.kind &&
+    a.c1 === b.c1 &&
+    a.c2 === b.c2 &&
+    a.progress === b.progress &&
+    typedEqual(a.sub, b.sub) &&
+    typedEqual(a.line, b.line) &&
+    freePiecesEqual(a.free, b.free)
+  );
+}
+
+/** Entspricht die Zelle `idx` genau der Momentaufnahme (ohne Kopie)? */
+export function cellMatches(data: MosaicData, idx: number, snap: CellSnapshot): boolean {
+  return (
+    data.kind[idx] === snap.kind &&
+    data.c1[idx] === snap.c1 &&
+    data.c2[idx] === snap.c2 &&
+    data.progress[idx] === snap.progress &&
+    typedEqual(data.sub.get(idx), snap.sub) &&
+    typedEqual(data.line.get(idx), snap.line) &&
+    freePiecesEqual(data.free.get(idx), snap.free)
+  );
+}
+
+// ---------------- Heller / Dunkler: nur vorhandene Palettenfarben gleichen Farbtons
+
+/** Mindestabstand der Helligkeit (L*) für „heller“/„dunkler“ */
+export const SHADE_MIN_DL = 3;
+/** höchstens so großer Helligkeitsschritt (L*) – „etwas heller“, kein Sprung zu einer ganz anderen Helligkeitsstufe */
+export const SHADE_MAX_DL = 20;
+/** höchstens so weit darf sich der Farbort (a*, b*) unterscheiden (ΔE in der a*b*-Ebene) */
+export const SHADE_MAX_DAB = 10;
+/** höchstens so weit darf sich der Farbton unterscheiden (ΔH*ab) */
+export const SHADE_MAX_DH = 8;
+
+/** Vorschlag für „heller“/„dunkler“ (alle Werte gegenüber der Ausgangsfarbe gemessen). */
+export interface ShadeCandidate {
+  /** Index der Palettenfarbe */
+  index: number;
+  /** ΔL* (positiv = heller) */
+  dL: number;
+  /** Abstand in der a*b*-Ebene */
+  dab: number;
+  /** Farbtonabstand ΔH*ab */
+  dH: number;
+  /** ΔE mit der Formel des Projekts */
+  dE: number;
+}
+
+/** ΔL*, Δa*b* und ΔH*ab von p nach q (CIELAB). */
+export function shadeDiff(p: Lab, q: Lab): { dL: number; dab: number; dH: number } {
+  const da = q[1] - p[1];
+  const db = q[2] - p[2];
+  const dC = Math.hypot(q[1], q[2]) - Math.hypot(p[1], p[2]);
+  const dab2 = da * da + db * db;
+  return { dL: q[0] - p[0], dab: Math.sqrt(dab2), dH: Math.sqrt(Math.max(0, dab2 - dC * dC)) };
+}
+
+/**
+ * Nächste hellere bzw. dunklere Farbe DER PALETTE zur Farbe `from` („mach diesen Stein ein helleres Blau“):
+ * Kandidaten sind Palettenfarben mit ΔL* von +3 bis +20 (bzw. −3 bis −20), deren Farbort sich höchstens um Δa*b* 10
+ * und deren Farbton sich höchstens um ΔH*ab 8 unterscheidet (bei fast unbunten Farben sonst z. B. Hellbeige →
+ * Dunkelgrau). Gewählt wird der kleinste Helligkeitsschritt (der nächste, nicht der
+ * extremste); bei Gleichstand der kleinere Δa*b*, dann ΔE, dann die niedrigere Position. Es wird nie eine Farbe
+ * erfunden: Gibt es keine solche Palettenfarbe, ist das Ergebnis null.
+ */
+export function shadeStep(palette: readonly PaletteColor[], from: number, dir: 'lighter' | 'darker', formula: DeltaEFormula = '2000'): ShadeCandidate | null {
+  const p = palette[from];
+  if (!p) return null;
+  let best: ShadeCandidate | null = null;
+  for (let i = 0; i < palette.length; i++) {
+    if (i === from) continue;
+    const d = shadeDiff(p.lab, palette[i].lab);
+    if (dir === 'lighter' ? d.dL < SHADE_MIN_DL : d.dL > -SHADE_MIN_DL) continue;
+    if (Math.abs(d.dL) > SHADE_MAX_DL) continue;
+    if (d.dab > SHADE_MAX_DAB || d.dH > SHADE_MAX_DH) continue;
+    const c: ShadeCandidate = { index: i, dL: d.dL, dab: d.dab, dH: d.dH, dE: deltaE(formula, p.lab, palette[i].lab) };
+    if (
+      !best ||
+      Math.abs(c.dL) < Math.abs(best.dL) - 1e-9 ||
+      (Math.abs(Math.abs(c.dL) - Math.abs(best.dL)) <= 1e-9 && (c.dab < best.dab - 1e-9 || (Math.abs(c.dab - best.dab) <= 1e-9 && c.dE < best.dE - 1e-9)))
+    )
+      best = c;
+  }
+  return best;
+}
+
 /** Benachbarte Zellen (oben, rechts, unten, links). */
 export function neighbors(layout: Layout, row: number, col: number): { dir: 'N' | 'E' | 'S' | 'W'; row: number; col: number }[] {
   const res: { dir: 'N' | 'E' | 'S' | 'W'; row: number; col: number }[] = [];

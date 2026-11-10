@@ -341,7 +341,8 @@ const canvasRgb = (page, pts, sel = '[data-testid="mosaic-canvas"]') =>
     await page.fill('[data-testid="find-stone"]', 'ZZ999');
     await page.press('[data-testid="find-stone"]', 'Enter');
     const nf = await page.waitForSelector('[data-testid="find-not-found"]', { timeout: 3000 }).then((e) => e.textContent()).catch(() => '');
-    check('Suche mit ungültiger ID: Meldung mit gültigem Bereich', /„ZZ999“ nicht gefunden – gültig sind A001 bis [A-Z]+\d{3}/.test(nf), nf);
+    // w5-undo-editing: Schritt 8 nutzt die gemeinsame Suche (FindStone) – „gültig: A001 bis …“
+    check('Suche mit ungültiger ID: Meldung mit gültigem Bereich', /„ZZ999“ nicht gefunden – gültig(?: sind|:) A001 bis [A-Z]+\d{3}/.test(nf), nf);
     await page.fill('[data-testid="find-stone"]', 'A001-3');
     await page.press('[data-testid="find-stone"]', 'Enter');
     await wait(200);
@@ -357,20 +358,15 @@ const canvasRgb = (page, pts, sel = '[data-testid="mosaic-canvas"]') =>
     await page.setViewportSize({ width: 1360, height: 900 });
     await wait(300);
 
-    // ---- Neuladen: Referenzfoto (nur im Speicher) fehlt → ehrlicher Hinweis, Vergleich gesperrt
+    // ---- Neuladen: Referenzfoto wird seit w5-undo-editing mit dem Raster gespeichert → Vergleich weiter möglich
     await page.reload();
     await page.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 60000 });
-    await wait(800);
+    await wait(1500);
     const miss = await page.$('[data-testid="reference-missing"]');
-    const missText = miss ? (await miss.textContent()).trim() : '';
     const toggleDisabled = await page.$eval('[data-testid="compare-toggle"]', (e) => e.disabled);
     const holdDisabled = await page.$eval('[data-testid="compare-hold"]', (e) => e.disabled);
     const oldText = await page.$('text=Wird nach der Berechnung angezeigt.');
-    check(
-      'Nach Neuladen: „Referenzfoto … nicht verfügbar“ als unvollständig markiert, Vergleich gesperrt',
-      /nicht verfügbar/.test(missText) && /unvollständig/.test(missText) && toggleDisabled && holdDisabled && !oldText,
-      missText.slice(0, 90),
-    );
+    check('Nach Neuladen: Referenzfoto gespeichert – Vergleich weiter möglich', !miss && !toggleDisabled && !holdDisabled && !oldText);
     await page.$eval('[data-testid="compare-box"]', (e) => e.scrollIntoView({ block: 'center' }));
     await shot('09-after-reload');
     await ctx.close();

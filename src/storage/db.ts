@@ -127,6 +127,30 @@ export function laidPercentAt(placed: number, total: number, decimals = 0): { va
 export interface ImageRecord {
   original: Blob;
   name: string;
+  /**
+   * Bearbeitetes Foto der letzten Berechnung (Vergleich Foto/Mosaik), als JPEG mit höchstens 2048 px Kantenlänge.
+   * Gehört genau zum Raster `rev` (= ProjectRecord.mosaicRev); passt die Revision nicht, wird es nicht angezeigt.
+   * Fehlt bei Projekten, die vor dieser Funktion berechnet wurden (dann „Referenz neu erzeugen“).
+   */
+  reference?: ReferenceImage;
+}
+
+/** Gespeichertes Vergleichsfoto (siehe ImageRecord.reference). */
+export interface ReferenceImage {
+  jpeg: Blob;
+  /** Revision des Rasters, zu dem das Foto gehört (fehlt bei älteren Projekten ohne Revision) */
+  rev?: string;
+  /** Pixelmaße des gespeicherten JPEG */
+  w: number;
+  h: number;
+  /** 'compute': bei der Berechnung gespeichert · 'regenerated': nachträglich aus Foto und Einstellungen der Berechnung erzeugt */
+  origin: 'compute' | 'regenerated';
+  at: number;
+}
+
+/** Gehört das gespeicherte Vergleichsfoto zum Raster `mosaicRev`? */
+export function referenceFits(ref: ReferenceImage | undefined, mosaicRev: string | undefined): ref is ReferenceImage {
+  return !!ref && (ref.rev ?? null) === (mosaicRev ?? null);
 }
 
 /** Gespeichertes Raster ohne Fortschritt (der liegt im Store 'progress'). */
@@ -606,8 +630,19 @@ export interface CommitCarry {
  * eigene Palette nicht mehr zum Ergebnis, ebenso nichts und Error('palette-changed').
  * Mit `carry` wird der Fortschritt des ersetzten Rasters übernommen, wo es nachweislich dieselben Steine sind.
  */
-export function commitComputed(id: string, fields: ComputeFields, mosaic: StoredMosaicNoProgress, progress: Uint16Array, source?: string, carry?: CommitCarry): Promise<ProjectRecord> {
-  return txMulti<ProjectRecord>(['projects', 'mosaics', 'progress'], 'readwrite', (ctx) => {
+export function commitComputed(
+  id: string,
+  fields: ComputeFields,
+  mosaic: StoredMosaicNoProgress,
+  progress: Uint16Array,
+  source?: string,
+  carry?: CommitCarry,
+  extra: { reference?: ReferenceImage } = {},
+): Promise<ProjectRecord> {
+  // Vergleichsfoto in DERSELBEN Transaktion: Raster und sein Foto werden nur gemeinsam gespeichert
+  const ref = extra.reference;
+  const stores = ref ? ['projects', 'mosaics', 'progress', 'images'] : ['projects', 'mosaics', 'progress'];
+  return txMulti<ProjectRecord>(stores, 'readwrite', (ctx) => {
     ctx.on(ctx.store('projects').get(id) as IDBRequest<ProjectRecord | undefined>, (latest) => {
       if (!latest) {
         ctx.abort(new Error(DELETED));
@@ -618,8 +653,16 @@ export function commitComputed(id: string, fields: ComputeFields, mosaic: Stored
         ctx.store('projects').put(next, id);
         ctx.store('mosaics').put({ ...mosaic, rev: fields.mosaicRev }, id);
         ctx.store('progress').put(prog, id);
-        ctx.commit();
-        ctx.done(next);
+        if (!ref) {
+          ctx.commit();
+          ctx.done(next);
+          return;
+        }
+        ctx.on(ctx.store('images').get(id) as IDBRequest<ImageRecord | undefined>, (img) => {
+          if (img) ctx.store('images').put({ ...img, reference: { ...ref, rev: fields.mosaicRev } }, id);
+          ctx.commit();
+          ctx.done(next);
+        });
       };
       if (!carry) {
         write(progress, fields);
@@ -755,6 +798,35 @@ function patchSummaryOnly(id: string, p: SummaryPatch): Promise<void> {
       if (next) ctx.store('projects').put(next, id);
       ctx.commit();
     });
+  });
+}
+
+/**
+ * Speichert ein (nachträglich erzeugtes) Vergleichsfoto – nur, wenn das gespeicherte Raster noch die Revision `ref.rev`
+ * hat (sonst gehört das Foto zu einem anderen Raster: nichts schreiben, false). Eine Transaktion.
+ */
+export function saveReference(id: string, ref: ReferenceImage): Promise<boolean> {
+  return txMulti<boolean>(['projects', 'images'], 'readwrite', (ctx) => {
+    ctx.on(ctx.store('projects').get(id) as IDBRequest<ProjectRecord | undefined>, (rec) => {
+      if (!rec || (rec.mosaicRev ?? null) !== (ref.rev ?? null)) {
+        ctx.commit();
+        ctx.done(false);
+        return;
+      }
+      ctx.on(ctx.store('images').get(id) as IDBRequest<ImageRecord | undefined>, (img) => {
+        if (img) ctx.store('images').put({ ...img, reference: ref }, id);
+        ctx.commit();
+        ctx.done(!!img);
+      });
+    });
+  });
+}
+
+/** Gespeichertes Vergleichsfoto des Projekts (ohne das Original zu dekodieren). */
+export function loadReference(id: string): Promise<ReferenceImage | undefined> {
+  return txMulti<ReferenceImage | undefined>(['images'], 'readonly', (ctx) => {
+    ctx.done(undefined);
+    ctx.on(ctx.store('images').get(id) as IDBRequest<ImageRecord | undefined>, (img) => ctx.done(img?.reference));
   });
 }
 

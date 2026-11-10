@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { Badge, Swatch, Toggle } from '../components';
-import { StoneDialog } from './StoneDialog';
+import { FindStone } from './FindStone';
+import { HistoryButtons, HistoryStatus, useHistoryShortcuts } from './HistoryControls';
+import { PANEL_QUERY, StoneDialog, useMediaQuery } from './StoneDialog';
 import { Viewer, type PieceRef, type ViewerHandle } from './Viewer';
 import type { ProjectApi } from './useProject';
 import type { Material } from '../../core/types';
-import { cellId, parseCellId } from '../../core/layout';
 import { cellPieceCount } from '../../core/pieces';
 import { paletteDisplayName } from '../../core/colorNames';
 import '../css/w2-colour-honesty.css';
 import '../css/w3-viewer-features.css';
+import '../css/w5-undo-editing.css';
 
 export function StepPreview({ api, materials }: { api: ProjectApi; materials: Material[] }) {
   const { t, n, lang } = useI18n();
@@ -19,30 +21,33 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const [rulers, setRulers] = useState(true);
   const [focus, setFocus] = useState<number | null>(null);
   const [pick, setPick] = useState<{ row: number; col: number; piece: number } | null>(null);
-  const [search, setSearch] = useState('');
-  /** Suche: nicht gefunden (Text) bzw. gefundener Stein kurz aufleuchten lassen */
-  const [notFound, setNotFound] = useState<string | null>(null);
   const [flash, setFlash] = useState<PieceRef | null>(null);
   /** Foto/Mosaik-Vergleich: an/aus, Anteil der sichtbaren Mosaikbreite (0…1), „Foto zeigen“ gedrückt */
   const [compareOn, setCompareOn] = useState(false);
   const [split, setSplit] = useState(0.5);
   const [hold, setHold] = useState(false);
   const viewer = useRef<ViewerHandle>(null);
-  const origRef = useRef<HTMLDivElement>(null);
   const c = api.computed;
-  /** Referenz = bearbeitetes Foto der letzten Berechnung (nur im Speicher, siehe w3vf.refMissing) */
-  const reference = api.processed;
+  /** Breiter Bildschirm: Steindetail ersetzt die Seitenleiste neben dem Mosaik (kein Dialog darüber) */
+  const wide = useMediaQuery(PANEL_QUERY);
+  /** Vergleichsfoto = bearbeitetes Foto der letzten Berechnung (mit dem Raster gespeichert, siehe useProject) */
+  const reference = api.reference.canvas;
+  useHistoryShortcuts(api);
 
-  useEffect(() => {
-    const h = origRef.current;
-    if (!h || !reference) return;
-    h.innerHTML = '';
-    // Größe über CSS (.w3vf-orig): ganzes Bild sichtbar, höchstens 200 px hoch
-    reference.style.width = '';
-    reference.style.height = '';
-    reference.setAttribute('data-testid', 'reference-photo');
-    h.appendChild(reference);
-  }, [reference, c]);
+  // Vorschaubild über der Legende: dasselbe Canvas (Callback-Ref – die Seitenleiste wird beim Steindetail ersetzt)
+  const thumbRef = useCallback(
+    (h: HTMLDivElement | null) => {
+      if (!h || !reference) return;
+      if (h.firstChild === reference) return;
+      h.innerHTML = '';
+      // Größe über CSS (.w3vf-orig): ganzes Bild sichtbar, höchstens 200 px hoch
+      reference.style.width = '';
+      reference.style.height = '';
+      reference.setAttribute('data-testid', 'reference-photo');
+      h.appendChild(reference);
+    },
+    [reference],
+  );
 
   // Stein öffnen, den eine andere Stelle angefordert hat (z. B. Hinweis zu ungültigen Freiformsteinen)
   const handledRequest = useRef(0);
@@ -59,7 +64,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     setFlash({ idx, piece });
   }, [api.stoneRequest, c]);
 
-  // ohne Referenz kein Vergleich (z. B. nach dem Neuladen)
+  // ohne Referenz kein Vergleich
   useEffect(() => {
     if (!reference) {
       setCompareOn(false);
@@ -67,25 +72,67 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     }
   }, [reference]);
 
+  // Rückgängig/Wiederholen: betroffenen Stein kurz aufleuchten lassen
+  const lastEv = api.history.last;
+  const seenEv = useRef(lastEv?.seq ?? 0);
+  useEffect(() => {
+    if (!lastEv || lastEv.seq === seenEv.current) return;
+    seenEv.current = lastEv.seq;
+    if ((lastEv.kind === 'undo' || lastEv.kind === 'redo') && lastEv.flash) setFlash({ ...lastEv.flash });
+  }, [lastEv]);
+
   if (!c) return <p className={api.integrityError ? 'error' : 'muted'}>{t(api.integrityError ? 'compute.err.integrity' : 'preview.notComputed')}</p>;
   const rec = api.rec!;
   const palette = rec.palette;
   const matById = new Map(materials.map((m) => [m.id, m]));
   const comparing = !!reference && (compareOn || hold);
   const pct = Math.round(split * 100);
-  /** Text, solange keine Referenz im Speicher ist: während einer Berechnung kommt sie mit dem Ergebnis */
-  const refMissingText = api.computing ? t('preview.originalAfterCompute') : t('w3vf.refMissing');
   const holdOn = () => reference && setHold(true);
   const holdOff = () => setHold(false);
+  const ref = api.reference;
+  const refErr = ref.error ? (['photo-changed', 'no-photo', 'no-key', 'not-computed'].includes(ref.error) ? t(`w5ue.ref.block.${ref.error}`) : t(`w5ue.ref.err.${ref.error}`)) : null;
+
+  const onFound = (row: number, col: number, piece: number) => {
+    setPick({ row, col, piece });
+    viewer.current?.center(c.layout.colX[col] + c.layout.colW[col] / 2, c.layout.rowY[row] + c.layout.rowH[row] / 2, 12);
+    setFlash({ idx: row * c.layout.cols + col, piece });
+  };
+
+  const stone = pick && (
+    <StoneDialog
+      layout={c.layout}
+      data={c.data}
+      palette={palette}
+      materials={materials}
+      sections={api.sections}
+      row={pick.row}
+      col={pick.col}
+      piece={pick.piece}
+      minPieceMm={rec.settings.shapes.minPieceMm}
+      readOnly={!!api.computing || api.paletteLocked}
+      variant={wide ? 'panel' : 'modal'}
+      history={<HistoryButtons api={api} testIdPrefix="stone-history" compact />}
+      paletteMode={rec.settings.paletteMode}
+      deltaE={rec.settings.deltaE}
+      onClose={() => setPick(null)}
+      onNavigate={(row, col, piece) => setPick({ row, col, piece })}
+      onEdit={api.editCell}
+    />
+  );
+
   return (
     <div className="viewer-layout">
       <div>
-        {api.stale && <Badge kind="warn">{t('preview.stale')}</Badge>}
-        {api.materialsChanged && (
-          <span title={t('w3lp.materialsChanged')} data-testid="preview-materials-changed">
-            <Badge kind="warn">{t('w3lp.materialsChangedBadge')}</Badge>
-          </span>
-        )}
+        <div className="w5ue-toolbar">
+          <HistoryButtons api={api} />
+          {api.stale && <Badge kind="warn">{t('preview.stale')}</Badge>}
+          {api.materialsChanged && (
+            <span title={t('w3lp.materialsChanged')} data-testid="preview-materials-changed">
+              <Badge kind="warn">{t('w3lp.materialsChangedBadge')}</Badge>
+            </span>
+          )}
+          <HistoryStatus api={api} />
+        </div>
         <Viewer
           ref={viewer}
           layout={c.layout}
@@ -169,117 +216,114 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
             </>
           )}
           {!reference && (
-            <p className="muted small w3vf-ref-note" data-testid="reference-missing">
-              {!api.computing && <Badge kind="incomplete">{t('common.incomplete')}</Badge>} {refMissingText}
-            </p>
+            <div className="w3vf-ref-note w5ue-ref small" data-testid="reference-missing" data-state={api.computing ? 'computing' : (ref.busy ?? (ref.block ? 'blocked' : 'missing'))}>
+              {api.computing ? (
+                <span className="muted">{t('preview.originalAfterCompute')}</span>
+              ) : ref.busy ? (
+                <span className="muted">{t(ref.busy === 'loading' ? 'w5ue.ref.loading' : 'w5ue.ref.regenerating')}</span>
+              ) : (
+                <>
+                  <span className="muted">
+                    <Badge kind="incomplete">{t('common.incomplete')}</Badge> {t('w5ue.ref.missing')}
+                  </span>
+                  {ref.block ? (
+                    <span className="muted">{t(`w5ue.ref.block.${ref.block}`)}</span>
+                  ) : (
+                    <span className="w5ue-ref-actions">
+                      <button type="button" className="btn small" onClick={() => void api.regenerateReference()} data-testid="reference-regenerate">
+                        {t('w5ue.ref.regenerate')}
+                      </button>
+                      <span className="muted">{t('w5ue.ref.regenerateHint')}</span>
+                    </span>
+                  )}
+                  {refErr && ref.error !== ref.block && (
+                    <span className="error" role="alert" data-testid="reference-error">
+                      {refErr}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
           )}
-        </div>
-        <p className="muted small">{t('preview.hint')}</p>
-      </div>
-      <aside className="side">
-        <Toggle checked={realistic} onChange={setRealistic} label={t('preview.realistic')} />
-        <Toggle checked={codes} onChange={setCodes} label={t('preview.codes')} />
-        <Toggle checked={showSections} onChange={setShowSections} label={t('preview.sections')} />
-        <Toggle checked={rulers} onChange={setRulers} label={t('w3vf.rulers')} hint={t('w3vf.rulersHint')} testId="rulers-toggle" />
-        <form
-          className="btn-row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const p = parseCellId(c.layout, search);
-            const idx = p ? p.row * c.layout.cols + p.col : -1;
-            // auch das Teilstück muss existieren (A001-3 bei einer zweiteiligen Zelle gibt es nicht)
-            if (p && p.piece >= 0 && p.piece < Math.max(1, cellPieceCount(c.data, idx))) {
-              setNotFound(null);
-              setPick({ row: p.row, col: p.col, piece: p.piece });
-              viewer.current?.center(c.layout.colX[p.col] + c.layout.colW[p.col] / 2, c.layout.rowY[p.row] + c.layout.rowH[p.row] / 2, 12);
-              setFlash({ idx, piece: p.piece });
-            } else if (search.trim()) {
-              setNotFound(t('w3vf.findNotFound', { id: search.trim(), first: cellId(c.layout, 0, 0), last: cellId(c.layout, c.layout.rows - 1, c.layout.cols - 1) }));
-            }
-          }}
-        >
-          <input
-            className="text"
-            placeholder={t('preview.findStone')}
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setNotFound(null);
-            }}
-            data-testid="find-stone"
-          />
-          <button className="btn small" type="submit">
-            {t('preview.find')}
-          </button>
-        </form>
-        {notFound && (
-          <p className="error small" role="alert" data-testid="find-not-found">
-            {notFound}
-          </p>
-        )}
-        {/* Bearbeitetes Foto (Referenz der letzten Berechnung) über der Legende */}
-        <div className="w3vf-orig">
-          <h4>{t('preview.original')}</h4>
-          {reference ? (
-            <>
-              <div className="orig-thumb" ref={origRef} data-testid="orig-thumb" />
-              {api.stale && <small className="muted block">{t('w3vf.refStale')}</small>}
-            </>
-          ) : (
-            <small className="muted" data-testid="orig-missing">
-              {api.computing ? refMissingText : t('w3vf.refMissingShort')}
+          {reference && ref.origin === 'regenerated' && (
+            <small className="muted block" data-testid="reference-regenerated">
+              {t('w5ue.ref.regenerated')}
+            </small>
+          )}
+          {reference && refErr && (
+            <small className="error block" role="alert" data-testid="reference-error">
+              {refErr}
             </small>
           )}
         </div>
-        <h4>
-          {t('preview.legend')} ({palette.length})
-        </h4>
-        <div className="legend-list">
-          {palette.map((p, i) => {
-            const m = p.materialId ? matById.get(p.materialId) : undefined;
-            const matText = m ? [m.manufacturer, m.colorNumber].filter((x) => x && x.trim()).join(' ') || m.colorName : '';
-            return (
-              <button key={i} className={`legend-item ${focus === i ? 'active' : ''}`} onClick={() => setFocus(focus === i ? null : i)} data-testid="legend-item">
-                <Swatch hex={p.hex} />
-                <b>{String(p.code).padStart(2, '0')}</b>
-                <span className="grow w2ch-legend-name">
-                  <span data-testid="legend-name">{paletteDisplayName(p, lang)}</span>
-                  {/* Verknüpftes Material als Zweitzeile (wie im PDF): Hersteller und Farbnummer */}
-                  {m && matText && (
-                    <small className="w2ch-legend-mat" data-testid="legend-material">
-                      {matText}
-                    </small>
-                  )}
-                  {p.materialId && !m && (
-                    <small className="w2ch-legend-mat missing" data-testid="legend-material-missing">
-                      {t('w2ch.legendMaterialMissing')}
-                    </small>
-                  )}
+        <p className="muted small">{t('preview.hint')}</p>
+        {!wide && stone}
+      </div>
+      {wide && stone ? (
+        <aside className="side w5ue-side">{stone}</aside>
+      ) : (
+        <aside className="side">
+          <Toggle checked={realistic} onChange={setRealistic} label={t('preview.realistic')} />
+          <Toggle checked={codes} onChange={setCodes} label={t('preview.codes')} />
+          <Toggle checked={showSections} onChange={setShowSections} label={t('preview.sections')} />
+          <Toggle checked={rulers} onChange={setRulers} label={t('w3vf.rulers')} hint={t('w3vf.rulersHint')} testId="rulers-toggle" />
+          <FindStone layout={c.layout} data={c.data} onFound={onFound} />
+          {/* Bearbeitetes Foto (Referenz der letzten Berechnung) über der Legende */}
+          <div className="w3vf-orig">
+            <h4>{t('preview.original')}</h4>
+            {reference ? (
+              <>
+                <div className="orig-thumb" ref={thumbRef} data-testid="orig-thumb" />
+                {api.stale && <small className="muted block">{t('w3vf.refStale')}</small>}
+              </>
+            ) : (
+              <div className="w5ue-ref small" data-testid="orig-missing">
+                <span className="muted">
+                  {api.computing ? t('preview.originalAfterCompute') : ref.busy ? t(ref.busy === 'loading' ? 'w5ue.ref.loading' : 'w5ue.ref.regenerating') : ref.block ? t(`w5ue.ref.block.${ref.block}`) : t('w5ue.ref.missingShort')}
                 </span>
-                <span className="muted">{api.stats ? n(api.stats.perColor[i]?.pieces ?? 0) : '…'}</span>
-              </button>
-            );
-          })}
-        </div>
-        {focus !== null && <small className="muted">{t('preview.focusHint')}</small>}
-      </aside>
-      {pick && (
-        <StoneDialog
-          layout={c.layout}
-          data={c.data}
-          palette={palette}
-          materials={materials}
-          sections={api.sections}
-          row={pick.row}
-          col={pick.col}
-          piece={pick.piece}
-          minPieceMm={rec.settings.shapes.minPieceMm}
-          readOnly={!!api.computing || api.paletteLocked}
-          onClose={() => setPick(null)}
-          onNavigate={(row, col, piece) => setPick({ row, col, piece })}
-          onChanged={api.touchMosaic}
-          onProgress={api.touchProgress}
-        />
+                {!api.computing && !ref.busy && !ref.block && (
+                  <span>
+                    <button type="button" className="btn small" onClick={() => void api.regenerateReference()} title={t('w5ue.ref.regenerateHint')} data-testid="reference-regenerate-side">
+                      {t('w5ue.ref.regenerate')}
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <h4>
+            {t('preview.legend')} ({palette.length})
+          </h4>
+          <div className="legend-list">
+            {palette.map((p, i) => {
+              const m = p.materialId ? matById.get(p.materialId) : undefined;
+              const matText = m ? [m.manufacturer, m.colorNumber].filter((x) => x && x.trim()).join(' ') || m.colorName : '';
+              return (
+                <button key={i} className={`legend-item ${focus === i ? 'active' : ''}`} onClick={() => setFocus(focus === i ? null : i)} data-testid="legend-item">
+                  <Swatch hex={p.hex} />
+                  <b>{String(p.code).padStart(2, '0')}</b>
+                  <span className="grow w2ch-legend-name">
+                    <span data-testid="legend-name">{paletteDisplayName(p, lang)}</span>
+                    {/* Verknüpftes Material als Zweitzeile (wie im PDF): Hersteller und Farbnummer */}
+                    {m && matText && (
+                      <small className="w2ch-legend-mat" data-testid="legend-material">
+                        {matText}
+                      </small>
+                    )}
+                    {p.materialId && !m && (
+                      <small className="w2ch-legend-mat missing" data-testid="legend-material-missing">
+                        {t('w2ch.legendMaterialMissing')}
+                      </small>
+                    )}
+                  </span>
+                  <span className="muted">{api.stats ? n(api.stats.perColor[i]?.pieces ?? 0) : '…'}</span>
+                </button>
+              );
+            })}
+          </div>
+          {focus !== null && <small className="muted">{t('preview.focusHint')}</small>}
+          <small className="muted block w5ue-hnote">{t('w5ue.historyNote')}</small>
+        </aside>
       )}
     </div>
   );

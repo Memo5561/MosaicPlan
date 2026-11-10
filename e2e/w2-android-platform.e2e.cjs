@@ -379,8 +379,9 @@ function collectErrors(page, errors) {
   await page.click('[data-testid="step-pdf"]');
   await page.waitForSelector('[data-testid="pdf-btn"]');
   await page.click('[data-testid="pdf-btn"]');
-  await page.waitForSelector('[data-testid="save-toast"]', { timeout: 240000 });
-  const pdfToast = await page.evaluate(() => document.querySelector('[data-testid="save-toast"] [data-testid="save-note-path"]')?.textContent || '');
+  // Welle 5 (w5-pdf-export-ui): Schritt 10 zeigt das Speicherergebnis selbst (bleibt stehen, mit „Teilen …“) statt in der Meldungsleiste
+  await page.waitForSelector('[data-testid="pdf-save-note"]', { timeout: 240000 });
+  const pdfToast = await page.evaluate(() => document.querySelector('[data-testid="pdf-save-note"] [data-testid="save-note-path"]')?.textContent || '');
   const pdf = await page.evaluate((n) => window.__fake.docFile(n), pdfToast.replace('Documents/MosaicPlan/', ''));
   check('PDF im APK: „Gespeichert: Documents/MosaicPlan/…_verlegeplan.pdf“, Datei beginnt mit %PDF-', /_verlegeplan\.pdf$/.test(pdfToast) && pdf && pdf.head.startsWith('%PDF-'), `${pdfToast} · ${pdf ? Math.round(pdf.size / 1024) : 0} KB`);
   await shot(page, 'w2ap-08-toast-pdf.png');

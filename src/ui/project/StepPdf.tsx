@@ -181,7 +181,8 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   const token = useMemo(() => ({}), [optsKey, c.data, c.layout, api.version, rec.palette, materials, rec.settings, rec.meta.name, lang, origKey]);
   const baseRequest = () => ({
     layoutParams: c.layoutParams,
-    mosaic: packMosaic(c.data),
+    // ohne Fotofarben der Steine: PDF und Seitenplan brauchen sie nicht – spart im Worker die Kopie von rund 4 Byte je Zelle
+    mosaic: packMosaic(c.data, { targets: false }),
     palette: rec.palette,
     materials,
     settings: rec.settings,

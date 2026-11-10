@@ -491,7 +491,8 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
       const r = await runWorker<'csv'>('pdf', {
         type: 'csv',
         layoutParams: c.layoutParams,
-        mosaic: packMosaic(c.data),
+        // ohne Fotofarben der Steine: die CSV braucht sie nicht (spart die Kopie in den Worker)
+        mosaic: packMosaic(c.data, { targets: false }),
         palette: rec.palette,
         materials,
         sections: s,

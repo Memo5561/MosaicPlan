@@ -2006,7 +2006,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       req = {
         type: 'stats',
         layoutParams: c.layoutParams,
-        mosaic: packMosaic(c.data),
+        // ohne Fotofarben der Steine: die Statistik braucht sie nicht (spart nach jeder Bearbeitung die Kopie in den Worker)
+        mosaic: packMosaic(c.data, { targets: false }),
         palette: r.palette,
         materials: materialsRef.current,
         reservePct: r.settings.reservePct,

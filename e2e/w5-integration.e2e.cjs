@@ -10,6 +10,12 @@
  *    ändern, Strg+Z, Strg+Y – das Pixel des Steins folgt jedes Mal sofort, ohne den Puffer neu aufzubauen.
  *  - PDF (w5-pdf-content) mit der neuen Statistik: Der Export aus der App enthält die Legende je Blatt und die
  *    kompakte, vollständige Koordinatenliste; die Steinzahl im PDF ist die der Materialansicht.
+ *  - PDF-Schritt (w5-pdf-export-ui) + PDF-Inhalt (w5-pdf-content): Die Seitenzahl vor dem Erzeugen („ca. N Seiten“)
+ *    ist die Seitenzahl des erzeugten PDFs – auch nach einer Bearbeitung.
+ *  - Fotofarben je Stein (w5-target-colours) + Statistik, PDF-Schritt und CSV: Die Berechnung speichert die Fotofarbe
+ *    jedes Steins. Statistik, Seitenplan, PDF und CSV bekommen das Raster ohne die Fotofarben in den Worker (keine
+ *    unnötige Kopie) – im gespeicherten Raster bleiben sie über Bearbeitung, Rückgängig/Wiederholen, PDF- und
+ *    CSV-Export Byte für Byte erhalten.
  */
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -34,6 +40,61 @@ const num = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+
+  // Aufträge an die Worker mitschreiben: Art des Auftrags und wie viele Felder der Fotofarben das Raster mitführt
+  const TARGET_FIELDS = ['tKind', 'tLab1', 'tLab2', 'tLine', 'tSubLen', 'tSubLab'];
+  const posts = [];
+  await context.exposeBinding('__w5intPost', (_source, rec) => {
+    posts.push(rec);
+  });
+  await context.addInitScript((fields) => {
+    const orig = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (msg, ...rest) {
+      try {
+        if (msg && typeof msg.type === 'string' && msg.mosaic) window.__w5intPost({ type: msg.type, targets: fields.filter((f) => f in msg.mosaic).length });
+      } catch {
+        /* nur Mitschrift */
+      }
+      return orig.call(this, msg, ...rest);
+    };
+  }, TARGET_FIELDS);
+  const projectId = () => (page.url().match(/#\/project\/([^/]+)/) || [])[1];
+  /** Fotofarben im gespeicherten Raster (IndexedDB): vorhandene Felder, Längen und Prüfsumme über alle Bytes */
+  const storedTargets = (pid) =>
+    page.evaluate(
+      ([id, fields]) =>
+        new Promise((res, rej) => {
+          const r = indexedDB.open('mosaicplan');
+          r.onerror = () => rej(r.error);
+          r.onsuccess = () => {
+            const tx = r.result.transaction(['mosaics']);
+            let m;
+            tx.objectStore('mosaics').get(id).onsuccess = (e) => (m = e.target.result);
+            tx.onerror = () => rej(tx.error);
+            tx.oncomplete = () => {
+              r.result.close();
+              if (!m) return res(null);
+              const have = fields.filter((f) => m[f] instanceof Uint8Array);
+              let h = 2166136261;
+              let bytes = 0;
+              for (const f of have) {
+                const u = m[f];
+                for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
+                h = Math.imul(h ^ (u.length & 255), 16777619);
+                bytes += u.length;
+              }
+              res({ cells: m.cols * m.rows, fields: have.length, kindLen: m.tKind ? m.tKind.length : 0, lab1Len: m.tLab1 ? m.tLab1.length : 0, bytes, hash: `${bytes}:${h >>> 0}` });
+            };
+          };
+        }),
+      [pid, TARGET_FIELDS],
+    );
+  /** wartet, bis alles gespeichert ist (Anzeige „gespeichert“, danach kurz Ruhe für die IndexedDB-Transaktion) */
+  const saved = async () => {
+    await page.waitForTimeout(450); // Entprellzeit des Speicherns
+    await page.waitForSelector('[data-testid="save-status"][data-state="saved"]', { timeout: 30000 });
+    await page.waitForTimeout(250);
+  };
 
   const minField = () =>
     page.evaluateHandle(() =>
@@ -65,6 +126,16 @@ const num = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
     await page.click('[data-testid="compute-btn"]');
     await page.waitForSelector('[data-testid="mosaic-canvas"]', { timeout: 120000 });
     await page.waitForTimeout(800);
+
+    // ================= 0. Fotofarben: Die Berechnung speichert die Fotofarbe jedes Steins im Raster
+    const pid = projectId();
+    await saved();
+    const targets0 = await storedTargets(pid);
+    check(
+      'Berechnung speichert die Fotofarbe jedes Steins im Raster (IndexedDB)',
+      !!targets0 && targets0.fields === TARGET_FIELDS.length && targets0.kindLen === targets0.cells && targets0.lab1Len === targets0.cells * 3,
+      targets0 ? `${targets0.cells} Zellen, ${targets0.bytes} Byte Fotofarben (${(targets0.bytes / targets0.cells).toFixed(2)} je Zelle)` : 'kein Raster gespeichert',
+    );
 
     // ================= 1. Rückgängig + Rückpuffer: Pixel folgt Bearbeitung, Strg+Z und Strg+Y
     const canvas = await page.$('[data-testid="mosaic-canvas"]');
@@ -221,9 +292,21 @@ const num = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
     // ================= 3. PDF aus der App: Legende je Blatt + kompakte Koordinaten, Steinzahl wie Materialansicht
     await page.click('[data-testid="step-pdf"]');
     await page.waitForSelector('[data-testid="pdf-btn"]');
+    // Seitenzahl vor dem Erzeugen: gemessener Seitenplan (Trockenlauf des Generators im Worker)
+    await page.waitForSelector('[data-testid="pdf-plan"][data-state="ready"]', { timeout: 60000 });
+    const planned = Number(await page.getAttribute('[data-testid="pdf-plan"]', 'data-total'));
+    const plannedText = ((await page.textContent('[data-testid="pdf-total"]').catch(() => '')) || '').trim();
+    await page.screenshot({ path: path.join(OUT, '05-pdf-step.png'), fullPage: true });
     const [download] = await Promise.all([page.waitForEvent('download', { timeout: 180000 }), page.click('[data-testid="pdf-btn"]')]);
     const pdfPath = path.join(OUT, 'plan.pdf');
     await download.saveAs(pdfPath);
+    let pdfPages = NaN;
+    try {
+      pdfPages = Number((execFileSync('pdfinfo', [pdfPath], { encoding: 'utf8' }).match(/Pages:\s+(\d+)/) || [])[1]);
+    } catch (e) {
+      check('pdfinfo verfügbar', false, String(e).slice(0, 120));
+    }
+    check('PDF-Schritt: Seitenzahl vor dem Erzeugen („ca.“) = Seiten des erzeugten PDFs (nach Bearbeitung)', planned > 0 && planned === pdfPages && /ca\./.test(plannedText), `„${plannedText}“ → PDF ${pdfPages} Seiten`);
     let text = '';
     try {
       text = execFileSync('pdftotext', ['-layout', pdfPath, '-'], { maxBuffer: 256 * 1024 * 1024 }).toString('utf8');
@@ -245,6 +328,34 @@ const num = (s) => parseInt(String(s).replace(/\D/g, ''), 10);
         `${ctl.length} Abschnitte, Σ ${ctlSum} = ${pieces0}`,
       );
     }
+
+    // ================= 4. Fotofarben + Worker-Aufträge: ohne Fotofarben in den Worker, gespeichert bleiben sie erhalten
+    await page.click('[data-testid="step-plan"]');
+    await page.waitForSelector('[data-testid="placed-count"]');
+    await page.locator('[data-testid="plan-view"] button').nth(0).click();
+    await page.waitForSelector('[data-testid="csv-all"]');
+    const [csvDownload] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('[data-testid="csv-all"]')]);
+    const csvPath = path.join(OUT, 'plan.csv');
+    await csvDownload.saveAs(csvPath);
+    const csvLines = fs.readFileSync(csvPath, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '').length;
+    await page.waitForTimeout(200); // Mitschrift der Aufträge (läuft über die Brücke zur Testumgebung) ankommen lassen
+    const lean = ['stats', 'pdfPlan', 'pdf', 'csv'].map((type) => {
+      const mine = posts.filter((p) => p.type === type);
+      return { type, n: mine.length, withTargets: mine.filter((p) => p.targets > 0).length };
+    });
+    check(
+      'Statistik, Seitenplan, PDF und CSV: Raster ohne Fotofarben an den Worker (keine unnötige Kopie)',
+      lean.every((l) => l.n > 0 && l.withTargets === 0),
+      lean.map((l) => `${l.type} ${l.n}× (${l.withTargets} mit Fotofarben)`).join(', '),
+    );
+    check('CSV aus dem schlanken Raster: genau eine Zeile je Stein (= Steine der Materialansicht)', csvLines === pieces0 + 1, `${csvLines - 1} Zeilen, ${pieces0} Steine`);
+    await saved();
+    const targets1 = await storedTargets(pid);
+    check(
+      'Fotofarben im gespeicherten Raster nach Bearbeitung, Rückgängig/Wiederholen, PDF und CSV Byte für Byte unverändert',
+      !!targets0 && !!targets1 && targets1.fields === TARGET_FIELDS.length && targets1.hash === targets0.hash,
+      targets0 && targets1 ? `${targets0.hash} → ${targets1.hash}` : 'kein Raster gespeichert',
+    );
 
     check('keine Konsolen- oder Seitenfehler', errors.length === 0, errors.slice(0, 3).join(' | '));
   } catch (e) {

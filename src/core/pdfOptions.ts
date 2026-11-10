@@ -7,6 +7,15 @@ export type PaperFormat = 'a4' | 'a3' | 'a2' | 'a1' | 'a0' | 'custom';
  */
 export type CodePlanMode = 'auto' | 'always' | 'off';
 
+/**
+ * Koordinatenteil des PDFs:
+ * 'compact' (Standard) = vollständig und exakt in wenigen Seiten: je Abschnitt Spalten-/Zeilentabelle (X/Y jeder ganzen
+ *   Zelle), Farbfolge je Zeile und eine Zeile je Sonderteil (geteilte Zellen, zugeschnittene Steine, andere Rohsteinmaße);
+ * 'perStone' = eine Tabellenzeile je Stein (begrenzt durch coordLimit, mit Kürzungshinweis);
+ * 'off' = keine Koordinaten. includeCoords = false bedeutet immer 'off' (ältere gespeicherte Optionen).
+ */
+export type CoordMode = 'compact' | 'perStone' | 'off';
+
 export interface PdfOptions {
   format: PaperFormat;
   customW?: number;
@@ -18,7 +27,11 @@ export interface PdfOptions {
    */
   sheetScale: number;
   sectionIds: string[] | null;
+  /** false = keine Koordinaten (wie coordMode 'off') */
   includeCoords: boolean;
+  /** Art der Koordinatenliste (Standard 'compact'); fehlt der Wert in älteren gespeicherten Optionen, gilt 'compact'. */
+  coordMode?: CoordMode;
+  /** Höchstzahl Steine – gilt nur für coordMode 'perStone' (die kompakte Liste ist immer vollständig). */
   coordLimit: number;
   includeTemplates: boolean;
   templateLimit: number;
@@ -41,12 +54,19 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   sheetScale: 1,
   sectionIds: null,
   includeCoords: true,
+  coordMode: 'compact',
   coordLimit: 20000,
   includeTemplates: true,
   templateLimit: 400,
   includeImages: true,
   codePlan: 'auto',
 };
+
+/** Wirksame Art der Koordinatenliste: includeCoords = false → 'off', sonst coordMode (Standard 'compact'). */
+export function coordModeOf(opts: Pick<PdfOptions, 'includeCoords' | 'coordMode'>): CoordMode {
+  if (!opts.includeCoords) return 'off';
+  return opts.coordMode === 'perStone' || opts.coordMode === 'off' ? opts.coordMode : 'compact';
+}
 
 /** Seitengröße (Breite, Höhe) in mm für Format und Ausrichtung */
 export function pageSize(opts: Pick<PdfOptions, 'format' | 'customW' | 'customH' | 'orientation'>): { PW: number; PH: number } {

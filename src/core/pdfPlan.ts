@@ -8,12 +8,16 @@
  *  - Zuschnittlisten je Blatt, Codeplan-Seiten (vergrößert, gleicher Rasterbereich), Schnittvorlagen- und
  *    Koordinatenseiten mit genau den Zeilen-/Kastenregeln des Generators.
  *
+ * Welle 5: Farblegende je Verlegeblatt (im freien Band unter dem Mosaik, in einer freien rechten Spalte oder auf einer
+ * eigenen Seite „Legende zu Blatt …“ direkt danach), Schnittvorlagen mit inhaltsabhängiger Kastenhöhe und die kompakte,
+ * vollständige Koordinatenliste (Seiten gemessen von pdf.ts, sonst geschätzt).
+ *
  * planPdfPages() ist exakt, wenn die gemessenen Teile (Vorspann, Deckblätter, Blockhöhen, Zuschnitt-Einträge
  * und Codeplan-Zoom je Blatt) als `facts` übergeben werden (pdfLayoutFacts() in pdf.ts misst sie mit dem Code
  * des Generators). Fehlen sie, werden diese Teile geschätzt und in `estimated` genannt (Oberfläche: „ca.“).
  */
 import type { Layout, Section, SectionGrid } from './layout';
-import { effectiveSheetScale, printableArea, SHEET_RESERVES, type PdfOptions } from './pdfOptions';
+import { coordModeOf, effectiveSheetScale, printableArea, SHEET_RESERVES, type PdfOptions } from './pdfOptions';
 
 const EPS = 1e-6;
 
@@ -275,52 +279,182 @@ export function cutListPagesOf(cl: CutListLayout, a: number, b: number): number[
   return out;
 }
 
+// ---------------------------------------------------------------- Farblegende je Verlegeblatt
+
+/**
+ * Farblegende eines Verlegeblatts: Kopfzeile „Steine auf diesem Blatt: N, davon K zugeschnitten“ und je Farbe ein
+ * Feld (Farbfeld, „07 ×123“, Farbnummer des Materials bzw. kurzer Name). Maße in mm.
+ */
+export const SHEET_LEGEND = {
+  /** volles Feld (mit Farbnummer des Materials bzw. Farbname) und schmales Feld (nur Farbfeld, Nummer und Anzahl) */
+  chipW: 45,
+  narrowW: 24,
+  chipH: 4.5,
+  gap: 2,
+  headH: 4,
+  /** Kopfzeile in einer schmalen Spalte (umbrochen, höchstens 3 Zeilen) */
+  narrowHeadH: 9,
+  /** Unterkante des freien Bands: so weit über dem Seitenrand (über Anschlussangaben, Fußzeile, Kontrollstrecke) */
+  bottomClear: 12,
+  /** Abstand unter dem Mosaik (mit bzw. ohne Anschlussbeschriftung „↓ …“ darunter) */
+  topGap: 4.2,
+  topGapJoin: 5.2,
+  /** Abstand rechts neben dem Mosaik (mit bzw. ohne gedrehte Anschlussbeschriftung) */
+  rightGap: 4.5,
+  rightGapJoin: 6.8,
+  /** Legendenseite: Oberkante der Felder */
+  pageTop: 21,
+  pageBottom: 10,
+} as const;
+
+/** Felder je Reihe bei verfügbarer Breite w */
+export function legendChipsPerRow(w: number, chipW: number = SHEET_LEGEND.chipW): number {
+  const L = SHEET_LEGEND;
+  return Math.max(1, Math.floor((w + L.gap + 1e-9) / (chipW + L.gap)));
+}
+
+/** Höhe der Legende (Kopfzeile + Reihen) für n Farben bei Breite w */
+export function legendHeight(n: number, w: number, chipW: number = SHEET_LEGEND.chipW, headH: number = SHEET_LEGEND.headH): number {
+  return headH + Math.ceil(n / legendChipsPerRow(w, chipW)) * SHEET_LEGEND.chipH;
+}
+
+export interface LegendArea {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface SheetLegendGeometry {
+  /** freies Band unter dem Mosaik (volle Breite) */
+  band: LegendArea;
+  /** freie Spalte rechts neben dem Mosaik */
+  right: LegendArea;
+}
+
+/**
+ * Freie Flächen eines Verlegeblatts für die Legende – dieselbe Geometrie wie drawSheet (Mosaik bei M + Rand links/oben,
+ * Anschlusslinien auf Fugenmitte, „↓ Anschluss …“ unter dem Mosaik, gedrehte Beschriftung rechts daneben).
+ */
+export function sheetLegendGeometry(layout: Layout, sh: SheetRange, section: Section, grid: { srows: number; scols: number }, scale: number, PW: number, PH: number): SheetLegendGeometry {
+  const R = SHEET_RESERVES;
+  const L = SHEET_LEGEND;
+  const M = R.M;
+  const g = layout.joint;
+  const X0 = layout.colX[sh.c0];
+  const Y0 = layout.rowY[sh.r0];
+  const X1 = layout.colX[sh.c1 - 1] + layout.colW[sh.c1 - 1];
+  const Y1 = layout.rowY[sh.r1 - 1] + layout.rowH[sh.r1 - 1];
+  const rightE = sh.c1 === layout.cols ? X1 : X1 + g / 2;
+  const botE = sh.r1 === layout.rows ? Y1 : Y1 + g / 2;
+  const below = sh.ty + 1 < sh.nty || section.sr + 1 < grid.srows;
+  const right = sh.tx + 1 < sh.ntx || section.sc + 1 < grid.scols;
+  const left0 = M + R.left;
+  const top0 = M + R.top;
+  const bandTop = top0 + (botE - Y0) * scale + (below ? L.topGapJoin : L.topGap);
+  const bottom = PH - M - L.bottomClear;
+  const rx = left0 + (rightE - X0) * scale + (right ? L.rightGapJoin : L.rightGap);
+  return {
+    band: { x: M, y: bandTop, w: PW - 2 * M, h: bottom - bandTop },
+    right: { x: rx, y: top0, w: PW - M - rx, h: bottom - top0 },
+  };
+}
+
+export type SheetLegendPlace = { kind: 'band' | 'right'; area: LegendArea; chipW: number; headH: number } | { kind: 'page'; pages: number };
+
+/** Seiten „Legende zu Blatt …“ für n Farben (meist 1) */
+export function legendPagesFor(n: number, PW: number, PH: number): number {
+  const L = SHEET_LEGEND;
+  const M = SHEET_RESERVES.M;
+  const perRow = legendChipsPerRow(PW - 2 * M);
+  const rowsPerPage = Math.max(1, Math.floor((PH - M - L.pageBottom - (M + L.pageTop + L.headH)) / L.chipH + 1e-9));
+  return Math.max(1, Math.ceil(Math.ceil(n / perRow) / rowsPerPage));
+}
+
+/**
+ * Wohin kommt die Legende eines Blatts mit n Farben? Nie gekürzt – der Reihe nach: Band unter dem Mosaik (volle
+ * Felder), rechte Spalte (volle Felder), Band mit schmalen Feldern, schmale rechte Spalte, sonst eigene Seite(n)
+ * „Legende zu Blatt …“ direkt nach dem Blatt.
+ */
+export function placeSheetLegend(n: number, g: SheetLegendGeometry, PW: number, PH: number): SheetLegendPlace {
+  const L = SHEET_LEGEND;
+  const fits = (a: LegendArea, chipW: number, headH: number) => a.w >= chipW - 1e-9 && a.h >= legendHeight(n, a.w, chipW, headH) - 1e-9;
+  if (fits(g.band, L.chipW, L.headH)) return { kind: 'band', area: g.band, chipW: L.chipW, headH: L.headH };
+  if (fits(g.right, L.chipW, L.headH)) return { kind: 'right', area: g.right, chipW: L.chipW, headH: L.headH };
+  if (fits(g.band, L.narrowW, L.headH)) return { kind: 'band', area: g.band, chipW: L.narrowW, headH: L.headH };
+  const headH = g.right.w >= 60 ? L.headH : L.narrowHeadH;
+  if (fits(g.right, L.narrowW, headH)) return { kind: 'right', area: g.right, chipW: L.narrowW, headH };
+  return { kind: 'page', pages: legendPagesFor(n, PW, PH) };
+}
+
 // ---------------------------------------------------------------- Schnittvorlagen
 
 export const TEMPLATE_BOX = { w: 60, h: 68, firstTop: 22.5, nextTop: 4, bottomGap: 6, noticeH: 9 } as const;
 
+/** Benötigte Kastenhöhe (mm, inkl. 3 mm Abstand) und Kastenspalten einer Vorlage (templateLayout). */
+export interface TemplateBoxSpec {
+  h: number;
+  span: number;
+}
+
 export interface TemplateBoxLayout {
-  /** Seite (0 = erste Vorlagenseite) und Position je Kasten */
-  boxes: { page: number; x: number; y: number }[];
+  /** Seite (0 = erste Vorlagenseite), Position und Größe (inkl. Abstand) je Kasten */
+  boxes: { page: number; x: number; y: number; w: number; h: number }[];
   /** Hinweis „weitere Vorlagen nicht gedruckt“ (nur bei Kürzung) */
   notice: { page: number; y: number } | null;
   pages: number;
 }
 
-/** Kastenraster der Schnittvorlagen: genau die Seitenumbrüche des Generators. */
-export function layoutTemplateBoxes(shown: number, truncated: boolean, PW: number, PH: number): TemplateBoxLayout {
+/**
+ * Kastenraster der Schnittvorlagen – genau die Seitenumbrüche des Generators. Kästen laufen zeilenweise; die Höhe einer
+ * Reihe ist die größte benötigte Höhe ihrer Kästen (Inhalt wird nie abgeschnitten). Mit einer Anzahl statt der Maße
+ * gilt die frühere feste Kastenhöhe (Schätzung).
+ */
+export function layoutTemplateBoxes(shown: number | TemplateBoxSpec[], truncated: boolean, PW: number, PH: number): TemplateBoxLayout {
   const M = SHEET_RESERVES.M;
   const AW = PW - 2 * M;
   const B = TEMPLATE_BOX;
+  const specs: TemplateBoxSpec[] = typeof shown === 'number' ? Array.from({ length: shown }, () => ({ h: B.h, span: 1 })) : shown;
   const perRow = Math.max(1, Math.floor(AW / B.w));
   const bottom = PH - M - B.bottomGap;
+  // Reihen bilden
+  const rows: { items: { i: number; col: number; span: number }[]; h: number }[] = [];
+  let col = perRow;
+  specs.forEach((sp, i) => {
+    const span = Math.max(1, Math.min(perRow, Math.round(sp.span)));
+    if (col + span > perRow) {
+      rows.push({ items: [], h: 0 });
+      col = 0;
+    }
+    const r = rows[rows.length - 1];
+    r.items.push({ i, col, span });
+    r.h = Math.max(r.h, sp.h);
+    col += span;
+  });
   let page = 0;
-  let bx = 0;
   let by = M + B.firstTop;
-  const boxes: { page: number; x: number; y: number }[] = [];
-  for (let i = 0; i < shown; i++) {
-    if (by + B.h > bottom) {
+  let onPage = 0;
+  const boxes: TemplateBoxLayout['boxes'] = new Array(specs.length);
+  for (const r of rows) {
+    if (onPage > 0 && by + r.h > bottom) {
       page++;
       by = M + B.nextTop;
-      bx = 0;
+      onPage = 0;
     }
-    boxes.push({ page, x: M + bx * B.w, y: by });
-    bx++;
-    if (bx >= perRow) {
-      bx = 0;
-      by += B.h;
-    }
+    onPage++;
+    for (const it of r.items) boxes[it.i] = { page, x: M + it.col * B.w, y: by, w: it.span * B.w, h: r.h };
+    by += r.h;
   }
   let notice: { page: number; y: number } | null = null;
   if (truncated) {
-    let y = (bx > 0 ? by + B.h : by) + 2;
+    let y = by + 2;
     if (y + B.noticeH > bottom) {
       page++;
       y = M + 8;
     }
     notice = { page, y: y + 3 };
   }
-  return { boxes, notice, pages: shown > 0 || truncated ? page + 1 : 0 };
+  return { boxes, notice, pages: specs.length > 0 || truncated ? page + 1 : 0 };
 }
 
 // ---------------------------------------------------------------- Koordinatenlisten
@@ -375,6 +509,25 @@ export function planCoordPages(stonesPerSection: number[], coordLimit: number, P
     if (ny === null || ny + COORD_NOTICE_RESERVE > bottom) pages++;
   }
   return { pages, listed: written, truncated };
+}
+
+/**
+ * Schätzung der kompakten Koordinatenseiten ohne Messwerte (Oberfläche: „ca.“): je Abschnitt Titel/Beispiel, Spalten-
+ * und Zeilentabelle (≈ 6 Einträge je Zeile), eine Farbfolgezeile je Rasterzeile (+ 50 % Umbruch) und eine Zeile je
+ * Sonderteil (≈ zugeschnittene Steine).
+ */
+export function estimateCompactCoordPages(sections: { cols: number; rows: number; specials: number }[], PW: number, PH: number): number {
+  const M = SHEET_RESERVES.M;
+  const AW = PW - 2 * M;
+  const line = 6 * 1.28 * (25.4 / 72);
+  const usable = PH - 2 * M - 8;
+  const perLine = Math.max(1, Math.floor(AW / 30));
+  const tables = Math.max(1, Math.floor((AW + 4) / 96));
+  let h = 30;
+  for (const s of sections) {
+    h += 14 + (Math.ceil(s.cols / perLine) + Math.ceil(s.rows / perLine) + s.rows * 1.5 + Math.ceil(s.specials / tables) + 4) * line;
+  }
+  return sections.length ? Math.max(1, Math.ceil(h / usable)) : 0;
 }
 
 // ---------------------------------------------------------------- Abschnittsübersicht (kompakte Blöcke)
@@ -459,10 +612,17 @@ export interface PdfLayoutFacts {
   summaryInfoLines: Record<string, number>;
   /** verwendete Farben je Abschnitt (Farbfelder im Übersichtsblock) */
   colorsPerSection: Record<string, number>;
-  /** je Blatt: Einträge der Zuschnittliste und Codeplan-Zoom (0 = kein Codeplan) */
-  sheets: Record<string, { cutEntries: number; codeK: number }>;
+  /**
+   * je Blatt: Einträge der Zuschnittliste, Codeplan-Zoom (0 = kein Codeplan) und Seiten „Legende zu Blatt …“
+   * (0 = Legende auf dem Blatt; fehlt der Wert, wird er aus den Farben geschätzt)
+   */
+  sheets: Record<string, { cutEntries: number; codeK: number; legendPages?: number }>;
   /** Schnittvorlagen-Gruppen (collectTemplates) */
   templateGroups: number;
+  /** Kastenmaße der gedruckten Schnittvorlagen (templateLayout), in Druckreihenfolge */
+  templateBoxes?: TemplateBoxSpec[];
+  /** Seiten der kompakten Koordinatenliste (gemessen) */
+  coordPages?: number;
   /** Steine je Abschnitt (= computeStats().pieces) */
   stones: Record<string, number>;
 }
@@ -484,7 +644,7 @@ export interface PlanHints {
   hasPreview?: boolean;
 }
 
-export type PlanPart = 'front' | 'sectionCovers' | 'sectionSummaries' | 'cutLists' | 'codePlans' | 'templates' | 'coords';
+export type PlanPart = 'front' | 'sectionCovers' | 'sectionSummaries' | 'sheetLegends' | 'cutLists' | 'codePlans' | 'templates' | 'coords';
 
 export interface PdfPagePlan {
   total: number;
@@ -498,6 +658,8 @@ export interface PdfPagePlan {
   sectionPages: number;
   /** Verlegeblätter */
   sheets: number;
+  /** Seiten „Legende zu Blatt …“ (wenn die Farblegende nicht auf das Blatt passt) */
+  sheetLegends: number;
   cutLists: number;
   codePlans: number;
   templates: number;
@@ -547,6 +709,7 @@ export function planPdfPages(
   const AW = PW - 2 * M;
   const estimated = new Set<PlanPart>();
   const codeMode = opts.codePlan ?? 'auto';
+  const coordMode = coordModeOf(opts);
   const tile = Math.min(layout.tileW, layout.tileH);
 
   // ---- Vorspann
@@ -568,14 +731,25 @@ export function planPdfPages(
   let sectionCovers = 0;
   let sectionSummaries = 0;
   let sheets = 0;
+  let sheetLegends = 0;
   let cutLists = 0;
   let codePlans = 0;
   const stonesPerSection: number[] = [];
+  const compactSections: { cols: number; rows: number; specials: number }[] = [];
   const colorsOf = (id: string, part: PlanPart) => {
     const f = facts?.colorsPerSection?.[id];
     if (f !== undefined) return f;
     estimated.add(part);
     return countsOf(piecesPerSection, id)?.colors ?? Math.min(facts?.paletteSize ?? 24, 24);
+  };
+  /** Legendenseiten eines Blatts: gemessen, sonst aus den Farben des Abschnitts geschätzt */
+  const legendPagesOf = (s: SectionSheets, sh: SheetRange): number => {
+    const f = facts?.sheets?.[sh.key]?.legendPages;
+    if (f !== undefined) return f;
+    estimated.add('sheetLegends');
+    const n = countsOf(piecesPerSection, s.section.id)?.colors ?? Math.min(facts?.paletteSize ?? 24, 24);
+    const place = placeSheetLegend(Math.max(1, n), sheetLegendGeometry(layout, sh, s.section, grid, scale, PW, PH), PW, PH);
+    return place.kind === 'page' ? place.pages : 0;
   };
   const sheetFacts = (s: SectionSheets, sh: SheetRange): { cutEntries: number; codeK: number } => {
     const f = facts?.sheets?.[sh.key];
@@ -599,6 +773,7 @@ export function planPdfPages(
     const counts: number[] = [];
     for (const { s, sh } of group) {
       sheets++;
+      sheetLegends += legendPagesOf(s, sh);
       const f = sheetFacts(s, sh);
       if (f.codeK > 0) codePlans += codePlanParts(layout, sh, scale * f.codeK, plan.printW, plan.printH).length;
       counts.push(f.cutEntries);
@@ -627,8 +802,9 @@ export function planPdfPages(
   for (const s of plan.sections) {
     if (!s.selected) continue;
     const st = facts?.stones?.[s.section.id] ?? countsOf(piecesPerSection, s.section.id)?.pieces;
-    if (st === undefined && opts.includeCoords) estimated.add('coords');
+    if (st === undefined && coordMode === 'perStone') estimated.add('coords');
     stonesPerSection.push(st ?? 0);
+    compactSections.push({ cols: s.section.c1 - s.section.c0, rows: s.section.r1 - s.section.r0, specials: countsOf(piecesPerSection, s.section.id)?.cutPieces ?? 0 });
   }
 
   // ---- Schnittvorlagen
@@ -639,21 +815,33 @@ export function planPdfPages(
     const n = groups ?? 0;
     if (n > 0) {
       const shown = Math.min(n, Math.max(0, opts.templateLimit));
-      templates = layoutTemplateBoxes(shown, n > shown, PW, PH).pages;
+      // Kastenhöhen hängen vom Inhalt ab (gemessen in pdfLayoutFacts); sonst feste Höhe als Schätzung
+      const boxes = facts?.templateBoxes && facts.templateBoxes.length === shown ? facts.templateBoxes : null;
+      if (!boxes && shown > 0) estimated.add('templates');
+      templates = layoutTemplateBoxes(boxes ?? shown, n > shown, PW, PH).pages;
     }
   }
 
-  // ---- Koordinaten
-  const coords = opts.includeCoords ? planCoordPages(stonesPerSection, opts.coordLimit, PH).pages : 0;
+  // ---- Koordinaten: je Stein (exakt aus den Steinzahlen), kompakt (gemessen bzw. geschätzt) oder aus
+  let coords = 0;
+  if (coordMode === 'perStone') coords = planCoordPages(stonesPerSection, opts.coordLimit, PH).pages;
+  else if (coordMode === 'compact') {
+    if (facts?.coordPages !== undefined) coords = facts.coordPages;
+    else {
+      estimated.add('coords');
+      coords = estimateCompactCoordPages(compactSections, PW, PH);
+    }
+  }
 
   const sectionPages = sectionCovers + sectionSummaries;
   return {
-    total: front + sectionPages + sheets + cutLists + codePlans + templates + coords,
+    total: front + sectionPages + sheets + sheetLegends + cutLists + codePlans + templates + coords,
     front,
     sectionCovers,
     sectionSummaries,
     sectionPages,
     sheets,
+    sheetLegends,
     cutLists,
     codePlans,
     templates,

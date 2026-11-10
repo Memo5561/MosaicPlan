@@ -120,13 +120,11 @@ function render(file, pageNo, name) {
   check('PDF hat Lesezeichen, Dokumenttitel und PrintScaling=None', raw1.includes('/Outlines') && raw1.includes('/PrintScaling /None') && raw1.includes('/DisplayDocTitle true') && /\/Title \(/.test(raw1));
   const pages1 = pdfPages(file1);
   const all1 = pages1.map((p) => p.text).join('\n');
-  check('Koordinatenliste: Titel „erste … von … Steinen – gekürzt“', /erste 150 von [\d.]+ Steinen – gekürzt, Rest siehe CSV/.test(all1), (all1.match(/erste 150 von [\d.]+ Steinen/) || [''])[0]);
-  const noticeIdx = pages1.findIndex((p) => p.text.includes('Koordinatenliste gekürzt'));
-  check(
-    'Kürzungshinweis direkt unter der letzten Tabelle (keine leere Hinweisseite)',
-    noticeIdx >= 0 && /[A-Z]{1,2}\d{3}/.test(pages1[noticeIdx].text) && /aufgeführt sind 150 von/.test(pages1[noticeIdx].text),
-    noticeIdx >= 0 ? `Seite ${noticeIdx + 1} von ${pages1.length}` : 'fehlt',
-  );
+  // Welle 5 (w5-pdf-content): Standard ist die kompakte, vollständige Koordinatenliste; das Limit gilt nur für die
+  // Liste „je Stein“ (coordMode 'perStone', Auswahl in der Oberfläche ab Welle 6) – hier also keine Kürzung mehr.
+  check('Koordinatenliste kompakt und vollständig (Limit gilt nur „je Stein“): Kontrollzeilen, kein Kürzungshinweis', /Kontrolle: [\d.]+ ganze Steine/.test(all1) && !/gekürzt/.test(all1), (all1.match(/Kontrolle: [^–]+/) || [''])[0]);
+  const noticeIdx = pages1.findIndex((p) => /Kontrolle: [\d.]+ ganze Steine/.test(p.text));
+  check('Kontrollzeile direkt unter der Liste (keine leere Hinweisseite)', noticeIdx >= 0 && /[A-Z]{1,2}\d{3}/.test(pages1[noticeIdx].text), noticeIdx >= 0 ? `Seite ${noticeIdx + 1} von ${pages1.length}` : 'fehlt');
   const sheetIdx = pages1.findIndex((p) => /Blatt A1-1 · Seite \d+ \/ \d+/.test(p.text));
   check('Blatt-Fußzeile „Blatt A1-1 · Seite n / N“', sheetIdx >= 0, sheetIdx >= 0 ? `Seite ${sheetIdx + 1}` : '');
   let minBottom = Infinity;
@@ -184,7 +182,7 @@ function render(file, pageNo, name) {
   const file3 = await generate(page, 'w3pdf-tr.pdf');
   const pages3 = pdfPages(file3);
   const all3 = pages3.map((p) => p.text).join('\n');
-  check('Türkisch: Blatt-Fußzeile „Pafta A1-1 · Sayfa n / N“, Kürzung „kısaltıldı“', /Pafta A1-1 · Sayfa \d+ \/ \d+/.test(all3) && /Koordinat listesi kısaltıldı/.test(all3));
+  check('Türkisch: Blatt-Fußzeile „Pafta A1-1 · Sayfa n / N“, Koordinaten-Kontrolle „Kontrol“', /Pafta A1-1 · Sayfa \d+ \/ \d+/.test(all3) && /Kontrol: /.test(all3));
   let ov3 = 0;
   pages3.forEach((p) => {
     if (!isTemplatePage(p)) ov3 += overlapsOn(p).length;

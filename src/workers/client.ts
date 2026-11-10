@@ -3,9 +3,9 @@ import type { WorkerRequest, WorkerResponse } from './protocol';
 /**
  * Je Kanal ein eigener Worker. 'preview' rechnet die Live-Vorschau der Schritte 2–7 (nie gespeichert):
  * cancelChannel('preview') beendet nur diesen Worker – eine laufende Berechnung ('compute') oder ein
- * PDF ('pdf') laufen ungestört weiter (und umgekehrt).
+ * PDF ('pdf') laufen ungestört weiter (und umgekehrt). 'pdfPlan' misst vorab den Seitenplan des PDFs (Schritt 10).
  */
-export type Channel = 'compute' | 'stats' | 'pdf' | 'preview';
+export type Channel = 'compute' | 'stats' | 'pdf' | 'preview' | 'pdfPlan';
 
 const workers = new Map<Channel, Worker>();
 const pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void; progress?: (phase: string, f: number) => void; channel: Channel }>();

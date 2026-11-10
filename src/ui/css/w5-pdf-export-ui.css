@@ -1,0 +1,341 @@
+/* Schritt 10 „PDF“ (Paket w5-pdf-export-ui): Inhalt mit Seitenzahlen, Abschnittsauswahl, Export in Teilen */
+
+.w5pe-options {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.w5pe-options:disabled {
+  opacity: 0.6;
+}
+
+/* ---------- Hinweiskästen */
+.w5pe-box {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line);
+  border-radius: 8px;
+  background: #faf8f4;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.w5pe-box > p {
+  margin: 0 0 6px;
+}
+.w5pe-box > p:last-child {
+  margin-bottom: 0;
+}
+.w5pe-box.warn {
+  border-color: #ecd9a8;
+  border-left-color: #c98a12;
+  background: #fff8e8;
+  color: var(--ink);
+}
+.w5pe-box.danger {
+  border-color: #efc7c7;
+  border-left-color: var(--err);
+  background: #fdf1f1;
+}
+.w5pe-box.danger b {
+  color: var(--err);
+}
+.w5pe-box.info {
+  border-color: #c9d8ec;
+  border-left-color: #2b5c95;
+  background: #f1f6fc;
+}
+.w5pe-link {
+  text-decoration: underline;
+  color: var(--focus);
+}
+.w5pe-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 32px;
+}
+.w5pe-confirm input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+/* ---------- Maßstab, Unteroptionen */
+.w5pe-fit-scale {
+  font-weight: 400;
+  color: var(--muted);
+}
+.w5pe-fit-note {
+  margin: 6px 0 0;
+}
+.w5pe-sub {
+  margin: 0 0 10px 54px;
+}
+.w5pe-sub .field {
+  margin-top: 8px;
+}
+
+/* ---------- Abschnittsauswahl */
+.w5pe-picker {
+  min-width: 0;
+}
+.w5pe-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.w5pe-range input {
+  flex: 1 1 150px;
+  min-width: 0;
+  max-width: 320px;
+  padding: 6px 10px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.92rem;
+  background: #fff;
+  color: var(--ink);
+}
+.w5pe-range input[aria-invalid='true'] {
+  border-color: var(--err);
+  box-shadow: 0 0 0 1px var(--err);
+}
+.w5pe-range-msg {
+  margin: 4px 0 6px;
+  min-height: 1.3em;
+}
+.w5pe-grid-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.w5pe-grid-wrap.scroll {
+  overflow: auto;
+  max-height: 300px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.w5pe-grid {
+  display: grid;
+  gap: 4px;
+  align-items: stretch;
+  width: max-content;
+  max-width: 100%;
+}
+.w5pe-grid.dense {
+  gap: 3px;
+  max-width: none;
+  padding: 0 4px 4px 0;
+}
+.w5pe-grid .w5pe-cell {
+  justify-content: center;
+  text-align: center;
+  min-width: 46px;
+  position: relative;
+}
+.w5pe-grid.dense .w5pe-cell {
+  min-width: 40px;
+  padding-left: 4px;
+  padding-right: 4px;
+  border-radius: 8px;
+}
+/* „Alle“: jeder Abschnitt ist enthalten (zart hinterlegt), ausdrücklich gewählte sind gefüllt */
+.w5pe-cell.all {
+  background: var(--accent-soft);
+  border-color: #e9c9bf;
+}
+/* fertig verlegter Abschnitt: kleiner grüner Punkt (kein Text – die Beschriftung bleibt die Abschnittsnummer) */
+.w5pe-cell.done::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.w5pe-cell.done.primary::after {
+  background: #fff;
+}
+.w5pe-line {
+  border: 0;
+  background: #ebe6dd;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 26px;
+  min-height: 24px;
+  padding: 2px 6px;
+}
+.w5pe-line:hover:not(:disabled) {
+  background: #ded7ca;
+  color: var(--ink);
+}
+.w5pe-line:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.w5pe-grid.dense .w5pe-line.col,
+.w5pe-grid.dense .w5pe-corner {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.w5pe-grid.dense .w5pe-line.row,
+.w5pe-grid.dense .w5pe-corner {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+.w5pe-grid.dense .w5pe-corner {
+  z-index: 3;
+  background: #fff;
+}
+.w5pe-pick-hint {
+  margin: 6px 0 0;
+}
+
+/* ---------- Inhalt mit Seitenzahlen */
+.w5pe-contents {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.w5pe-contents li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+.w5pe-c-pages {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.w5pe-contents li.off .w5pe-c-name {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.w5pe-contents li.off .w5pe-c-pages {
+  color: var(--muted);
+  font-weight: 400;
+}
+.w5pe-total {
+  margin: 8px 0 4px;
+}
+.w5pe-total-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  font-size: 1.15rem;
+}
+.w5pe-total p.small {
+  margin: 2px 0 0;
+}
+.w5pe-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #d6cfc2;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: w5pe-spin 0.8s linear infinite;
+}
+@keyframes w5pe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w5pe-spinner {
+    animation: none;
+  }
+}
+
+/* ---------- Erzeugen, Teile, Ergebnis */
+.w5pe-actions {
+  margin: 12px 0 4px;
+}
+.w5pe-busy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.w5pe-busy .progress {
+  flex: 1 1 auto;
+}
+.w5pe-parts {
+  background: #fff;
+}
+.w5pe-part-list {
+  list-style: none;
+  margin: 8px 0 10px;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.w5pe-part-list li {
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.w5pe-part-list li.done {
+  background: #f3faf5;
+}
+.w5pe-part-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.w5pe-part-name {
+  font-size: 0.9rem;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.w5pe-file {
+  margin: 6px 0 0;
+}
+.w5pe-file > p {
+  margin: 0 0 4px;
+}
+.w5pe-anyway {
+  margin-top: 8px;
+  font-size: 0.88rem;
+}
+.w5pe-anyway summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 600px) {
+  .w5pe-sub {
+    margin-left: 0;
+  }
+  .w5pe-grid .w5pe-cell {
+    min-width: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .w5pe-line {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .w5pe-range input {
+    min-height: 44px;
+  }
+}

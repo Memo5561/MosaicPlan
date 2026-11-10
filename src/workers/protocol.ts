@@ -2,6 +2,7 @@ import type { ComputeDiagnostics, ComputeParams } from '../core/mosaic';
 import type { LayoutParams, SectionSettings } from '../core/layout';
 import type { PdfImage } from '../core/pdf';
 import type { PdfOptions } from '../core/pdfOptions';
+import type { PdfLayoutFacts } from '../core/pdfPlan';
 import type { StoredMosaic } from '../core/serialize';
 import type { Stats } from '../core/stats';
 import type { ImageAdjust, Material, PaletteColor, ProjectSettings, Region } from '../core/types';
@@ -60,6 +61,27 @@ export type WorkerRequest =
       options: PdfOptions;
     }
   | {
+      /**
+       * Seitenplan vorab messen (Paket w5-pdf-export-ui): Trockenlauf des PDF-Generators ohne Bilder und ohne
+       * Verlegeblätter (pdfLayoutFacts). Gleiche Angaben wie 'pdf'; von den Bildern nur die Maße.
+       */
+      type: 'pdfPlan';
+      id: number;
+      layoutParams: LayoutParams;
+      mosaic: StoredMosaic;
+      palette: PaletteColor[];
+      materials: Material[];
+      settings: ProjectSettings;
+      projectName: string;
+      dateStr: string;
+      originalSize?: { w: number; h: number };
+      previewSize?: { w: number; h: number };
+      dict: Record<string, string>;
+      locale: 'de' | 'en' | 'tr';
+      fontsBase: string;
+      options: PdfOptions;
+    }
+  | {
       type: 'csv';
       id: number;
       layoutParams: LayoutParams;
@@ -85,4 +107,6 @@ export type WorkerResponse =
       perSection: { id: string; stats: Stats }[];
     }
   | { type: 'pdf'; id: number; pdf: ArrayBuffer }
+  /** gemessene Teile des Seitenplans; planPdfPages(…, facts) ergibt damit die Seitenzahl des PDFs */
+  | { type: 'pdfPlan'; id: number; facts: PdfLayoutFacts }
   | { type: 'csv'; id: number; csv: string };

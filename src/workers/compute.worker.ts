@@ -3,7 +3,7 @@ import { applyAdjustments } from '../core/imageOps';
 import { buildCsv } from '../core/csv';
 import { computeLayout, sectionsFor } from '../core/layout';
 import { computeMosaic } from '../core/mosaic';
-import { generatePdf } from '../core/pdf';
+import { generatePdf, pdfLayoutFacts } from '../core/pdf';
 import { packMosaic, transferablesOf, unpackMosaic } from '../core/serialize';
 import { computeAllStats } from '../core/stats';
 import type { WorkerRequest, WorkerResponse } from './protocol';
@@ -94,6 +94,38 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           (f, label) => post({ type: 'progress', id: msg.id, phase: label, fraction: f }),
         );
         post({ type: 'pdf', id: msg.id, pdf }, [pdf]);
+        break;
+      }
+      case 'pdfPlan': {
+        // Seitenplan vorab messen: derselbe Generator im Trockenlauf (ohne Bilder und Blätter), von den Bildern nur die Maße
+        const layout = computeLayout(msg.layoutParams);
+        const data = unpackMosaic(msg.mosaic);
+        const sections = sectionsFor(layout, msg.settings);
+        const fonts = await loadFonts(msg.fontsBase);
+        const t = (key: string, params?: Record<string, string | number>) => {
+          let s = msg.dict[key] ?? key;
+          if (params) for (const [k, v] of Object.entries(params)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+          return s;
+        };
+        const facts = pdfLayoutFacts(
+          {
+            projectName: msg.projectName,
+            dateStr: msg.dateStr,
+            layout,
+            data,
+            palette: msg.palette,
+            materials: msg.materials,
+            settings: msg.settings,
+            sections,
+            original: msg.originalSize ? { dataUrl: '', ...msg.originalSize } : undefined,
+            preview: msg.previewSize ? { dataUrl: '', ...msg.previewSize } : undefined,
+            t,
+            locale: msg.locale,
+            fonts,
+          },
+          msg.options,
+        );
+        post({ type: 'pdfPlan', id: msg.id, facts });
         break;
       }
       case 'csv': {

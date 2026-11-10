@@ -111,8 +111,11 @@ function render(file, pageNo, name) {
   await page.click('[data-testid="step-pdf"]');
   await page.waitForSelector('[data-testid="pdf-btn"]');
   const limitInput = page.locator('.field:has(.field-label:text("Max. Steine in Koordinatenlisten")) input');
-  await limitInput.fill('150');
-  await limitInput.press('Tab');
+  // Welle 5 (w5-pdf-export-ui): das Feld gibt es nur noch bei der Liste „Je Stein“ (für die kompakte Liste gilt kein Limit)
+  if (await limitInput.count()) {
+    await limitInput.fill('150');
+    await limitInput.press('Tab');
+  }
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, 'w3pdf-01-step.png') });
   const file1 = await generate(page, 'w3pdf-limit.pdf');

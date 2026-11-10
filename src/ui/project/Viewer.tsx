@@ -8,6 +8,7 @@ import {
   compareSplitAt,
   compareSplitX,
   dimmedPalette,
+  drawMosaicOverlay,
   LAID_ALPHA,
   LAID_TINT,
   overviewActive,
@@ -15,6 +16,8 @@ import {
   rangeWorldRect,
   renderMosaic,
   rulerInsets,
+  type RenderInfo,
+  type RenderOptions,
   type View,
 } from '../../core/render';
 import type { Range } from '../../core/stats';
@@ -23,11 +26,21 @@ import { useI18n } from '../../i18n';
 import '../css/w1-touch-input-safety.css';
 import '../css/w3-viewer-features.css';
 import { exceedsTapSlop, isTapDuration, LONG_PRESS_MS, MAX_SCALE, pieceMinSideMm, tapDecision, TOUCH_ZOOM_TARGET_PX } from './touchTap';
+import { BaseBuffer, type BaseFrame, type CanvasFactory, type RenderArea } from './viewerBase';
 import { cellNearPoint, inRange, PaintStroke, pieceAtPoint, rangePieceCount, rectRange, type PieceRef } from './viewerInput';
 
 export type { PieceRef } from './viewerInput';
 
 const ZOOM_ANIM_MS = 220;
+/**
+ * Zoom mit Rad oder zwei Fingern: währenddessen wird die zwischengespeicherte Steinebene skaliert gezeigt; so viele
+ * Millisekunden nach dem letzten Zoomschritt folgt das genaue Bild (nie bleibt ein skaliertes Bild stehen).
+ */
+export const ZOOM_SETTLE_MS = 130;
+/** Rand des Rückpuffers je Leerlauf-Schritt nachzeichnen (Gerätepixel) */
+const FILL_CHUNK_PX = 131_072;
+/** Übersicht als Unterlage der skalierten Vorschau nur bauen, wenn das schnell geht (sonst nur, wenn schon vorhanden) */
+const UNDERLAY_MAX_CELLS = 400_000;
 const HINT_MS = 1500;
 /** Dauer der kurzen Hervorhebung (Prop `flash`) */
 export const FLASH_MS = 600;
@@ -100,6 +113,8 @@ export interface ViewerHandle {
   fit: () => void;
   zoomTo: (s: Section | { x: number; y: number; w: number; h: number }) => void;
   center: (xMm: number, yMm: number, minScale?: number) => void;
+  /** Ansicht des zuletzt gezeichneten Bildes (Ursprung auf ganze Gerätepixel gerundet) – für Tests und Vergleiche */
+  drawnView: () => View | null;
 }
 
 /** Laufende Zeiger-Geste */
@@ -155,9 +170,17 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
   /** Leertaste gedrückt (Verschieben in den Modi Malen/Rechteck) */
   const spaceDown = useRef(false);
 
+  /** Zoom-Geste läuft: skalierte Vorschau erlaubt (siehe ZOOM_SETTLE_MS) */
+  const zooming = useRef(false);
+  const settleTimer = useRef(0);
+
   const stopAnim = useCallback(() => {
-    cancelAnimationFrame(anim.current);
-    anim.current = 0;
+    if (anim.current) {
+      cancelAnimationFrame(anim.current);
+      anim.current = 0;
+      // abgebrochene Zoom-Animation: das nächste Bild ist wieder genau
+      zooming.current = false;
+    }
   }, []);
   const showHint = useCallback((text: string) => {
     setHint(text);
@@ -191,6 +214,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     }
     return ovCache.current.canvas;
   };
+  /** Ist die Übersicht für diese Eingaben schon gebaut? */
+  const overviewCached = (p: ViewerProps) => !!ovCache.current && sameKey(ovCache.current.key, [p.layout, p.data, p.palette, p.version, p.groutHex, p.focusColor ?? null]);
+  const progressCached = (p: ViewerProps) => !!progCache.current && sameKey(progCache.current.key, [p.layout, p.data, p.version, p.progressVersion]);
   const progressOverlayFor = (p: ViewerProps): HTMLCanvasElement | null => {
     const key = [p.layout, p.data, p.version, p.progressVersion];
     if (!progCache.current || !sameKey(progCache.current.key, key)) {
@@ -214,7 +240,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
   // ------------------------------------------------------------------ Overlay (leicht, ohne Neuzeichnen der Steine)
   /** Pfad eines Steins in Bildschirmkoordinaten */
   const piecePath = (ctx: CanvasRenderingContext2D, poly: { x: number; y: number }[]) => {
-    const v = view.current;
+    const v = drawnView.current ?? view.current;
     ctx.beginPath();
     poly.forEach((pt, k) => {
       const X = v.ox + pt.x * v.scale;
@@ -230,7 +256,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     const ctx = oc.getContext('2d');
     if (!ctx) return;
     const p = propsRef.current;
-    const v = view.current;
+    const v = drawnView.current ?? view.current;
     const L = p.layout;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -348,52 +374,222 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     return label;
   };
 
-  const draw = useCallback(() => {
-    cancelAnimationFrame(raf.current);
-    raf.current = requestAnimationFrame(() => {
-      const cv = canvas.current;
-      if (!cv) return;
+  // ------------------------------------------------------------------ Rückpuffer (Steinebene zwischengespeichert)
+  /**
+   * Die Steinebene (renderMosaic ohne Überlagerung) liegt in einem unsichtbaren Canvas (viewerBase.ts). Verschieben
+   * kopiert sie mit ganzzahligem Versatz – pixelgleich mit einem frischen renderMosaic (bis auf die positionsabhängige
+   * Kantenglättung des Rasterers selbst, nie eine Farbe) – und zeichnet nur neu sichtbare Streifen; geänderte Steine erkennt der Puffer selbst (Zellschatten) und zeichnet nur sie neu.
+   * Überlagerung (Abschnitte, Auswahl, Lineal, Fokus, Vergleich) kommt jedes Bild frisch darüber.
+   */
+  const base = useRef<BaseBuffer | null>(null);
+  /** Rückpuffer nicht verfügbar (kein 2D-Kontext): wie bisher jedes Bild ganz zeichnen */
+  const baseOff = useRef(false);
+  /** Ansicht des zuletzt gezeichneten Bildes (Ursprung auf ganze Gerätepixel gerundet) */
+  const drawnView = useRef<View | null>(null);
+  /** Finger/Maustasten auf dem Canvas (Geste läuft: kein Abgleich mit den Daten nötig, solange sich nichts ändert) */
+  const pointersDown = useRef(0);
+  const fillJob = useRef<{ idle: boolean; id: number } | null>(null);
+
+  /** Alles, was die Steinebene beeinflusst – außer Maßstab, Ursprung und Größe (die prüft der Puffer selbst) */
+  const baseKey = (p: ViewerProps): unknown[] => [p.layout, p.data, p.palette, p.realistic, p.surface, p.showCodes, p.progressMode, p.focusColor ?? null, p.groutHex, bg.current];
+  const stoneOptions = (p: ViewerProps): RenderOptions => ({
+    groutHex: p.groutHex,
+    realistic: p.realistic,
+    surface: p.surface,
+    showCodes: p.showCodes,
+    progressMode: p.progressMode,
+    focusColor: p.focusColor,
+    background: bg.current,
+  });
+  /**
+   * Puffer als losgelöstes <canvas> wie der Bildschirm – NICHT OffscreenCanvas: Chrome rastert beide unterschiedlich
+   * (gemessen: abweichende Kantenglättung aller schrägen Kanten); gleiche Art = gleiches Bild, Kopieren bleibt auf der GPU.
+   */
+  const createCanvas: CanvasFactory = (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('2d');
+    return { canvas: c, ctx };
+  };
+  /** Ausschnitt der Steinebene in den Puffer zeichnen – dieselbe Funktion wie für den Bildschirm */
+  const renderArea: RenderArea = (ctx, area, tx, ty) => {
+    const b = base.current!;
+    const p = propsRef.current;
+    ctx.setTransform(b.dpr, 0, 0, b.dpr, tx, ty);
+    renderMosaic(ctx, p.layout, p.data, p.palette, b.cssView(), { ...stoneOptions(p), area: b.cssArea(area), baseOnly: true, overviewMode: false });
+  };
+
+  const cancelFill = () => {
+    const j = fillJob.current;
+    if (!j) return;
+    if (j.idle && typeof cancelIdleCallback === 'function') cancelIdleCallback(j.id);
+    else window.clearTimeout(j.id);
+    fillJob.current = null;
+  };
+  /** Rand des Puffers in Leerlaufzeit nachzeichnen (kleine Stücke, nur solange er zu den aktuellen Eingaben passt) */
+  const scheduleFill = () => {
+    if (fillJob.current || !base.current?.needsFill) return;
+    const run = (deadline?: IdleDeadline) => {
+      fillJob.current = null;
+      const b = base.current;
       const p = propsRef.current;
-      const dpr = window.devicePixelRatio || 1;
-      const ctx = cv.getContext('2d')!;
-      const v = view.current;
-      // aktueller Maßstab (CSS-px je mm) und Ursprung – für Browser-Tests und Fehlersuche
-      cv.dataset.scale = v.scale.toFixed(4);
-      cv.dataset.ox = v.ox.toFixed(2);
-      cv.dataset.oy = v.oy.toFixed(2);
-      cv.dataset.fw = String(p.layout.finishedW);
-      cv.dataset.fh = String(p.layout.finishedH);
-      const ov = overviewActive(p.layout, v);
-      cv.dataset.overview = ov ? '1' : '0';
+      if (!b || !b.key) return;
+      const key = baseKey(p);
+      if (key.length !== b.key.length || key.some((k, i) => k !== b.key![i])) return;
+      const t0 = performance.now();
+      let more = false;
+      do more = b.fillStep(FILL_CHUNK_PX, p);
+      while (more && (deadline ? deadline.timeRemaining() > 6 : performance.now() - t0 < 6));
+      if (more) scheduleFill();
+    };
+    fillJob.current =
+      typeof requestIdleCallback === 'function'
+        ? { idle: true, id: requestIdleCallback(run, { timeout: 400 }) }
+        : { idle: false, id: window.setTimeout(() => run(), 40) };
+  };
+
+  /** Zoomschritt (Rad, zwei Finger): skalierte Vorschau, genaues Bild ZOOM_SETTLE_MS nach dem letzten Schritt */
+  const noteZoom = () => {
+    zooming.current = true;
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      zooming.current = false;
+      draw();
+    }, ZOOM_SETTLE_MS);
+  };
+
+  /**
+   * Unterlage der skalierten Vorschau (dort, wo der Puffer nichts hat, z. B. beim Herauszoomen): Übersicht, wenn
+   * vorhanden oder schnell gebaut, sonst Hintergrund und Fugenfläche.
+   */
+  const drawUnderlay = (ctx: CanvasRenderingContext2D, p: ViewerProps, v: View) => {
+    const small = p.layout.cols * p.layout.rows <= UNDERLAY_MAX_CELLS;
+    const ov = small || overviewCached(p) ? overviewFor(p) : null;
+    if (ov) {
+      const prog = p.progressMode && (small || progressCached(p)) ? progressOverlayFor(p) : null;
+      renderMosaic(ctx, p.layout, p.data, p.palette, v, { ...stoneOptions(p), overview: ov, overviewProgress: prog, overviewMode: true, baseOnly: true });
+      return;
+    }
+    ctx.fillStyle = bg.current;
+    ctx.fillRect(0, 0, v.width, v.height);
+    ctx.fillStyle = p.groutHex;
+    ctx.fillRect(v.ox, v.oy, p.layout.finishedW * v.scale, p.layout.finishedH * v.scale);
+  };
+
+  /** Ein Bild zeichnen (im requestAnimationFrame) */
+  const frame = () => {
+    const cv = canvas.current;
+    if (!cv) return;
+    const p = propsRef.current;
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = cv.getContext('2d')!;
+    const v0 = view.current;
+    // Ursprung auf ganze Gerätepixel: dann ist das Kopieren des Puffers pixelgenau (Eingaben bleiben unverändert genau)
+    const devOx = Math.round(v0.ox * dpr);
+    const devOy = Math.round(v0.oy * dpr);
+    const v: View = { scale: v0.scale, ox: devOx / dpr, oy: devOy / dpr, width: v0.width, height: v0.height };
+    drawnView.current = v;
+    // aktueller Maßstab (CSS-px je mm) und Ursprung – für Browser-Tests und Fehlersuche
+    cv.dataset.scale = v.scale.toFixed(4);
+    cv.dataset.ox = v.ox.toFixed(2);
+    cv.dataset.oy = v.oy.toFixed(2);
+    cv.dataset.fw = String(p.layout.finishedW);
+    cv.dataset.fh = String(p.layout.finishedH);
+    const ov = overviewActive(p.layout, v);
+    cv.dataset.overview = ov ? '1' : '0';
+    const compare = p.compareImage ? { image: p.compareImage, split: p.compareSplit ?? 0.5, labels: { left: tRef.current('w3vf.comparePhoto'), right: tRef.current('w3vf.compareMosaic') } } : null;
+    const overlayOpt = {
+      sections: p.sections,
+      selectedSection: p.selectedSection,
+      highlight: p.highlight,
+      rulers: !!p.rulers,
+      focusRange: p.focusRange ?? null,
+      compare,
+    };
+    let info: RenderInfo | null = null;
+    if (!ov && !baseOff.current) {
+      try {
+        const b = (base.current ??= new BaseBuffer(createCanvas, renderArea));
+        const f: BaseFrame = {
+          key: baseKey(p),
+          layout: p.layout,
+          data: p.data,
+          scale: v.scale,
+          dpr,
+          devOx,
+          devOy,
+          vw: cv.width,
+          vh: cv.height,
+          version: p.version,
+          progressVersion: p.progressVersion,
+          progressMode: p.progressMode,
+          // außerhalb einer Geste den gezeichneten Bereich mit den Daten abgleichen (fängt jede Änderung)
+          verify: !zooming.current && !anim.current && pointersDown.current === 0,
+        };
+        if (zooming.current && b.matches(f) && b.scale !== f.scale && b.valid) {
+          // Zoom-Geste: Puffer skaliert, Überlagerung genau
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          drawUnderlay(ctx, p, v);
+          b.drawScaled(ctx, v.scale, devOx, devOy);
+          cv.dataset.frame = 'scaled';
+        } else {
+          const st = b.frame(f, ctx);
+          cv.dataset.frame = 'exact';
+          cv.dataset.baseResets = String(b.resets);
+          cv.dataset.baseRects = String(st.rects);
+          cv.dataset.baseDirty = String(st.dirty);
+          cv.dataset.basePaints = String(b.paints);
+          scheduleFill();
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        info = drawMosaicOverlay(ctx, p.layout, p.data, v, overlayOpt);
+      } catch (e) {
+        // kein Offscreen-2D-Kontext o. Ä.: ab jetzt wie bisher direkt zeichnen
+        console.warn('Viewer: Rückpuffer nicht verfügbar', e);
+        baseOff.current = true;
+        base.current = null;
+        info = null;
+      }
+    }
+    if (!info) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const compare = p.compareImage ? { image: p.compareImage, split: p.compareSplit ?? 0.5, labels: { left: tRef.current('w3vf.comparePhoto'), right: tRef.current('w3vf.compareMosaic') } } : null;
-      const info = renderMosaic(ctx, p.layout, p.data, p.palette, v, {
-        groutHex: p.groutHex,
-        realistic: p.realistic,
-        surface: p.surface,
-        showCodes: p.showCodes,
-        progressMode: p.progressMode,
-        sections: p.sections,
-        selectedSection: p.selectedSection,
-        highlight: p.highlight,
-        focusColor: p.focusColor,
+      info = renderMosaic(ctx, p.layout, p.data, p.palette, v, {
+        ...stoneOptions(p),
+        ...overlayOpt,
         overview: ov ? overviewFor(p) : null,
         overviewProgress: ov && p.progressMode ? progressOverlayFor(p) : null,
-        background: bg.current,
-        rulers: !!p.rulers,
-        focusRange: p.focusRange ?? null,
-        compare,
       });
-      // gezeichnete Linealbeschriftungen (für Browser-Tests)
-      cv.dataset.rulerCols = info.rulers ? info.rulers.cols.map((l) => l.label).join(',') : '';
-      cv.dataset.rulerRows = info.rulers ? info.rulers.rows.map((l) => l.label).join(',') : '';
-      // Overlay im selben Bild, damit Strich/Rechteck/Umriss nie gegenüber den Steinen verrutschen
-      cancelAnimationFrame(ovRaf.current);
-      paintOverlay();
-    });
-    // overviewFor/progressOverlayFor/paintOverlay lesen nur Refs
+      cv.dataset.frame = 'direct';
+    }
+    // gezeichnete Linealbeschriftungen (für Browser-Tests)
+    cv.dataset.rulerCols = info.rulers ? info.rulers.cols.map((l) => l.label).join(',') : '';
+    cv.dataset.rulerRows = info.rulers ? info.rulers.rows.map((l) => l.label).join(',') : '';
+    // Overlay im selben Bild, damit Strich/Rechteck/Umriss nie gegenüber den Steinen verrutschen
+    cancelAnimationFrame(ovRaf.current);
+    paintOverlay();
+  };
+
+  const draw = useCallback(() => {
+    cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(frame);
+    // frame liest nur Refs
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Aufräumen: Puffer, Leerlauf-Nachzeichnen und Zoom-Timer
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(raf.current);
+      window.clearTimeout(settleTimer.current);
+      cancelFill();
+      base.current?.drop();
+      base.current = null;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // --viewer-bg beim Einhängen und bei Themenwechsel (Systemeinstellung, data-theme/class am Dokument) lesen
   useEffect(() => {
@@ -463,7 +659,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     [draw, stopAnim],
   );
 
-  useImperativeHandle(ref, () => ({ fit, zoomTo, center }), [fit, zoomTo, center]);
+  const getDrawnView = useCallback(() => (drawnView.current ? { ...drawnView.current } : null), []);
+  useImperativeHandle(ref, () => ({ fit, zoomTo, center, drawnView: getDrawnView }), [fit, zoomTo, center, getDrawnView]);
 
   // Größe (Haupt-Canvas und Overlay gleich)
   useEffect(() => {
@@ -613,8 +810,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       const r = cv.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     };
+    /** Bildschirm → mm im zuletzt gezeichneten Bild (Treffer stimmen mit dem Gezeigten überein) */
     const toWorld = (px: number, py: number) => {
-      const v = view.current;
+      const v = drawnView.current ?? view.current;
       return { x: (px - v.ox) / v.scale, y: (py - v.oy) / v.scale };
     };
     /** Punkt im Lineal? (dort wird nie ein Stein gewählt) */
@@ -634,6 +832,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       v.ox = px - (px - v.ox) * k;
       v.oy = py - (py - v.oy) * k;
       v.scale = ns;
+      if (k !== 1) noteZoom();
       draw();
     };
     /** sanftes Hineinzoomen um den Tippunkt: der Stein unter dem Finger bleibt unter dem Finger */
@@ -653,6 +852,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
         v.ox = px - (px - ox0) * (s / s0);
         v.oy = py - (py - oy0) * (s / s0);
         v.scale = s;
+        // Zwischenbilder dürfen skaliert sein, das letzte ist genau
+        zooming.current = u < 1;
+        if (u >= 1) window.clearTimeout(settleTimer.current);
         draw();
         anim.current = u < 1 ? requestAnimationFrame(step) : 0;
       };
@@ -771,6 +973,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       }
       const p = local(e);
       pointers.set(e.pointerId, p);
+      pointersDown.current = pointers.size;
       if (pointers.size === 1) {
         downAt = { ...p, t: performance.now(), type: lastType };
         moved = false;
@@ -903,6 +1106,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       if (!pointers.has(e.pointerId)) return;
       const p = local(e);
       pointers.delete(e.pointerId);
+      pointersDown.current = pointers.size;
       clearLong();
       const g = gesture.current;
       if (pointers.size === 0 && downAt) {
@@ -976,6 +1180,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     /** Abbruch durch den Browser oder eine System-Geste: nur Zustand zurücksetzen, nie auswählen */
     const onCancel = (e: PointerEvent) => {
       pointers.delete(e.pointerId);
+      pointersDown.current = pointers.size;
       moved = true;
       if (pointers.size < 2) {
         pinchDist = 0;
@@ -1030,6 +1235,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
     return () => {
       stopAnim();
       clearLong();
+      pointersDown.current = 0;
       cv.removeEventListener('wheel', onWheel);
       cv.removeEventListener('pointerdown', onDown);
       cv.removeEventListener('pointermove', onMove);

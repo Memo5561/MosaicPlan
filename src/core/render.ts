@@ -72,6 +72,20 @@ export interface RenderOptions {
   focusRange?: Range | null;
   /** Foto/Mosaik-Vergleich: Foto exakt auf der Mosaikfläche (0, 0, finishedW, finishedH) links der Trennlinie */
   compare?: CompareOptions | null;
+  /**
+   * Nur die Steinebene zeichnen (Hintergrund, Fuge, Steine bzw. Übersicht) – ohne Bereichsfokus, Vergleich,
+   * Abschnitte, Auswahl und Lineal. Die zeichnet drawMosaicOverlay darüber (Rückpuffer des Viewers: die Steinebene
+   * wird zwischengespeichert, die Überlagerung jedes Bild neu gezeichnet). Ergebnis zusammen = renderMosaic.
+   */
+  baseOnly?: boolean;
+  /**
+   * Nur diesen Ausschnitt (CSS-px im Koordinatensystem der Ansicht, darf außerhalb von 0…width/height liegen)
+   * zeichnen: Hintergrund und Fuge nur hier, Steine nur, wenn sie ihn berühren können. Pixel außerhalb sind
+   * undefiniert – der Aufrufer begrenzt mit clip(). Innerhalb sind sie dieselben wie beim Zeichnen der ganzen Ansicht.
+   */
+  area?: ScreenRect | null;
+  /** Übersicht erzwingen (true, braucht `overview`) oder Steine erzwingen (false); ohne Angabe automatisch wie bisher */
+  overviewMode?: boolean;
 }
 
 // ---------------------------------------------------------------- Lineal (Zeilen/Spalten)
@@ -574,6 +588,50 @@ export function visibleRange(layout: Layout, view: View): { r0: number; r1: numb
   };
 }
 
+/**
+ * Wie weit (CSS-px) die Zeichnung eines Steins höchstens über sein Zellrechteck hinausreicht: Kantenlinie der
+ * Glasur samt Gehrung und Kantenglättung, Farbcode. Großzügig ein ganzes Raster plus 2 px – so hängt das Bild
+ * nicht davon ab, welche Zellen beim Zeichnen ausgewählt wurden (Rückpuffer: Streifen = ganzes Bild).
+ */
+export function drawPadPx(layout: Layout, scale: number): number {
+  return (Math.max(layout.tileW, layout.tileH) + layout.joint) * scale + 2;
+}
+
+/**
+ * Zellen, deren Zeichnung das Rechteck (CSS-px der Ansicht) berühren kann: alle Zellen, deren Rechteck
+ * – um drawPadPx erweitert – es schneidet. Halboffen [r0, r1) × [c0, c1); leer, wenn r1 ≤ r0 oder c1 ≤ c0.
+ */
+export function drawRange(layout: Layout, view: View, area: ScreenRect): { r0: number; r1: number; c0: number; c1: number } {
+  const pad = drawPadPx(layout, view.scale);
+  const x0 = (area.x - pad - view.ox) / view.scale;
+  const x1 = (area.x + area.w + pad - view.ox) / view.scale;
+  const y0 = (area.y - pad - view.oy) / view.scale;
+  const y1 = (area.y + area.h + pad - view.oy) / view.scale;
+  return { ...spanOf(layout.colX, layout.colW, layout.cols, x0, x1, 'c'), ...spanOf(layout.rowY, layout.rowH, layout.rows, y0, y1, 'r') };
+}
+
+/** Indizes [i0, i1) der Zellen, die das offene Intervall (a, b) in mm schneiden (binäre Suche) */
+function spanOf<K extends 'c' | 'r'>(pos: Float64Array, size: Float64Array, n: number, a: number, b: number, k: K): Record<`${K}0` | `${K}1`, number> {
+  // erste Zelle, deren Ende > a
+  let lo = 0;
+  let hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pos[mid] + size[mid] > a) hi = mid;
+    else lo = mid + 1;
+  }
+  const i0 = lo;
+  // erste Zelle, deren Anfang ≥ b
+  lo = i0;
+  hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pos[mid] >= b) hi = mid;
+    else lo = mid + 1;
+  }
+  return { [`${k}0`]: i0, [`${k}1`]: Math.max(i0, lo) } as Record<`${K}0` | `${K}1`, number>;
+}
+
 /** Rückgabe von renderMosaic: was zusätzlich gezeichnet wurde */
 export interface RenderInfo {
   /** gezeichnete Linealbeschriftungen (null ohne Lineal) */
@@ -582,18 +640,21 @@ export interface RenderInfo {
 
 export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palette: PaletteColor[], view: View, opt: RenderOptions): RenderInfo {
   const { scale, ox, oy } = view;
+  const area: ScreenRect = opt.area ?? { x: 0, y: 0, w: view.width, h: view.height };
   ctx.save();
   ctx.fillStyle = opt.background ?? '#e9e5de';
-  ctx.fillRect(0, 0, view.width, view.height);
+  ctx.fillRect(area.x, area.y, area.w, area.h);
   // Fugenfläche = gesamte Mosaikfläche in Fugenfarbe
   ctx.fillStyle = opt.groutHex;
   ctx.fillRect(ox, oy, layout.finishedW * scale, layout.finishedH * scale);
 
   const pitchPx = pitchPxOf(layout, scale);
-  const vr = visibleRange(layout, view);
-  const cellCount = (vr.r1 - vr.r0) * (vr.c1 - vr.c0);
+  const auto = () => {
+    const vr = visibleRange(layout, view);
+    return pitchPx < 3 || (vr.r1 - vr.r0) * (vr.c1 - vr.c0) > 400_000;
+  };
 
-  if ((pitchPx < 3 || cellCount > 400_000) && opt.overview) {
+  if ((opt.overviewMode ?? auto()) && opt.overview) {
     ctx.imageSmoothingEnabled = pitchPx < 1;
     ctx.drawImage(opt.overview, ox, oy, layout.finishedW * scale, layout.finishedH * scale);
     // verlegte Steine bleiben auch in der Übersicht sichtbar
@@ -609,6 +670,9 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
     const washGrey = dim ? dimWashGrey(palette, opt.focusColor) : DIM_WASH_LIGHT;
     const DIM_FILL = `rgba(${washGrey},${washGrey},${washGrey},${DIM_ALPHA})`;
     const checkInk = opt.progressMode ? checkInks(palette) : null;
+    // alle Zellen, deren Zeichnung den Ausschnitt berühren kann (auch Kanten knapp außerhalb liegender Nachbarn):
+    // so ist jedes Pixel unabhängig davon, welcher Ausschnitt gezeichnet wird
+    const vr = drawRange(layout, view, area);
     for (let row = vr.r0; row < vr.r1; row++) {
       for (let col = vr.c0; col < vr.c1; col++) {
         const idx = row * layout.cols + col;
@@ -682,6 +746,25 @@ export function renderMosaic(ctx: Ctx2D, layout: Layout, data: MosaicData, palet
     }
   }
 
+  const info: RenderInfo = opt.baseOnly ? { rulers: null } : drawMosaicOverlay(ctx, layout, data, view, opt);
+  ctx.restore();
+  return info;
+}
+
+/**
+ * Überlagerung über der Steinebene: Bereichsfokus, Foto-Vergleich, Abschnittsgrenzen, Auswahl, Lineal und
+ * Vergleichs-Trennlinie – in dieser Reihenfolge, genau wie am Ende von renderMosaic. Der Viewer zeichnet damit
+ * jedes Bild über die zwischengespeicherte Steinebene (renderMosaic mit baseOnly).
+ */
+export function drawMosaicOverlay(
+  ctx: Ctx2D,
+  layout: Layout,
+  data: MosaicData,
+  view: View,
+  opt: Pick<RenderOptions, 'sections' | 'selectedSection' | 'highlight' | 'rulers' | 'focusRange' | 'compare'>,
+): RenderInfo {
+  const { scale, ox, oy } = view;
+  ctx.save();
   // Bereichsfokus: Schleier außerhalb (Steinansicht und Übersicht)
   if (opt.focusRange) {
     ctx.fillStyle = FOCUS_RANGE_FILL;

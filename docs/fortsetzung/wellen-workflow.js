@@ -1,10 +1,11 @@
 export const meta = {
-  name: 'mosaicplan-wave',
-  description: 'Implement one wave of MosaicPlan work packages in parallel worktrees, merge, adversarially review and fix',
+  name: 'mosaicplan-wave-v2',
+  description: 'MosaicPlan wave: (optional) merge already-finished package branches, implement remaining packages in parallel worktrees, merge, adversarially review and fix',
   phases: [
-    { title: 'Implement', detail: 'one engineer per work package, isolated git worktree' },
+    { title: 'PreMerge', detail: 'merge package branches finished before the interruption' },
+    { title: 'Implement', detail: 'one engineer per remaining work package, isolated git worktree' },
     { title: 'Merge', detail: 'merge package branches, integration checks' },
-    { title: 'Review', detail: 'diverse-lens review of the wave diff' },
+    { title: 'Review', detail: 'diverse-lens review of the whole wave diff' },
     { title: 'Verify', detail: 'skeptic per review finding' },
     { title: 'Fix', detail: 'fix confirmed findings, full checks, push' },
   ],
@@ -13,10 +14,14 @@ export const meta = {
 const SP = '/tmp/claude-0/-home-user-MosaicPlan/2af1e5b3-d1bd-540e-aeb5-6edf8b6b0ca5/scratchpad'
 const MAIN = '/home/user/MosaicPlan'
 const BR = 'ccr-e3c91906-ceq1vn'
-const ATTR = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HRsuhChU65a7esy7yzLDx5'
+const ATTR = 'Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HRsuhChU65a7esy7yzLDx5'
 const { wave, ids, baseSha } = args
+const preMerged = args.preMerged || []
+const resumeNotes = args.resumeNotes || {}
+const allIds = [...preMerged, ...ids]
 
 const COMMON = `Project: MosaicPlan, a personal German mosaic-planning app (React 19 + TS + Vite PWA, Capacitor Android wrapper in android/). Main checkout: ${MAIN} on branch ${BR}. Read README.md for architecture and exact-geometry definitions. The user (German hobby mosaicist) asked to make EVERYTHING much, much better. Non-negotiable: exact geometry and counts (totals equal geometry, cut dims only from analyzeCut on real polygons), never invent results, estimates labelled "Schätzung"/"Richtwert", incomplete features marked as incomplete (requirement 18). German is the default UI language, English and Turkish must stay complete.
+The folder docs/fortsetzung/ only holds planning/hand-over material (plan JSON, a git bundle) - never edit it and ignore it in reviews.
 Tools: npx tsx <file.ts> runs TS scripts; Playwright via require('playwright') in .cjs scripts (chromium.launch() needs no options); pdftoppm + ImageMagick available; Read tool shows images. Commit messages in German, ending with these two lines:\n${ATTR}`
 
 const PKG_RESULT = {
@@ -35,27 +40,6 @@ const PKG_RESULT = {
   required: ['id', 'branch', 'commit', 'summary', 'filesChanged', 'acceptance', 'checks', 'notes'],
 }
 
-phase('Implement')
-const pkgResults = await parallel(ids.map((id, i) => () => agent(`${COMMON}
-
-You are the engineer for work package "${id}" of wave ${wave}. Your full briefing (package goal, steps, acceptance criteria, owned files, the verified audit findings with evidence and skeptic-corrected proposals, global rules, deferred items, and the other packages running IN PARALLEL with their owned files) is in: ${SP}/plan/${id}.json — read it completely first. The briefing was written BEFORE earlier waves were implemented: also read the reports of all earlier waves in ${SP}/plan/wave*-report.json (deviations from the plan, new APIs, contracts actually delivered, decisions) and then the CURRENT source code — the code is the source of truth where it differs from the briefing.
-
-You work in an ISOLATED git worktree (your current working directory). Setup, exactly:
-  1. git checkout -B wp/${id} ${BR}   (start from the current tip of ${BR}; verify with git log -1)
-  2. if [ ! -e node_modules ]; then ln -s ${MAIN}/node_modules node_modules; fi   (do NOT run npm install unless your package explicitly adds a dependency; if it does, run npm install in your worktree and include package.json + package-lock.json changes)
-  NEVER modify files in ${MAIN} (the main checkout) and never push.
-
-Implementation rules:
-- Implement the package goal fully and with high quality. Follow the steps, but if a step is wrong or unsafe after reading the code, do the right thing and explain in notes. Prefer correctedProposal from skeptic verdicts.
-- Only edit your ownedFiles plus brand-new files unique to your package (src/i18n/ext/${id}.ts for new translation keys with de/en/tr; src/ui/css/${id}.css for CSS unless you own styles.css; tests/${id}*.test.ts; e2e/${id}.e2e.cjs). Do NOT edit de.ts/en.ts/tr.ts. If an edit outside ownership is truly unavoidable, keep it minimal and list it in outOfOwnershipEdits (other packages edit their files concurrently; overlaps cause merge conflicts).
-- Write unit tests for logic and a Playwright e2e script e2e/${id}.e2e.cjs for UI behaviour (usage: node e2e/${id}.e2e.cjs <baseUrl> <outDir>; exit code 0 on success; print ✔/✘ lines).
-- Verify before committing, in your worktree: npm run typecheck; npm test; npm run build; then serve with: npx vite preview --port ${4300 + i} --strictPort (in background) and run node e2e/run-e2e.cjs http://localhost:${4300 + i}/ ${SP}/wave${wave}/${id}/e2e AND your own e2e script; look at screenshots of the UI you changed (Read tool) and polish. Kill your preview server afterwards. Everything must be green; the existing e2e must keep passing (if your change intentionally alters something the existing e2e asserts, adjust your understanding — do not edit e2e/run-e2e.cjs; report it in notes).
-- Commit all work on branch wp/${id} (git add -A; exclude node_modules symlink and dist — check git status; the symlink must NOT be committed). Return the result object.`, { label: `impl:${id}`, phase: 'Implement', schema: PKG_RESULT, isolation: 'worktree' })))
-
-const done = pkgResults.filter(Boolean)
-log(`Implemented ${done.length}/${ids.length} packages: ${done.map((r) => `${r.id}(${Object.values(r.checks).every(Boolean) ? 'green' : 'issues'})`).join(', ')}`)
-
-phase('Merge')
 const MERGE = {
   type: 'object',
   properties: {
@@ -67,16 +51,53 @@ const MERGE = {
   },
   required: ['merged', 'skipped', 'headSha', 'checks', 'integrationFixes'],
 }
+
+const mergeSteps = (label) => `Steps:
+1. Ensure ${MAIN} is clean (git status). Merge each package branch into ${BR} with git merge --no-ff wp/<id> -m "Merge <id>: <title>" (+ attribution lines). Resolve conflicts carefully, preserving the intent of BOTH sides (read both briefings in ${SP}/plan/<id>.json). If a branch is fundamentally broken (does not compile, failing tests that you cannot fix with a small change), you may skip it (git merge --abort) and report why - prefer fixing.
+2. After merging, run in ${MAIN}: npm run typecheck; npm test; npm run build. Restart the shared preview server on port 4173 (pkill -f "vite preview --port 4173"; then nohup npx vite preview --port 4173 --strictPort > ${SP}/preview.log 2>&1 &) and run node e2e/run-e2e.cjs http://localhost:4173/ ${SP}/wave${wave}/${label}-e2e plus every e2e/w*.e2e.cjs script present. Fix integration bugs (commit fixes with clear German messages). Leave the 4173 preview server running at the end.
+3. git push origin ${BR} (retry on network errors). Return the report (headSha = git rev-parse HEAD).`
+
+let pre = null
+if (preMerged.length) {
+  phase('PreMerge')
+  pre = await agent(`${COMMON}
+
+You are the integrator for the packages of wave ${wave} that were FINISHED before the work was interrupted. Work in the MAIN checkout ${MAIN} (branch ${BR}). The wave base commit is ${baseSha} (${BR} has since gained only a docs commit). These local branches each contain one finished, individually green package: ${preMerged.map((id) => `wp/${id}`).join(', ')}. Their engineers' final reports (summary, notes, deviations, out-of-ownership edits) are in ${SP}/plan/wave5a-report.json - read it first. Do NOT touch the branches wp/w5-target-colours (unfinished WIP) and wp/w5-pdf-export-ui (empty).
+
+${mergeSteps('premerge')}`, { label: `premerge:wave${wave}`, phase: 'PreMerge', schema: MERGE })
+  log(`PreMerge: merged ${pre ? pre.merged.join(', ') : 'FAILED'}`)
+}
+
+phase('Implement')
+const pkgResults = await parallel(ids.map((id, i) => () => agent(`${COMMON}
+
+You are the engineer for work package "${id}" of wave ${wave}. Your full briefing (package goal, steps, acceptance criteria, owned files, the verified audit findings with evidence and skeptic-corrected proposals, global rules, deferred items) is in: ${SP}/plan/${id}.json - read it completely first. The briefing was written BEFORE earlier waves were implemented: also read the reports of all earlier waves in ${SP}/plan/wave*-report.json (deviations from the plan, new APIs, contracts actually delivered, decisions) and then the CURRENT source code - the code is the source of truth where it differs from the briefing.
+${preMerged.length ? `IMPORTANT: the other packages of this wave (${preMerged.join(', ')}) are ALREADY merged into ${BR} (see ${SP}/plan/wave5a-report.json for what they delivered). Build on top of them and reuse their APIs; the "otherPackagesInThisWave / runs in parallel" statements in your briefing are outdated for those packages. Only the packages ${ids.join(' and ')} are being implemented in parallel right now.` : ''}
+${resumeNotes[id] ? `RESUME NOTE: ${resumeNotes[id]}` : ''}
+
+You work in an ISOLATED git worktree (your current working directory). Setup, exactly:
+  1. git checkout -B wp/${id} ${BR}   (start from the current tip of ${BR}; verify with git log -1)
+  2. if [ ! -e node_modules ]; then ln -s ${MAIN}/node_modules node_modules; fi   (do NOT run npm install unless your package explicitly adds a dependency; if it does, run npm install in your worktree and include package.json + package-lock.json changes)
+  NEVER modify files in ${MAIN} (the main checkout) and never push.
+
+Implementation rules:
+- Implement the package goal fully and with high quality. Follow the steps, but if a step is wrong or unsafe after reading the code, do the right thing and explain in notes. Prefer correctedProposal from skeptic verdicts.
+- Only edit your ownedFiles plus brand-new files unique to your package (src/i18n/ext/${id}.ts for new translation keys with de/en/tr; src/ui/css/${id}.css for CSS unless you own styles.css; tests/${id}*.test.ts; e2e/${id}.e2e.cjs). Do NOT edit de.ts/en.ts/tr.ts. If an edit outside ownership is truly unavoidable, keep it minimal and list it in outOfOwnershipEdits (other packages edit their files concurrently; overlaps cause merge conflicts).
+- Write unit tests for logic and a Playwright e2e script e2e/${id}.e2e.cjs for UI behaviour (usage: node e2e/${id}.e2e.cjs <baseUrl> <outDir>; exit code 0 on success; print ✔/✘ lines).
+- Verify before committing, in your worktree: npm run typecheck; npm test; npm run build; then serve with: npx vite preview --port ${4300 + i} --strictPort (in background) and run node e2e/run-e2e.cjs http://localhost:${4300 + i}/ ${SP}/wave${wave}/${id}/e2e AND your own e2e script; look at screenshots of the UI you changed (Read tool) and polish. Kill your preview server afterwards. Everything must be green; the existing e2e must keep passing (if your change intentionally alters something the existing e2e asserts, do not edit e2e/run-e2e.cjs; report it in notes).
+- Commit all work on branch wp/${id} (git add -A; exclude node_modules symlink and dist - check git status; the symlink must NOT be committed). Return the result object.`, { label: `impl:${id}`, phase: 'Implement', schema: PKG_RESULT, isolation: 'worktree' })))
+
+const done = pkgResults.filter(Boolean)
+log(`Implemented ${done.length}/${ids.length} packages: ${done.map((r) => `${r.id}(${Object.values(r.checks).every(Boolean) ? 'green' : 'issues'})`).join(', ')}`)
+
+phase('Merge')
 const merge = await agent(`${COMMON}
 
-You are the integrator for wave ${wave}. Work in the MAIN checkout ${MAIN} (branch ${BR}). The wave base commit is ${baseSha}. Package engineers committed their work on local branches wp/<id> (git branch --list 'wp/*'). Their reports:
+You are the integrator for wave ${wave}. Work in the MAIN checkout ${MAIN} (branch ${BR}). The wave base commit is ${baseSha}. Package engineers committed their work on local branches wp/<id>. Their reports:
 ${JSON.stringify(done.map((r) => ({ id: r.id, branch: r.branch, commit: r.commit, summary: r.summary, checks: r.checks, outOfOwnershipEdits: r.outOfOwnershipEdits, notes: r.notes, failedAcceptance: r.acceptance.filter((a) => a.status !== 'pass') })), null, 1)}
-Packages expected: ${ids.join(', ')} (missing ones failed to report). Package briefings: ${SP}/plan/<id>.json.
+Packages to merge now: ${ids.join(', ')} (missing ones failed to report). ${preMerged.length ? `Already merged earlier in this wave: ${preMerged.join(', ')}.` : ''} Package briefings: ${SP}/plan/<id>.json.
 
-Steps:
-1. Ensure ${MAIN} is clean (git status). Merge each package branch into ${BR} with git merge --no-ff wp/<id> -m "Merge <id>: <title>" (+ attribution lines). Resolve conflicts carefully, preserving the intent of BOTH sides (read both briefings). If a branch is fundamentally broken (does not compile, failing tests that you cannot fix with a small change), you may skip it (git merge --abort) and report why — prefer fixing.
-2. After merging, run in ${MAIN}: npm run typecheck; npm test; npm run build. Restart the shared preview server on port 4173 (pkill -f "vite preview --port 4173"; then nohup npx vite preview --port 4173 --strictPort > ${SP}/preview.log 2>&1 &) and run node e2e/run-e2e.cjs http://localhost:4173/ ${SP}/wave${wave}/merged-e2e plus every e2e/w*.e2e.cjs script present. Fix integration bugs (commit fixes with clear German messages). Leave the 4173 preview server running at the end.
-3. git push origin ${BR} (retry on network errors). Return the report (headSha = git rev-parse HEAD).`, { label: `merge:wave${wave}`, phase: 'Merge', schema: MERGE })
+${mergeSteps('merged')}`, { label: `merge:wave${wave}`, phase: 'Merge', schema: MERGE })
 
 phase('Review')
 const FIND = {
@@ -110,7 +131,7 @@ const reviewed = await pipeline(
   LENSES,
   (l) => agent(`${COMMON}
 
-Review the code changes of wave ${wave}: git -C ${MAIN} diff ${baseSha}..HEAD (read package briefings ${SP}/plan/<id>.json for ${ids.join(', ')} to know the intent). Lens: ${l.text}
+Review the code changes of wave ${wave}: git -C ${MAIN} diff ${baseSha}..HEAD -- . ':!docs/fortsetzung' (read package briefings ${SP}/plan/<id>.json for ${allIds.join(', ')} to know the intent). Lens: ${l.text}
 READ-ONLY on the repository (do not edit files in ${MAIN}, do not rebuild); scratch files only under ${SP}/wave${wave}/review-${l.key}/. The current build is served at http://localhost:4173/. Report only real, evidenced problems (0-12 findings), most severe first.`, { label: `review:${l.key}`, phase: 'Review', schema: FIND }),
   (r, l) =>
     parallel(
@@ -133,4 +154,4 @@ FINDINGS:
 ${JSON.stringify(confirmed, null, 1)}
 Return a concise report: which findings were fixed how, final check results, final HEAD sha.`, { label: `fix:wave${wave}`, phase: 'Fix' })
 
-return { pkgResults: done.map((r) => ({ id: r.id, summary: r.summary, checks: r.checks, notFullyPassed: r.acceptance.filter((a) => a.status !== 'pass'), notes: r.notes, outOfOwnershipEdits: r.outOfOwnershipEdits })), missing: ids.filter((id) => !done.find((r) => r.id === id)), merge, confirmed: confirmed.map((c) => ({ lens: c.lens, title: c.title, severity: c.severity })), fix }
+return { pre, pkgResults: done.map((r) => ({ id: r.id, summary: r.summary, checks: r.checks, notFullyPassed: r.acceptance.filter((a) => a.status !== 'pass'), notes: r.notes, outOfOwnershipEdits: r.outOfOwnershipEdits })), missing: ids.filter((id) => !done.find((r) => r.id === id)), merge, confirmed: confirmed.map((c) => ({ lens: c.lens, title: c.title, severity: c.severity })), fix }

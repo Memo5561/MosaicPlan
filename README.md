@@ -175,6 +175,6 @@ Die Testbilder sind synthetisch erzeugt (`scripts/svg/*.svg` → `scripts/render
 | **OpenCV** | **nicht verwendet**: die benötigten Verfahren (Filter, Sobel, Unschärfemaske, K-Means) sind in TypeScript implementiert und getestet; opencv.js (~8–10 MB WASM) wäre für Handy/Offline unverhältnismäßig |
 | Freiform | Konturen bleiben innerhalb einer Rasterzelle; zellübergreifende Freiformsteine sind nicht möglich |
 | Kantenschnitte | Winkel in 15°-Schritten, Versatz im 0,5-mm-Raster (bewusst, damit sich gleiche Schnittvorlagen wiederholen) |
-| Rückgängig (Undo) | nur für den Verlegefortschritt in Schritt 9 (letzte 50 Schritte, solange das Projekt geöffnet ist; Neuladen, Neuberechnen oder geänderte Steine leeren den Verlauf); Farb-/Formänderungen ohne Rückgängig |
+| Rückgängig/Wiederholen | für Farbe, Form und Freiform eines Steins, Verlegefortschritt und Palettenänderungen in einem gemeinsamen Verlauf (Strg+Z / Strg+Umschalt+Z / Strg+Y; höchstens 200 Schritte bzw. 32 MB); gilt nur, solange das Projekt geöffnet ist – Neuladen und Neuberechnen leeren den Verlauf |
 | Farbwerte der Materialien | werden vom Benutzer eingegeben (HEX oder Pipette); keine Kamerakalibrierung |
 | Sehr große Projekte | Berechnung mit mehreren Millionen Positionen funktioniert (getestet bis 2 Mio.); Speicherbedarf und PDF-Umfang steigen entsprechend – große PDFs abschnittsweise exportieren, vollständige Koordinaten per CSV |

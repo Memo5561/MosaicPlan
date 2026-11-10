@@ -2011,6 +2011,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         materials: materialsRef.current,
         reservePct: r.settings.reservePct,
         groutDepthMm: r.settings.groutDepthMm,
+        // Prüfzähler „Teile unter der Mindestbreite“ (thinPieces/thinFreePieces) gegen die eingestellte Mindestbreite
+        minPieceMm: r.settings.shapes.minPieceMm,
       };
     } catch (e) {
       console.error(e);
@@ -2068,7 +2070,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
     return () => window.clearTimeout(timer);
     // progressVersion bewusst NICHT: Antippen im Verlegemodus startet keinen Statistik-Durchlauf
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, version, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm]);
+  }, [computed, version, rec?.palette, materials, rec?.settings.reservePct, rec?.settings.groutDepthMm, rec?.settings.shapes.minPieceMm]);
 
   // ---------- Berechnung und Live-Vorschau (gemeinsamer Rechenweg, siehe describeComputeInputs)
   /** Eingaben einer Berechnung für den Projektstand `r` mit dem aktuellen Foto, den Materialien und der Sprache. */

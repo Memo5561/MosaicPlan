@@ -416,6 +416,11 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
   const goMaterials = () => {
     location.hash = '#/materials';
   };
+  // Prüfzähler: fehlende Werte (nicht geprüft) gelten nicht als 0 Treffer, sondern werden gar nicht angezeigt
+  const overlapCells = st.overlapCells ?? 0;
+  const thinPieces = st.thinPieces ?? 0;
+  const thinFreePieces = st.thinFreePieces ?? 0;
+  const minPieceText = n(s.shapes.minPieceMm, 2);
   const shortCostComplete = tot.shortfalls.every((r) => r.buyCost !== undefined);
   const shortCost = tot.shortfalls.reduce((a, r) => a + (r.buyCost ?? 0), 0);
 
@@ -436,7 +441,7 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
   };
 
   return (
-    <div data-testid="material-calc" className="w5ms" data-busy={api.statsBusy ? 'yes' : 'no'} ref={root}>
+    <div data-testid="material-calc" className="w5ms" data-busy={api.statsBusy ? 'yes' : 'no'} data-min-checked={st.thinPieces === undefined ? 'no' : 'yes'} ref={root}>
       <h2 className="w5ms-print-only">{t('w5ms.printHead', { name: rec.meta.name })}</h2>
       <p className="w5ms-print-only muted small">{t('w5ms.printDate', { date: new Date().toLocaleDateString(lang === 'de' ? 'de-DE' : lang === 'tr' ? 'tr-TR' : 'en-GB') })}</p>
 
@@ -550,6 +555,23 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
       {st.invalidColorPieces > 0 && (
         <p className="w5ms-banner w5ms-banner-error" role="alert" data-testid="mc-invalid-color">
           {tCount(t, 'w5ms.invalidColor', st.invalidColorPieces, { n: n(st.invalidColorPieces) })}
+        </p>
+      )}
+      {/* Prüfzähler der Statistik (ein Durchlauf, dieselbe Regel wie Berechnung und Steindetail). thinPieces und
+          thinFreePieces fehlen, solange die Mindestbreite nicht geprüft wurde – dann steht hier nichts (nie „0“). */}
+      {overlapCells > 0 && (
+        <p className="w5ms-banner w5ms-banner-error" role="alert" data-testid="mc-overlap" data-count={overlapCells}>
+          {tCount(t, 'w5int.overlap', overlapCells, { n: n(overlapCells) })}
+        </p>
+      )}
+      {thinPieces > 0 && (
+        <p className="w5ms-banner w5ms-banner-warn" role="status" data-testid="mc-thin" data-count={thinPieces}>
+          {tCount(t, 'w5int.thin', thinPieces, { n: n(thinPieces), min: minPieceText })}
+        </p>
+      )}
+      {thinFreePieces > 0 && (
+        <p className="w5ms-banner" data-testid="mc-thin-free" data-count={thinFreePieces}>
+          {tCount(t, 'w5int.thinFree', thinFreePieces, { n: n(thinFreePieces), min: minPieceText })}
         </p>
       )}
       {(missingColors.length > 0 || unlinkedColors.length > 0) && (

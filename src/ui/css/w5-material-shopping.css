@@ -1,0 +1,501 @@
+/* Ansicht „Material & Einkauf“ (w5-material-shopping): Kennzahlen, Einkaufsliste je Material, Bedarf je Farbe.
+ * Bis 600 px Breite werden die Tabellen zu Karten (gleiches Markup, Beschriftung aus data-label) –
+ * keine Tabelle muss seitlich gescrollt werden. Druck: nur diese Ansicht (Navigation, Schritte, Viewer aus). */
+
+.w5ms {
+  min-width: 0;
+}
+.w5ms-print-only {
+  display: none;
+}
+.w5ms-nowrap {
+  white-space: nowrap;
+}
+
+/* ---------------- Kennzahlen */
+.w5ms-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.w5ms-stat {
+  flex: 1 1 170px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+.w5ms-stat.w5ms-reserve {
+  flex: 2 1 300px;
+}
+.w5ms-stat-label {
+  font-size: 0.74rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.w5ms-stat-value {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.w5ms-stat-value .badge {
+  font-size: 0.72rem;
+  vertical-align: middle;
+}
+.w5ms-stat-sub {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.w5ms-stat-buy {
+  display: block;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.w5ms-reserve .btn-row {
+  margin-top: 4px;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ---------------- Aktionen und Hinweise */
+.w5ms-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 8px;
+}
+.w5ms-print-na {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 560px;
+}
+.w5ms-banner {
+  border-left: 4px solid #2b5c95;
+  background: #eef4fb;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+.w5ms-banner p {
+  margin: 0 0 6px;
+}
+.w5ms-banner p:last-child {
+  margin-bottom: 0;
+}
+.w5ms-banner ul {
+  margin: 6px 0 8px;
+  padding-left: 18px;
+}
+.w5ms-banner li {
+  margin: 2px 0;
+  line-height: 1.45;
+}
+.w5ms-banner .btn {
+  margin-top: 2px;
+}
+.w5ms-banner-short {
+  border-left-color: var(--err);
+  background: #fdeeee;
+}
+.w5ms-banner-short > b:first-child {
+  color: var(--err);
+}
+.w5ms-banner-warn {
+  border-left-color: var(--warn);
+  background: #fff6e5;
+}
+.w5ms-banner-error {
+  border-left-color: var(--err);
+  background: #fdeeee;
+  color: var(--err);
+}
+.w5ms-banner .swatch {
+  margin-right: 2px;
+}
+
+/* ---------------- Abschnitte */
+.w5ms-section {
+  margin-top: 18px;
+  min-width: 0;
+}
+.w5ms-h {
+  font-size: 1.05rem;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+.w5ms-foot {
+  margin: 6px 0 0;
+}
+.w5ms-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 0 28px;
+  align-items: start;
+}
+.w5ms-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 0 16px;
+}
+.w5ms-sizes {
+  max-height: 260px;
+}
+
+/* ---------------- Tabellen */
+table.data.w5ms-table th {
+  letter-spacing: 0;
+}
+table.data.w5ms-table td {
+  vertical-align: top;
+}
+table.data.w5ms-table td.num,
+table.data.w5ms-table th.num {
+  white-space: nowrap;
+}
+.w5ms-shop th.w5ms-group {
+  text-align: center;
+  border-bottom: 2px solid var(--line);
+}
+.w5ms-shop .w5ms-buy-start {
+  border-left: 2px solid var(--line);
+}
+.w5ms-shop th.w5ms-group-buy {
+  border-left: 2px solid var(--line);
+}
+.w5ms-mat {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 10.5rem;
+}
+.w5ms-mat .swatch {
+  margin-top: 2px;
+}
+.w5ms-mat b {
+  display: block;
+  line-height: 1.3;
+}
+.w5ms-type,
+small.w5ms-sub {
+  display: block;
+  line-height: 1.3;
+}
+.w5ms-nomat-sw {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px dashed var(--field-line);
+  border-radius: 4px;
+}
+.w5ms-badge {
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  margin: 2px 0;
+  white-space: nowrap;
+}
+.w5ms-mat .w5ms-badge {
+  display: inline-block;
+}
+/* lange Farblisten umbrechen, statt die Spalte breit zu ziehen */
+.w5ms-codes {
+  display: inline-block;
+  max-width: 15rem;
+  line-height: 1.5;
+}
+.w5ms-code {
+  white-space: nowrap;
+}
+.w5ms-code .swatch {
+  margin-right: 2px;
+}
+tr.w5ms-none td {
+  background: #faf8f4;
+}
+/* Gruppenüberschriften nur in der Kartenansicht (Handy) */
+table.data.w5ms-table .w5ms-cardgroup {
+  display: none;
+}
+table.data.w5ms-table tfoot th,
+table.data.w5ms-table tfoot td {
+  border-top: 2px solid var(--ink-soft);
+  border-bottom: 0;
+  background: #faf8f4;
+  font-size: 0.82rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  /* Summenzeile bleibt bei langen (in sich scrollenden) Tabellen sichtbar */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+table.data.w5ms-table tfoot .badge {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+}
+.w5ms-colors .w5ms-cc-mat {
+  min-width: 140px;
+}
+.w5ms-colors .w5ms-cc-name {
+  min-width: 90px;
+}
+
+@media (max-width: 1100px) {
+  .w5ms-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------- Handy: Karten statt Tabellen */
+@media (max-width: 600px) {
+  .w5ms-stat {
+    flex: 1 1 140px;
+    padding: 8px 12px;
+  }
+  .w5ms-stat-value {
+    font-size: 1.15rem;
+  }
+  .w5ms .table-wrap {
+    overflow: visible;
+  }
+  .w5ms .table-wrap.tall {
+    max-height: none;
+  }
+  .w5ms-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  table.data.w5ms-cards,
+  table.data.w5ms-cards > tbody,
+  table.data.w5ms-cards > tfoot {
+    display: block;
+    width: 100%;
+  }
+  table.data.w5ms-cards > thead {
+    display: none;
+  }
+  table.data.w5ms-cards > tbody > tr,
+  table.data.w5ms-cards > tfoot > tr {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 6px 6px;
+    padding: 10px;
+    margin: 0 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  table.data.w5ms-cards > tfoot > tr {
+    background: #faf8f4;
+    border-color: var(--ink-soft);
+  }
+  table.data.w5ms-cards td,
+  table.data.w5ms-cards th {
+    display: block;
+    grid-column: span 3;
+    padding: 0;
+    border: 0;
+    background: none;
+    position: static;
+    text-align: left;
+    white-space: normal;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  table.data.w5ms-cards td.num {
+    text-align: left !important;
+  }
+  table.data.w5ms-cards tfoot th,
+  table.data.w5ms-cards tfoot td {
+    border: 0;
+    background: none;
+    position: static;
+  }
+  table.data.w5ms-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--muted);
+    margin-bottom: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.data.w5ms-cards .w5ms-empty {
+    display: none;
+  }
+  table.data.w5ms-cards th.w5ms-cardgroup {
+    display: block;
+    grid-column: 1 / -1;
+    margin-top: 2px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--ink-soft);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  tr.w5ms-none td {
+    background: none;
+  }
+  table.data.w5ms-cards > tbody > tr.w5ms-none {
+    background: #faf8f4;
+    border-style: dashed;
+  }
+  table.data.w5ms-cards tfoot th:first-child {
+    grid-column: 1 / -1;
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  /* Einkaufsliste: Material | Farbnr., Farben, Rohstein | Bedarf: Preis, Rohsteine, Packungen, Kosten |
+     Einkauf: Bestand, zu kaufen, Packungen, Kosten */
+  table.data.w5ms-cards.w5ms-shop .w5ms-c-mat {
+    grid-column: 1 / -1;
+  }
+  table.data.w5ms-cards.w5ms-shop .w5ms-c-no {
+    grid-column: span 3;
+  }
+  table.data.w5ms-cards.w5ms-shop .w5ms-c-colors {
+    grid-column: span 5;
+  }
+  table.data.w5ms-cards.w5ms-shop .w5ms-c-raw {
+    grid-column: span 4;
+  }
+  table.data.w5ms-cards.w5ms-shop .w5ms-buy-start {
+    border-left: 0;
+  }
+  /* Summenkarte: je Gruppe zwei breite Felder (Platz für „unvollständig“) */
+  table.data.w5ms-cards.w5ms-shop tfoot td {
+    grid-column: span 6;
+  }
+  /* Bedarf je Farbe: Nr. + Name | Material | 4 Zahlen */
+  table.data.w5ms-cards.w5ms-colors .w5ms-cc-code {
+    grid-column: span 2;
+  }
+  table.data.w5ms-cards.w5ms-colors .w5ms-cc-name {
+    grid-column: span 10;
+    font-weight: 600;
+  }
+  table.data.w5ms-cards.w5ms-colors .w5ms-cc-mat {
+    grid-column: 1 / -1;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    margin-top: -4px;
+  }
+  table.data.w5ms-cards.w5ms-colors > tbody > tr,
+  table.data.w5ms-cards.w5ms-colors > tfoot > tr {
+    padding: 8px 12px;
+    gap: 4px 8px;
+  }
+}
+
+/* ---------------- Drucken: nur diese Ansicht, ohne Navigation, Schritte und Viewer */
+@page w5ms-sheet {
+  size: landscape;
+  margin: 10mm;
+}
+@media print {
+  .w5ms {
+    page: w5ms-sheet;
+    font-size: 9pt;
+    color: #000;
+  }
+  body:has(.w5ms) *:not(:has(.w5ms)):not(.w5ms):not(.w5ms *) {
+    display: none !important;
+  }
+  body:has(.w5ms) :has(.w5ms) {
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    max-width: none !important;
+    width: auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    position: static !important;
+  }
+  body:has(.w5ms) {
+    background: #fff !important;
+  }
+  .w5ms .w5ms-noprint {
+    display: none !important;
+  }
+  .w5ms .w5ms-print-only {
+    display: block !important;
+  }
+  .w5ms h2.w5ms-print-only {
+    font-size: 14pt;
+    margin: 0 0 6pt;
+  }
+  .w5ms-stats {
+    gap: 6pt;
+  }
+  .w5ms-stat {
+    padding: 4pt 8pt;
+    border-color: #999;
+  }
+  .w5ms-stat-value {
+    font-size: 12pt;
+  }
+  .w5ms .table-wrap {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+  .w5ms-grid {
+    display: block;
+  }
+  .w5ms table.data th,
+  .w5ms table.data tfoot td {
+    position: static;
+  }
+  .w5ms table.data th,
+  .w5ms table.data td {
+    padding: 2pt 4pt;
+    font-size: 8pt;
+  }
+  .w5ms tr,
+  .w5ms .w5ms-banner,
+  .w5ms .w5ms-stat {
+    break-inside: avoid;
+  }
+  .w5ms h3,
+  .w5ms h4 {
+    break-after: avoid;
+  }
+  .w5ms .swatch,
+  .w5ms .badge,
+  .w5ms .w5ms-banner,
+  .w5ms tfoot td,
+  .w5ms tfoot th {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .w5ms details > summary {
+    display: none;
+  }
+  .w5ms .w5ms-cardgroup {
+    display: none !important;
+  }
+  /* Summenzeile nur einmal am Ende, nicht auf jeder Seite wiederholen */
+  .w5ms table.data tfoot {
+    display: table-row-group;
+  }
+  .w5ms .w5ms-codes {
+    min-width: 9rem;
+  }
+}

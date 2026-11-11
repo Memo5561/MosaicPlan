@@ -1,6 +1,6 @@
 # MosaicPlan – Stand der Verbesserungsarbeit und Fortsetzung
 
-Zuletzt angehalten am 10.11.2026 auf Wunsch des Nutzers („Stopp“). Zuvor am 09.11.2026 unterbrochen und am 10.11. fortgesetzt.
+Stand 11.11.2026: Wellen 1–6 fertig; Welle 7 (Dokumentation, Gesamt-E2E) und die neue APK folgen.
 Alles, was nötig ist, um weiterzumachen, liegt in diesem Ordner und im Branch `ccr-e3c91906-ceq1vn`.
 
 ## Was bisher passiert ist
@@ -22,13 +22,13 @@ Alles, was nötig ist, um weiterzumachen, liegt in diesem Ordner und im Branch `
 | 3 | Farbqualität, Live-Vorschau, Freiform-Editor, Gesichts-Hinweise, Viewer (Lineale, Vergleich, Malen), PDF-Grundlagen, Projekt-Export mit Materialien | ✅ fertig |
 | 4 | Schnitte gezielt, Akzent-/Pflichtfarben, Konturen, Verlege-Arbeitsplatz, Fortschritts-Engine, PDF-Blattaufteilung, Offline-Gesichtserkennung | ✅ fertig |
 | 5 | Rückgängig/Wiederholen, Statistik-Engine, Viewer-Performance, PDF-Inhalt, Einkaufsliste, Zielfarben, PDF-Export-Schritt | ✅ fertig (gegengeprüft, 16 Befunde behoben; `plan/wave5c-report.json`) |
-| 6 | Abweichungskarte & Sammelbearbeitung, feine Steine in Kaufgrößen, Farbmessung, Streaming-CSV, PDF-Abschluss | ⏳ offen |
+| 6 | Abweichungskarte & Sammelbearbeitung, feine Steine in Kaufgrößen, Farbmessung, Streaming-CSV, PDF-Abschluss | ✅ fertig (gegengeprüft, 16 Befunde behoben; `plan/wave6-report.json`) |
 | 7 | README/Grenzen, Gesamt-E2E | ⏳ offen |
 
 ## So geht es weiter
 
 1. Umgebung vorbereiten (siehe unten).
-2. Welle 6, dann Welle 7 (Briefings `plan/w6-*.json`, `plan/w7-docs-e2e.json`, Wellenliste `plan/waves.json`).
+2. Welle 7 (Briefing `plan/w7-docs-e2e.json`, Wellenliste `plan/waves.json`).
 3. Neue APK bauen (siehe unten).
 
 Automatisiert: `wellen-workflow.js` ist das zuletzt verwendete Workflow-Skript (optional bereits fertige Zweige

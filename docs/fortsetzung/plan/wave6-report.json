@@ -1,0 +1,15 @@
+{
+ "status": "Welle 6 abgeschlossen: 5 Pakete (w6-compare-batch, w6-fine-tiles, w6-colour-measure, w6-plan-exports, w6-pdf-finish) umgesetzt, zusammengeführt, gegengeprüft; 16 Befunde in fix/w6-data und fix/w6-ui behoben. Typprüfung sauber, 1090 Unit-Tests grün, Build ok, 45/45 E2E-Skripte grün.",
+ "packages": {
+  "w6-compare-batch": "Abweichungskarte (Foto ↔ Stein, ΔE in Worten), Sammelbearbeitung (Farbe ersetzen, heller/dunkler, Form zurücksetzen) mit Probelauf als ein Verlaufsschritt (src/core/batch.ts, DeviationPanel, BatchPanel)",
+  "w6-fine-tiles": "Feine Steine als eigene Kaufgröße (SUB-Zellen ganze Steine des feinen Materials, fineMaterialId in Palette/Journal, RawSize.fine in stats.ts)",
+  "w6-colour-measure": "Farbe messen per Kamera/Foto (linear sRGB, Weißabgleich mit Papier/Graukarte) – Näherungsmessung, keine farbmetrische Kalibrierung (colorMeasure.ts, MeasureColorDialog)",
+  "w6-plan-exports": "Koordinaten-CSV gestreamt im eigenen Worker (csv.worker.ts), übersetzte Spalten; Abschnitts-Vorlagen (sectionPresets.ts); PNG-Export der Vorschau im Worker",
+  "w6-pdf-finish": "Echte Seitenzahl vor dem Export, Koordinaten-Modus-Seiten, Signatur inkl. feiner Materialien"
+ },
+ "fixes": [
+  "fix/w6-data: Material-CSV mit Farbquelle/veraltet-Spalten, fineRegions.notFineSize, Vorlagen-Auswahl (2×2 ausgeblendet, wenn gleich dem Standard), Rohmaßzählung feiner Steine",
+  "fix/w6-ui: Abweichung im Steindetail, ΔE-Legende in Worten, Handy-Bedienung (Live-Vorschau als kleines Vorschaubild, eingeklappt während 'Bereich zeichnen'), Rechteck-Hinweisleiste, Zoom in Farbe messen, Form zurücksetzen nach Fotomittel, große Sprünge bei heller/dunkler gekennzeichnet",
+  "e2e w3-face-guidance: Scroll-Verankerung der wieder eingeblendeten Live-Vorschau wird herausgerechnet (kein Verhaltensfehler; das Bild springt nicht)"
+ ]
+}

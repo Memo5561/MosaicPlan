@@ -12,6 +12,7 @@ import {
   type CsvSkip,
   type CsvWarning,
   type ImportMode,
+  type MaterialChangeField,
   type MaterialImportPlan,
   type MaterialsCsvError,
   type MaterialsCsvOk,
@@ -20,6 +21,7 @@ import type { Material } from '../core/types';
 import { tCount, useI18n, type TFunc } from '../i18n';
 import { deleteMaterial, listProjects, saveMaterial, uid } from '../storage/db';
 import { downloadBlob, Field, Modal, NumberInput, Swatch } from './components';
+import { ColorSourceTag, colorSourceLabel, MeasureColorDialog } from './MeasureColorDialog';
 import './css/w1-materials-csv.css';
 
 const EMPTY: Omit<Material, 'id'> = {
@@ -62,8 +64,17 @@ function materialLabel(m: Pick<Material, 'manufacturer' | 'product' | 'colorNumb
   return main || name || m.hex;
 }
 
-function fieldLabel(t: TFunc, f: CsvField): string {
+function fieldLabel(t: TFunc, f: CsvField | MaterialChangeField): string {
   switch (f) {
+    case 'srcKind':
+    case 'colorSource':
+      return t('w6cm.field.srcKind');
+    case 'srcDate':
+      return t('w6cm.field.srcDate');
+    case 'srcRef':
+      return t('w6cm.field.srcRef');
+    case 'srcSpread':
+      return t('w6cm.field.srcSpread');
     case 'id':
       return t('matcsv.field.id');
     case 'size':
@@ -321,6 +332,7 @@ export function Materials({ materials, reload }: { materials: Material[]; reload
                       {m.hex}
                       <br />
                       {n(lab[0], 1)}/{n(lab[1], 1)}/{n(lab[2], 1)}
+                      <ColorSourceTag source={m.colorSource} testId="material-source-tag" />
                     </td>
                     <td className="small" data-testid="material-dims">
                       <MaterialDims m={m} />
@@ -429,6 +441,7 @@ function ImportPreview({ data, busy, onApply, onCancel }: { data: ImportPreviewD
   const writes = u.items.length + u.updates.length;
   const showAsNew = asNew.items.length > u.items.length;
   const fmt = (f: keyof Material, v: unknown): string => {
+    if (f === 'colorSource') return colorSourceLabel(t, n, v, true) ?? '–';
     if (v === undefined || v === null || v === '') return '–';
     if (f === 'type') return t(`mat.${String(v)}`);
     // 0 bedeutet bei Maßen, Preis und Stück je Packung „unbekannt“ (so werden fehlende Angaben gespeichert)
@@ -576,91 +589,110 @@ function MaterialForm({ value, onClose, onSave }: { value: Material; onClose: ()
   const [m, setM] = useState<Material>(value);
   const set = (p: Partial<Material>) => setM((x) => ({ ...x, ...p }));
   const hexOk = isValidHex(m.hex);
+  const [measure, setMeasure] = useState(false);
   const ED = (globalThis as unknown as { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
+  /** Von Hand eingegebener HEX-Wert (Textfeld oder Farbfeld): Herkunft „eingegeben“. */
+  const setManualHex = (hex: string) => set({ hex, colorSource: { kind: 'manual' } });
   return (
-    <Modal
-      title={t('mats.edit')}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn" onClick={onClose}>
-            {t('common.cancel')}
-          </button>
-          <button className="btn primary" disabled={!hexOk} onClick={() => onSave({ ...m, hex: (m.hex.startsWith('#') ? m.hex : `#${m.hex}`).toUpperCase() })} data-testid="save-material">
-            {t('common.save')}
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <Field label={t('mats.type')}>
-          <select value={m.type} onChange={(e) => set({ type: e.target.value as Material['type'] })}>
-            {(['glass', 'ceramic', 'smalti', 'stone', 'other'] as const).map((x) => (
-              <option key={x} value={x}>
-                {t(`mat.${x}`)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label={t('mats.manufacturer')}>
-          <input className="text" value={m.manufacturer} onChange={(e) => set({ manufacturer: e.target.value })} data-testid="mat-manufacturer" />
-        </Field>
-        <Field label={t('mats.product')}>
-          <input className="text" value={m.product} onChange={(e) => set({ product: e.target.value })} />
-        </Field>
-        <Field label={t('mats.colorNumber')}>
-          <input className="text" value={m.colorNumber} onChange={(e) => set({ colorNumber: e.target.value })} data-testid="mat-colornumber" />
-        </Field>
-        <Field label={t('mats.colorName')}>
-          <input className="text" value={m.colorName} onChange={(e) => set({ colorName: e.target.value })} />
-        </Field>
-        <Field label={t('mats.color')} hint={<span data-testid="mat-color-hint">{ED ? t('mats.colorHint') : t('matcsv.colorHintManual')}</span>}>
-          <div className="btn-row">
-            <input type="color" value={hexOk && m.hex.replace('#', '').length === 6 ? `#${m.hex.replace('#', '').toLowerCase()}` : '#808080'} onChange={(e) => set({ hex: e.target.value.toUpperCase() })} />
-            <input className={`text mono ${hexOk ? '' : 'invalid'}`} value={m.hex} onChange={(e) => set({ hex: e.target.value })} style={{ width: 100 }} data-testid="mat-hex" />
-            {ED && (
-              <button
-                className="btn small"
-                onClick={async () => {
-                  try {
-                    const r = await new ED().open();
-                    set({ hex: r.sRGBHex.toUpperCase() });
-                  } catch {
-                    /* abgebrochen */
-                  }
-                }}
-              >
-                {t('mats.eyedropper')}
+    <>
+      <Modal
+        title={t('mats.edit')}
+        onClose={onClose}
+        footer={
+          <>
+            <button className="btn" onClick={onClose}>
+              {t('common.cancel')}
+            </button>
+            <button className="btn primary" disabled={!hexOk} onClick={() => onSave({ ...m, hex: (m.hex.startsWith('#') ? m.hex : `#${m.hex}`).toUpperCase() })} data-testid="save-material">
+              {t('common.save')}
+            </button>
+          </>
+        }
+      >
+        <div className="form-grid">
+          <Field label={t('mats.type')}>
+            <select value={m.type} onChange={(e) => set({ type: e.target.value as Material['type'] })}>
+              {(['glass', 'ceramic', 'smalti', 'stone', 'other'] as const).map((x) => (
+                <option key={x} value={x}>
+                  {t(`mat.${x}`)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label={t('mats.manufacturer')}>
+            <input className="text" value={m.manufacturer} onChange={(e) => set({ manufacturer: e.target.value })} data-testid="mat-manufacturer" />
+          </Field>
+          <Field label={t('mats.product')}>
+            <input className="text" value={m.product} onChange={(e) => set({ product: e.target.value })} />
+          </Field>
+          <Field label={t('mats.colorNumber')}>
+            <input className="text" value={m.colorNumber} onChange={(e) => set({ colorNumber: e.target.value })} data-testid="mat-colornumber" />
+          </Field>
+          <Field label={t('mats.colorName')}>
+            <input className="text" value={m.colorName} onChange={(e) => set({ colorName: e.target.value })} />
+          </Field>
+          <Field label={t('mats.color')} hint={<span data-testid="mat-color-hint">{ED ? t('mats.colorHint') : t('matcsv.colorHintManual')}</span>}>
+            <div className="btn-row wrap">
+              <input type="color" value={hexOk && m.hex.replace('#', '').length === 6 ? `#${m.hex.replace('#', '').toLowerCase()}` : '#808080'} onChange={(e) => setManualHex(e.target.value.toUpperCase())} />
+              <input className={`text mono ${hexOk ? '' : 'invalid'}`} value={m.hex} onChange={(e) => setManualHex(e.target.value)} style={{ width: 100 }} data-testid="mat-hex" />
+              <button className="btn small" onClick={() => setMeasure(true)} data-testid="measure-open">
+                {t('w6cm.btn')}
               </button>
-            )}
-          </div>
-        </Field>
-        <p className="muted small">{t('mats.zeroUnknownHint')}</p>
-        <Field label={t('mats.length')}>
-          <NumberInput value={m.lengthMm} onChange={(v) => set({ lengthMm: v })} min={0} suffix="mm" />
-        </Field>
-        <Field label={t('mats.width')}>
-          <NumberInput value={m.widthMm} onChange={(v) => set({ widthMm: v })} min={0} suffix="mm" />
-        </Field>
-        <Field label={t('mats.thickness')}>
-          <NumberInput value={m.thicknessMm} onChange={(v) => set({ thicknessMm: v })} min={0} suffix="mm" />
-        </Field>
-        <Field label={t('mats.price')}>
-          <NumberInput value={m.price} onChange={(v) => set({ price: v })} min={0} decimals={2} />
-        </Field>
-        <Field label={t('mats.packageSize')}>
-          <input className="text" value={m.packageSize} onChange={(e) => set({ packageSize: e.target.value })} placeholder={t('mats.packagePlaceholder')} />
-        </Field>
-        <Field label={t('mats.perPack')}>
-          <NumberInput value={m.piecesPerPack} onChange={(v) => set({ piecesPerPack: Math.round(v) })} min={0} />
-        </Field>
-        <Field label={t('mats.stock')}>
-          <NumberInput value={m.stock ?? 0} onChange={(v) => set({ stock: Math.round(v) })} min={0} />
-        </Field>
-        <Field label={t('mats.notes')}>
-          <input className="text" value={m.notes ?? ''} onChange={(e) => set({ notes: e.target.value })} />
-        </Field>
-      </div>
-    </Modal>
+              {ED && (
+                <button
+                  className="btn small"
+                  onClick={async () => {
+                    try {
+                      const r = await new ED().open();
+                      set({ hex: r.sRGBHex.toUpperCase(), colorSource: { kind: 'eyedropper' } });
+                    } catch {
+                      /* abgebrochen */
+                    }
+                  }}
+                >
+                  {t('mats.eyedropper')}
+                </button>
+              )}
+            </div>
+            <ColorSourceTag source={m.colorSource} testId="mat-source-tag" />
+          </Field>
+          <p className="muted small">{t('mats.zeroUnknownHint')}</p>
+          <Field label={t('mats.length')}>
+            <NumberInput value={m.lengthMm} onChange={(v) => set({ lengthMm: v })} min={0} suffix="mm" />
+          </Field>
+          <Field label={t('mats.width')}>
+            <NumberInput value={m.widthMm} onChange={(v) => set({ widthMm: v })} min={0} suffix="mm" />
+          </Field>
+          <Field label={t('mats.thickness')}>
+            <NumberInput value={m.thicknessMm} onChange={(v) => set({ thicknessMm: v })} min={0} suffix="mm" />
+          </Field>
+          <Field label={t('mats.price')}>
+            <NumberInput value={m.price} onChange={(v) => set({ price: v })} min={0} decimals={2} />
+          </Field>
+          <Field label={t('mats.packageSize')}>
+            <input className="text" value={m.packageSize} onChange={(e) => set({ packageSize: e.target.value })} placeholder={t('mats.packagePlaceholder')} />
+          </Field>
+          <Field label={t('mats.perPack')}>
+            <NumberInput value={m.piecesPerPack} onChange={(v) => set({ piecesPerPack: Math.round(v) })} min={0} />
+          </Field>
+          <Field label={t('mats.stock')}>
+            <NumberInput value={m.stock ?? 0} onChange={(v) => set({ stock: Math.round(v) })} min={0} />
+          </Field>
+          <Field label={t('mats.notes')}>
+            <input className="text" value={m.notes ?? ''} onChange={(e) => set({ notes: e.target.value })} />
+          </Field>
+        </div>
+      </Modal>
+      {measure && (
+        <MeasureColorDialog
+          currentHex={m.hex}
+          onClose={() => setMeasure(false)}
+          onApply={(hex, colorSource) => {
+            set({ hex, colorSource });
+            setMeasure(false);
+          }}
+        />
+      )}
+    </>
   );
 }

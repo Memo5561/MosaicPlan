@@ -344,13 +344,13 @@ describe('Material-CSV: Export und Rundreise', () => {
     const csv = materialsToCsv(TRICKY.slice(0, 1), 'de');
     expect(csv.startsWith('﻿ID;Materialart;Hersteller;')).toBe(true);
     const line = csv.split('\r\n')[1];
-    expect(line).toBe('a1;Glas;Sicis;Vetricolor;09;"Blau; dunkel";#3A6EA5;9,5;9,5;4;12,5;Matte 30×30, 1 kg;900;250;"Rest, Bad; ""gut"" erhalten"');
+    expect(line).toBe('a1;Glas;Sicis;Vetricolor;09;"Blau; dunkel";#3A6EA5;9,5;9,5;4;12,5;Matte 30×30, 1 kg;900;250;"Rest, Bad; ""gut"" erhalten";;;;'); // + 4 leere Herkunftsspalten (w6-colour-measure)
   });
 
   it('Export en: ,-getrennt, Dezimalpunkt, englische Kopfzeile', () => {
     const csv = materialsToCsv(TRICKY.slice(0, 1), 'en', { bom: false });
-    expect(csv.split('\r\n')[0]).toBe('ID,Type,Manufacturer,Product,Colour number,Colour name,HEX,Length (mm),Width (mm),Thickness (mm),Price per pack,Package size,Pieces per pack,Stock (pieces),Notes');
-    expect(csv.split('\r\n')[1]).toBe('a1,Glass,Sicis,Vetricolor,09,Blau; dunkel,#3A6EA5,9.5,9.5,4,12.5,"Matte 30×30, 1 kg",900,250,"Rest, Bad; ""gut"" erhalten"');
+    expect(csv.split('\r\n')[0]).toBe('ID,Type,Manufacturer,Product,Colour number,Colour name,HEX,Length (mm),Width (mm),Thickness (mm),Price per pack,Package size,Pieces per pack,Stock (pieces),Notes,Colour source,Measured on,Measuring reference,Measuring spread (ΔE)');
+    expect(csv.split('\r\n')[1]).toBe('a1,Glass,Sicis,Vetricolor,09,Blau; dunkel,#3A6EA5,9.5,9.5,4,12.5,"Matte 30×30, 1 kg",900,250,"Rest, Bad; ""gut"" erhalten",,,,');
   });
 
   for (const lang of ['de', 'en', 'tr'] as const) {

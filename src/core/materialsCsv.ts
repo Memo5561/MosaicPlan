@@ -10,14 +10,25 @@
  * - Jede übersprungene oder fragwürdige Zeile wird mit Zeile und Grund gemeldet.
  * - Aktualisierungen behalten immer die vorhandene Material-ID (Projektpaletten verweisen per ID).
  */
+import { readColorSource, sameColorSource } from './colorMeasure';
 import type { Material } from './types';
 
 export type CsvLang = 'de' | 'en' | 'tr';
 export type MaterialType = Material['type'];
-/** Materialfelder mit CSV-Spalte: alle außer der Herkunft des Farbwerts (`colorSource` hat noch keine Spalte). */
+/**
+ * Materialfelder mit je einer eigenen CSV-Spalte: alle außer der Herkunft des Farbwerts. `colorSource` ist ein
+ * Objekt und wird in den vier Herkunftsspalten am Zeilenende abgebildet (siehe COLOR_SOURCE_CSV_FIELDS).
+ */
 export type CsvMaterialField = Exclude<keyof Material, 'colorSource'>;
-/** Spalten, die der Import kennt: alle Materialfelder mit Spalte plus eine kombinierte Größenspalte („10×10×4“). */
-export type CsvField = CsvMaterialField | 'size';
+/**
+ * Herkunftsspalten (Paket w6-colour-measure), am Ende jeder Zeile: Herkunft (eingegeben / Pipette / Foto-Messung),
+ * Messdatum, Messreferenz und Messstreuung. Ältere Dateien ohne diese Spalten werden unverändert importiert.
+ */
+export type ColorSourceCsvField = 'srcKind' | 'srcDate' | 'srcRef' | 'srcSpread';
+/** Spalten, die der Import kennt: Materialfelder, Herkunftsspalten und eine kombinierte Größenspalte („10×10×4“). */
+export type CsvField = CsvMaterialField | ColorSourceCsvField | 'size';
+/** Felder, die eine Aktualisierung ändern kann: Materialfelder und die Herkunft des Farbwerts als Ganzes. */
+export type MaterialChangeField = CsvMaterialField | 'colorSource';
 
 /** Reihenfolge der Spalten im Export (ID zuerst, damit ein erneuter Import eindeutig zuordnet). */
 export const MATERIAL_CSV_FIELDS: CsvMaterialField[] = [
@@ -37,6 +48,53 @@ export const MATERIAL_CSV_FIELDS: CsvMaterialField[] = [
   'stock',
   'notes',
 ];
+
+/** Herkunftsspalten in Exportreihenfolge (nach allen Materialfeldern angehängt). */
+export const COLOR_SOURCE_CSV_FIELDS: ColorSourceCsvField[] = ['srcKind', 'srcDate', 'srcRef', 'srcSpread'];
+
+/** Lokalisierte Namen der Herkunftsspalten. */
+export const COLOR_SOURCE_CSV_HEADERS: Record<CsvLang, Record<ColorSourceCsvField, string>> = {
+  de: { srcKind: 'Farbherkunft', srcDate: 'Gemessen am', srcRef: 'Messreferenz', srcSpread: 'Messstreuung (ΔE)' },
+  en: { srcKind: 'Colour source', srcDate: 'Measured on', srcRef: 'Measuring reference', srcSpread: 'Measuring spread (ΔE)' },
+  tr: { srcKind: 'Renk kaynağı', srcDate: 'Ölçüm tarihi', srcRef: 'Ölçüm referansı', srcSpread: 'Ölçüm saçılımı (ΔE)' },
+};
+
+type SourceKind = NonNullable<Material['colorSource']>['kind'];
+type SourceRef = NonNullable<NonNullable<Material['colorSource']>['reference']>;
+
+/** Lokalisierte Werte der Herkunftsspalten im Export. Eine Fotomessung heißt immer „Näherung“. */
+export const COLOR_SOURCE_WORDS: Record<CsvLang, { kind: Record<SourceKind, string>; ref: Record<SourceRef, string> }> = {
+  de: {
+    kind: { manual: 'eingegeben', eyedropper: 'Pipette', photo: 'Foto-Messung (Näherung)' },
+    ref: { none: 'keine', white: 'weißes Papier', grey: 'Graukarte 18 %' },
+  },
+  en: {
+    kind: { manual: 'entered', eyedropper: 'eyedropper', photo: 'photo measurement (approximation)' },
+    ref: { none: 'none', white: 'white paper', grey: 'grey card 18 %' },
+  },
+  tr: {
+    kind: { manual: 'girildi', eyedropper: 'damlalık', photo: 'fotoğraf ölçümü (yaklaşık)' },
+    ref: { none: 'yok', white: 'beyaz kâğıt', grey: 'gri kart %18' },
+  },
+};
+
+/** Herkunftswörter (normalisiert wie Kopfzeilen: Kleinbuchstaben, ohne Diakritika und Sonderzeichen). */
+const SOURCE_KIND_ALIASES: Record<SourceKind, string[]> = {
+  manual: ['manual', 'eingegeben', 'manuell', 'eingetippt', 'entered', 'typed', 'girildi', 'elle', 'manuel'],
+  eyedropper: ['eyedropper', 'pipette', 'damlalik'],
+  photo: ['photo', 'foto', 'fotomessung', 'fotomessungnaherung', 'photomeasurement', 'photomeasurementapproximation', 'fotograf', 'fotografolcumu', 'fotografolcumuyaklasik'],
+};
+const SOURCE_REF_ALIASES: Record<SourceRef, string[]> = {
+  none: ['none', 'keine', 'ohne', 'yok'],
+  white: ['white', 'paper', 'whitepaper', 'weiss', 'papier', 'weissespapier', 'weisspapier', 'beyaz', 'beyazkagit', 'kagit'],
+  grey: ['grey', 'gray', 'grey18', 'graukarte', 'graukarte18', 'grau', 'greycard', 'graycard', 'greycard18', 'graycard18', 'gri', 'grikart', 'grikart18'],
+};
+const wordKey = (s: string) => foldText(s).replace(/[^a-z0-9]+/g, '');
+function lookupWord<K extends string>(aliases: Record<K, string[]>, raw: string): K | null {
+  const k = wordKey(raw);
+  for (const [key, list] of Object.entries(aliases) as [K, string[]][]) if (list.includes(k)) return key;
+  return null;
+}
 
 /** Lokalisierte Spaltennamen für Export und Vorlage. */
 export const MATERIAL_CSV_HEADERS: Record<CsvLang, Record<CsvMaterialField, string>> = {
@@ -130,6 +188,11 @@ const HEADER_ALIASES: Record<CsvField, string[]> = {
   ],
   stock: ['bestand', 'lagerbestand', 'vorrat', 'bestandstuck', 'stock', 'instock', 'onhand', 'inventory', 'stok', 'stokadet', 'mevcut'],
   notes: ['notiz', 'notizen', 'bemerkung', 'bemerkungen', 'kommentar', 'anmerkung', 'anmerkungen', 'notes', 'note', 'comment', 'comments', 'remarks', 'not', 'notlar', 'aciklama'],
+  // bewusst ohne „Herkunft“ (Herkunftsland?), „Referenz“/„Reference“ (oft Artikelnummer) und „Streuung“ allein
+  srcKind: ['farbherkunft', 'farbquelle', 'colorsource', 'coloursource', 'renkkaynagi'],
+  srcDate: ['gemessenam', 'messdatum', 'measuredon', 'measuredat', 'measuredate', 'olcumtarihi'],
+  srcRef: ['messreferenz', 'measuringreference', 'measurereference', 'measurementreference', 'olcumreferansi'],
+  srcSpread: ['messstreuung', 'measuringspread', 'measurementspread', 'spreadde', 'olcumsacilimi'],
   size: ['grosse', 'format', 'masse', 'mass', 'abmessung', 'abmessungen', 'steingrosse', 'size', 'dimensions', 'dimension', 'tilesize', 'boyut', 'ebat', 'olcu'],
 };
 
@@ -250,7 +313,7 @@ export function csvFormatFor(lang: CsvLang): { delimiter: ';' | ','; decimalComm
 
 function materialCells(m: Partial<Material>, lang: CsvLang): string[] {
   const { delimiter, decimalComma } = csvFormatFor(lang);
-  return MATERIAL_CSV_FIELDS.map((f) => {
+  const cells = MATERIAL_CSV_FIELDS.map((f) => {
     const v = m[f];
     let s: string;
     if (v === undefined || v === null) s = '';
@@ -259,6 +322,25 @@ function materialCells(m: Partial<Material>, lang: CsvLang): string[] {
     else s = String(v);
     return csvCell(s, delimiter);
   });
+  // Herkunft des Farbwerts; unbekannt (ältere Materialien) = leere Zellen
+  const src = readColorSource(m.colorSource);
+  const words = COLOR_SOURCE_WORDS[lang];
+  const photo = src?.kind === 'photo';
+  cells.push(
+    csvCell(src ? words.kind[src.kind] : '', delimiter),
+    csvCell(photo && src.measuredAt ? src.measuredAt : '', delimiter),
+    csvCell(photo && src.reference ? words.ref[src.reference] : '', delimiter),
+    csvCell(photo && src.spreadDE !== undefined ? formatNumber(Math.round(src.spreadDE * 10) / 10, decimalComma) : '', delimiter),
+  );
+  return cells;
+}
+
+/** Kopfzeile: Materialfelder, dann die Herkunftsspalten. */
+function headerLine(lang: CsvLang): string {
+  const { delimiter } = csvFormatFor(lang);
+  return [...MATERIAL_CSV_FIELDS.map((f) => MATERIAL_CSV_HEADERS[lang][f]), ...COLOR_SOURCE_CSV_FIELDS.map((f) => COLOR_SOURCE_CSV_HEADERS[lang][f])]
+    .map((h) => csvCell(h, delimiter))
+    .join(delimiter);
 }
 
 /**
@@ -268,9 +350,8 @@ function materialCells(m: Partial<Material>, lang: CsvLang): string[] {
  */
 export function materialsToCsv(list: Material[], lang: CsvLang = 'de', opts: MaterialsCsvOptions = {}): string {
   const { delimiter } = csvFormatFor(lang);
-  const head = MATERIAL_CSV_FIELDS.map((f) => csvCell(MATERIAL_CSV_HEADERS[lang][f], delimiter)).join(delimiter);
   const body = list.map((m) => materialCells(m, lang).join(delimiter));
-  return (opts.bom === false ? '' : '﻿') + [head, ...body].join('\r\n') + '\r\n';
+  return (opts.bom === false ? '' : '﻿') + [headerLine(lang), ...body].join('\r\n') + '\r\n';
 }
 
 const TEMPLATE_EXAMPLE: Record<CsvLang, Partial<Material>> = {
@@ -278,24 +359,26 @@ const TEMPLATE_EXAMPLE: Record<CsvLang, Partial<Material>> = {
     type: 'glass', manufacturer: 'Beispiel-Hersteller', product: 'Glasmosaik', colorNumber: 'B-001', colorName: 'Mittelblau', hex: '#3A6EA5',
     lengthMm: 10, widthMm: 10, thicknessMm: 4, price: 12.5, packageSize: 'Beutel 100 Stück', piecesPerPack: 100, stock: 250,
     notes: 'Beispielzeile – bitte ersetzen oder löschen',
+    colorSource: { kind: 'manual' },
   },
   en: {
     type: 'glass', manufacturer: 'Example maker', product: 'Glass mosaic', colorNumber: 'B-001', colorName: 'Mid blue', hex: '#3A6EA5',
     lengthMm: 10, widthMm: 10, thicknessMm: 4, price: 12.5, packageSize: 'Bag of 100', piecesPerPack: 100, stock: 250,
     notes: 'Example row – please replace or delete',
+    colorSource: { kind: 'manual' },
   },
   tr: {
     type: 'glass', manufacturer: 'Örnek üretici', product: 'Cam mozaik', colorNumber: 'B-001', colorName: 'Orta mavi', hex: '#3A6EA5',
     lengthMm: 10, widthMm: 10, thicknessMm: 4, price: 12.5, packageSize: '100 adetlik poşet', piecesPerPack: 100, stock: 250,
     notes: 'Örnek satır – lütfen değiştirin veya silin',
+    colorSource: { kind: 'manual' },
   },
 };
 
 /** Vorlage: lokalisierte Kopfzeile + eine als Beispiel gekennzeichnete Zeile im Exportformat (ID leer = neu). */
 export function materialsCsvTemplate(lang: CsvLang = 'de', opts: MaterialsCsvOptions = {}): string {
   const { delimiter } = csvFormatFor(lang);
-  const head = MATERIAL_CSV_FIELDS.map((f) => csvCell(MATERIAL_CSV_HEADERS[lang][f], delimiter)).join(delimiter);
-  return (opts.bom === false ? '' : '﻿') + [head, materialCells(TEMPLATE_EXAMPLE[lang], lang).join(delimiter)].join('\r\n') + '\r\n';
+  return (opts.bom === false ? '' : '﻿') + [headerLine(lang), materialCells(TEMPLATE_EXAMPLE[lang], lang).join(delimiter)].join('\r\n') + '\r\n';
 }
 
 // ---------------------------------------------------------------- Import: Zerlegen
@@ -309,10 +392,11 @@ export type WarnReason =
   | 'fraction'
   | 'size-unknown'
   | 'type-unknown'
-  | 'id-invalid';
+  | 'id-invalid'
+  | 'source-unknown';
 
 export const SKIP_REASONS: SkipReason[] = ['hex-missing', 'hex-invalid', 'too-many-columns', 'unterminated-quote', 'duplicate-in-file', 'ambiguous-match'];
-export const WARN_REASONS: WarnReason[] = ['number-invalid', 'number-negative', 'thousands-separator', 'ambiguous-number', 'fraction', 'size-unknown', 'type-unknown', 'id-invalid'];
+export const WARN_REASONS: WarnReason[] = ['number-invalid', 'number-negative', 'thousands-separator', 'ambiguous-number', 'fraction', 'size-unknown', 'type-unknown', 'id-invalid', 'source-unknown'];
 
 export interface CsvSkip {
   /** Zeilennummer in der Datei (1-basiert, Beginn des Datensatzes) */
@@ -537,6 +621,27 @@ export function normalizeHex(raw: string): string | null {
   return null;
 }
 
+const SOURCE_FIELDS = new Set<CsvField>(COLOR_SOURCE_CSV_FIELDS);
+const isSourceField = (f: CsvField): f is ColorSourceCsvField => SOURCE_FIELDS.has(f);
+
+/**
+ * Messdatum lesen: ISO 8601 (wie exportiert, „2026-11-10T12:00:00.000Z“ oder „2026-11-10“) oder deutsches Datum
+ * „10.11.2026“ (optional „ 14:30“, wie Excel es nach dem Öffnen zeigt). Liefert ISO-Text oder null (nie geraten).
+ */
+export function parseMeasureDate(raw: string): string | null {
+  const s = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(s)) {
+    const t = Date.parse(s.replace(' ', 'T'));
+    return Number.isFinite(t) ? new Date(t).toISOString() : null;
+  }
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
+  if (!m) return null;
+  const [d, mo, y, h, mi, se] = [m[1], m[2], m[3], m[4] ?? '0', m[5] ?? '0', m[6] ?? '0'].map(Number);
+  const dt = new Date(y, mo - 1, d, h, mi, se);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d || h > 23 || mi > 59 || se > 59) return null;
+  return dt.toISOString();
+}
+
 const NUMERIC_FIELDS: Partial<Record<keyof Material, { int: boolean; unit?: 'len' | 'price' }>> = {
   lengthMm: { int: false, unit: 'len' },
   widthMm: { int: false, unit: 'len' },
@@ -649,7 +754,7 @@ export function parseMaterialsCsv(text: string): MaterialsCsvParse {
     const warn = (field: CsvField, reason: WarnReason, value: string) => warnings.push({ line: r.line, field, reason, value });
     let id: string | undefined;
     for (const c of head.columns) {
-      if (c.field === 'hex' || c.field === 'size') continue;
+      if (c.field === 'hex' || c.field === 'size' || isSourceField(c.field)) continue;
       const v = cell(c);
       if (v === undefined) continue;
       if (c.field === 'id') {
@@ -698,6 +803,40 @@ export function parseMaterialsCsv(text: string): MaterialsCsvParse {
       if (values[f] === 0) {
         const c = colOf.get(f) ?? sc;
         warn(colOf.has(f) ? f : 'size', 'size-unknown', c ? (cell(c) ?? '') : '');
+      }
+    }
+    // Herkunft des Farbwerts: nur mit gültiger Herkunftsangabe; leere Zelle = keine Angabe (vorhandene bleibt)
+    const kc = colOf.get('srcKind');
+    const kindRaw = kc ? (cell(kc) ?? '').trim() : '';
+    if (kc && kindRaw) {
+      const kind = lookupWord(SOURCE_KIND_ALIASES, kindRaw);
+      if (!kind) warn('srcKind', 'source-unknown', kindRaw);
+      else {
+        const src: NonNullable<Material['colorSource']> = { kind };
+        if (kind === 'photo') {
+          const dc = colOf.get('srcDate');
+          const dateRaw = dc ? (cell(dc) ?? '').trim() : '';
+          if (dateRaw) {
+            const iso = parseMeasureDate(dateRaw);
+            if (iso) src.measuredAt = iso;
+            else warn('srcDate', 'source-unknown', dateRaw);
+          }
+          const rc = colOf.get('srcRef');
+          const refRaw = rc ? (cell(rc) ?? '').trim() : '';
+          if (refRaw) {
+            const ref = lookupWord(SOURCE_REF_ALIASES, refRaw);
+            if (ref) src.reference = ref;
+            else warn('srcRef', 'source-unknown', refRaw);
+          }
+          const spc = colOf.get('srcSpread');
+          const spRaw = spc ? (cell(spc) ?? '') : '';
+          if (spc && spRaw.trim()) {
+            const res = parseNum(spRaw.replace(/^±/, ''), { int: false, decimalComma });
+            if (res.kind === 'ok') src.spreadDE = res.value;
+            else if (res.kind === 'err') warn('srcSpread', res.reason, spRaw);
+          }
+        }
+        values.colorSource = src;
       }
     }
     rows.push({ line: r.line, id, values });
@@ -757,7 +896,8 @@ export interface MaterialUpdate {
   line: number;
   before: Material;
   after: Material;
-  changed: CsvMaterialField[];
+  /** geänderte Felder; „colorSource“ = Herkunft des Farbwerts (z. B. entfällt, wenn sich der HEX-Wert ohne Herkunftsangabe ändert) */
+  changed: MaterialChangeField[];
 }
 
 export interface MaterialImportPlan {
@@ -873,7 +1013,7 @@ export function planMaterialImport(parsed: MaterialsCsvOk, existing: Material[],
           .map((x) => x.m);
         if (cand.length === 1) target = cand[0];
         else if (cand.length > 1) {
-          const same = cand.find((c) => changedFields(c, { ...c, ...v }).length === 0);
+          const same = cand.find((c) => changedFields(c, { ...c, ...v }).length === 0 && (v.colorSource === undefined || sameColorSource(c.colorSource, v.colorSource)));
           if (same && !claimed.has(same.id)) {
             claimed.set(same.id, row.line);
             identical.push({ line: row.line, material: same });
@@ -892,7 +1032,15 @@ export function planMaterialImport(parsed: MaterialsCsvOk, existing: Material[],
         }
         claimed.set(target.id, row.line);
         const after: Material = { ...target, ...v, id: target.id };
-        const changed = changedFields(target, after);
+        if (v.colorSource !== undefined) {
+          // gleiche Herkunft in Exportgenauigkeit → gespeicherte Angabe unverändert lassen
+          if (sameColorSource(target.colorSource, v.colorSource)) after.colorSource = target.colorSource;
+        } else if (!sameValue('hex', target.hex, after.hex)) {
+          // neuer HEX-Wert ohne Herkunftsangabe: die alte Herkunft (z. B. Fotomessung) gehört nicht zu ihm
+          delete after.colorSource;
+        }
+        const changed: MaterialChangeField[] = changedFields(target, after);
+        if (!sameColorSource(target.colorSource, after.colorSource)) changed.push('colorSource');
         if (changed.length === 0) identical.push({ line: row.line, material: target });
         else updates.push({ line: row.line, before: target, after, changed });
         continue;

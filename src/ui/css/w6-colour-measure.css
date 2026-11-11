@@ -1,0 +1,199 @@
+/* Farbe aus Foto messen: Dialog und Herkunftskennzeichnung (Paket w6-colour-measure) */
+.w6cm-tag {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: Inter, 'Segoe UI', system-ui, -apple-system, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: normal;
+  max-width: 220px;
+}
+td .w6cm-tag {
+  display: block;
+  width: max-content;
+}
+.w6cm-tag.is-photo {
+  background: #e6eef8;
+  color: #2b5c95;
+}
+.w6cm-tag.is-dropper {
+  background: #f1eee8;
+  color: var(--ink-soft);
+}
+
+.w6cm {
+  display: grid;
+  /* minmax(0, …): das vergrößerte Foto darf den Dialog nie seitlich aufweiten */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.w6cm-main,
+.w6cm-left {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.w6cm-main {
+  gap: 12px;
+}
+.w6cm-quick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0;
+  font-weight: 600;
+}
+/* breite Bildschirme: Ergebnis neben dem Foto (die Kurzanzeige unter dem Foto entfällt) */
+@media (min-width: 900px) {
+  .w6cm-main {
+    grid-template-columns: minmax(0, 1fr) 290px;
+  }
+  .w6cm-quick {
+    display: none;
+  }
+}
+.w6cm p {
+  margin: 0;
+}
+.w6cm-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: flex-start;
+}
+.w6cm-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 140px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.w6cm-field.is-ref {
+  flex: 1 1 240px;
+}
+@media (max-width: 600px) {
+  .w6cm-field.is-ref {
+    flex-basis: 100%;
+  }
+}
+.w6cm-field small {
+  font-weight: 400;
+}
+.w6cm-field input[type='range'] {
+  width: 100%;
+}
+.w6cm .seg {
+  display: flex;
+  gap: 6px;
+}
+.w6cm .seg .btn {
+  flex: 1 1 0;
+}
+.w6cm-step {
+  line-height: 1.4;
+}
+.w6cm-stagewrap {
+  position: relative;
+}
+.w6cm-stage {
+  overflow: auto;
+  max-height: min(55vh, 620px);
+  background: var(--viewer-bg);
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.w6cm-view {
+  display: block;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+  cursor: crosshair;
+  touch-action: pan-x pan-y;
+}
+.w6cm-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  gap: 6px;
+}
+.w6cm-zoom .icon-btn {
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+  min-width: 40px;
+  min-height: 40px;
+  font-size: 1.15rem;
+}
+.w6cm-result {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #faf8f4;
+  display: grid;
+  gap: 8px;
+}
+.w6cm-result h4 {
+  margin: 0;
+}
+.w6cm-compare {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+.w6cm-compare figure {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.w6cm-crop,
+.w6cm-swatch {
+  width: 96px;
+  height: 96px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  display: block;
+}
+.w6cm-swatch.small {
+  width: 48px;
+  height: 48px;
+}
+.w6cm-values {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.w6cm-warn {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.86rem;
+  display: grid;
+  gap: 3px;
+}
+.w6cm-honesty {
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+}
+.w6cm-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.w6cm-foot .btn-row {
+  margin-left: auto;
+}

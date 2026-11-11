@@ -1074,10 +1074,12 @@ describe('Material.colorSource (Vertrag für „Farbe messen“)', () => {
     expect(structuredClone(photo)).toEqual(photo); // in IndexedDB speicherbar
   });
 
-  it('CSV-Export und -Vergleich lassen das Feld unberührt (noch keine Spalte)', () => {
+  it('CSV: Herkunft nur in den angehängten Herkunftsspalten (Welle 6), nicht im Feldvergleich', () => {
     const photo: Material = { ...base, colorSource: { kind: 'photo', reference: 'grey', spreadDE: 2.5 } };
     expect((MATERIAL_CSV_FIELDS as string[]).includes('colorSource')).toBe(false);
-    expect(materialsToCsv([photo], 'de')).toBe(materialsToCsv([base], 'de'));
+    const strip = (csv: string) => csv.split('\r\n').map((l) => l.split(';').slice(0, MATERIAL_CSV_FIELDS.length).join(';')).join('\r\n');
+    expect(strip(materialsToCsv([photo], 'de'))).toBe(strip(materialsToCsv([base], 'de')));
+    expect(materialsToCsv([photo], 'de')).toContain(';Foto-Messung (Näherung);;Graukarte 18 %;2,5');
     expect(changedFields(base, photo)).toEqual([]);
   });
 });

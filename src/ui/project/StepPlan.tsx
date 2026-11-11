@@ -28,7 +28,7 @@ import { analyzeCut, cellPieceCount, cellPieces } from '../../core/pieces';
 import { rulerInsets } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
 import { paperPresets, sheetFit, type SectionPreset } from '../../core/sectionPresets';
-import { makeRawSizeFn, type Range } from '../../core/stats';
+import { makeRawSizeFn, pieceRawSize, type Range } from '../../core/stats';
 import type { Material, MosaicData, PaletteColor } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
 import { cancelChannel, runCsvExport, type WorkerError } from '../../workers/client';
@@ -1305,7 +1305,8 @@ function NextStoneCard(p: {
     const ps = cellPieces(L, p.data, row, col);
     const pc = ps[piece];
     if (pc) {
-      const raw = makeRawSizeFn(L, p.palette, p.materials)(pc.color);
+      // Grundstein oder – bei Teilsteinen in Feinsteingröße – Feinstein-Material (w6-fine-tiles), wie Steindetail/Statistik
+      const raw = pieceRawSize(L, p.data, row, col, pc.poly, makeRawSizeFn(L, p.palette, p.materials)(pc.color));
       const info = analyzeCut(pc.poly, raw.w, raw.h);
       const color = p.palette[pc.color];
       const laid = isRefPlaced(p.data, p.code);

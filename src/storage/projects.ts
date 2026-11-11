@@ -390,7 +390,8 @@ export function prepareProjectImport(
       materials: plan.counts,
       notes: plan.notes,
       refs: {
-        colors: rec.palette.filter((p) => typeof p?.materialId === 'string' && p.materialId !== '').length,
+        // Farben mit Material-Verweis (Grundstein oder Feinstein)
+        colors: rec.palette.filter((p) => (typeof p?.materialId === 'string' && p.materialId !== '') || (typeof p?.fineMaterialId === 'string' && p.fineMaterialId !== '')).length,
         selected: rec.settings.materialIds.length,
       },
       missing: danglingMaterialRefs(rec.palette, rec.settings.materialIds, available),

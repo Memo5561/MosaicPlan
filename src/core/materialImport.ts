@@ -2,7 +2,8 @@
  * Materialien beim Übertragen eines Projekts zwischen Geräten (Projektdatei *.mosaicplan.json).
  *
  * Eine Projektdatei (ab Version 2) enthält die Materialien, auf die das Projekt verweist: die Materialien
- * der Palettenfarben (palette[].materialId) und eine ausdrückliche Materialauswahl (settings.materialIds).
+ * der Palettenfarben (palette[].materialId, Feinstein-Material palette[].fineMaterialId) und eine ausdrückliche
+ * Materialauswahl (settings.materialIds).
  * Beim Import wird jedes Material der Datei einem Material dieses Geräts zugeordnet oder neu angelegt:
  *
  *  1. Gleiche ID vorhanden → das Material dieses Geräts bleibt unverändert (wird nie überschrieben).
@@ -49,11 +50,15 @@ export function materialLabel(m: Pick<Material, 'manufacturer' | 'product' | 'co
 // ---------------------------------------------------------------- Export
 
 /**
- * IDs der Materialien, auf die ein Projekt verweist: Palettenfarben und eine nicht leere Materialauswahl
- * (leere Auswahl = „alle Materialien“ – dann wird nicht der ganze Katalog mitgenommen). Ohne Doppelte,
- * in der Reihenfolge des ersten Vorkommens.
+ * IDs der Materialien, auf die ein Projekt verweist: Palettenfarben (Grundstein-Material, danach die
+ * Feinstein-Materialien – w6-fine-tiles) und eine nicht leere Materialauswahl (leere Auswahl = „alle
+ * Materialien“ – dann wird nicht der ganze Katalog mitgenommen). Ohne Doppelte, in der Reihenfolge des
+ * ersten Vorkommens.
  */
-export function referencedMaterialIds(palette: readonly { materialId?: string }[] | undefined, materialIds: readonly string[] | undefined): string[] {
+export function referencedMaterialIds(
+  palette: readonly { materialId?: string; fineMaterialId?: string }[] | undefined,
+  materialIds: readonly string[] | undefined,
+): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (id: unknown) => {
@@ -63,6 +68,7 @@ export function referencedMaterialIds(palette: readonly { materialId?: string }[
     }
   };
   for (const p of palette ?? []) add(p?.materialId);
+  for (const p of palette ?? []) add(p?.fineMaterialId);
   for (const id of materialIds ?? []) add(id);
   return out;
 }
@@ -321,9 +327,20 @@ export function remapIdList(ids: readonly string[], m: IdMapping): string[] {
   return out;
 }
 
-/** Palette mit umgeschriebenen Material-Verweisen (unveränderte Einträge bleiben dieselben Objekte). */
-export function remapPaletteMaterials<T extends { materialId?: string }>(palette: readonly T[], m: IdMapping): T[] {
-  return palette.map((p) => (p && typeof p.materialId === 'string' && remapId(p.materialId, m) !== p.materialId ? { ...p, materialId: remapId(p.materialId, m) } : p));
+/**
+ * Palette mit umgeschriebenen Material-Verweisen – Grundstein-Material (materialId) und Feinstein-Material
+ * (fineMaterialId). Unveränderte Einträge bleiben dieselben Objekte.
+ */
+export function remapPaletteMaterials<T extends { materialId?: string; fineMaterialId?: string }>(palette: readonly T[], m: IdMapping): T[] {
+  return palette.map((p) => {
+    if (!p) return p;
+    const a = typeof p.materialId === 'string' ? remapId(p.materialId, m) : undefined;
+    const f = typeof p.fineMaterialId === 'string' ? remapId(p.fineMaterialId, m) : undefined;
+    const ca = a !== undefined && a !== p.materialId;
+    const cf = f !== undefined && f !== p.fineMaterialId;
+    if (!ca && !cf) return p;
+    return { ...p, ...(ca ? { materialId: a } : {}), ...(cf ? { fineMaterialId: f } : {}) };
+  });
 }
 
 /**
@@ -404,12 +421,18 @@ export function remapMaterialRefsDeep<T>(value: T, m: IdMapping): T {
 
 /**
  * Verweise, die nach dem Import ins Leere zeigen: Palettenfarben mit Material-ID ohne Material
- * (Materialbedarf dieser Farben: Rohsteinmaß = Rastermaß, ohne Packungen/Kosten) und Einträge der
- * ausdrücklichen Materialauswahl ohne Material.
+ * (Materialbedarf dieser Farben: Rohsteinmaß = Rastermaß, ohne Packungen/Kosten) oder mit Feinstein-Material-ID
+ * ohne Material (ihre Teilsteine werden dann aus dem Grundstein geschnitten) und Einträge der ausdrücklichen
+ * Materialauswahl ohne Material. Eine Farbe zählt einmal, auch wenn beide Verweise fehlen.
  */
-export function danglingMaterialRefs(palette: readonly { materialId?: string }[], materialIds: readonly string[], available: ReadonlySet<string>): { colors: number; selected: number } {
+export function danglingMaterialRefs(
+  palette: readonly { materialId?: string; fineMaterialId?: string }[],
+  materialIds: readonly string[],
+  available: ReadonlySet<string>,
+): { colors: number; selected: number } {
+  const dangling = (id: unknown) => typeof id === 'string' && id !== '' && !available.has(id);
   return {
-    colors: palette.filter((p) => typeof p?.materialId === 'string' && p.materialId !== '' && !available.has(p.materialId)).length,
+    colors: palette.filter((p) => dangling(p?.materialId) || dangling(p?.fineMaterialId)).length,
     selected: materialIds.filter((id) => !available.has(id)).length,
   };
 }

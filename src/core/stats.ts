@@ -482,6 +482,74 @@ export function materialTotals(perColor: ColorStat[], layout: Layout): { perMate
   return { perMaterial: named, totalCost, costComplete };
 }
 
+/**
+ * Bedarf einer Farbe je Material (Integration Welle 6): die Grundstein-Zeile und – falls die Farbe Feinsteine hat
+ * (ColorStat.fine) – eine Feinstein-Zeile mit eigenem Material und Maß. Dieselbe Aufteilung wie materialTotals
+ * (Grundstein-Zeile entfällt nur, wenn alle Steine der Farbe Feinsteine sind). Σ rawWithReserve aller Zeilen aller
+ * Farben = rawWithReserveTotal, Σ raw = rawTotal. Für die Tabellen „Bedarf je Farbe“ (Materialansicht, PDF).
+ */
+export interface ColorNeedLine {
+  color: number;
+  /** true: Feinsteine (ganze, ungeschnittene Steine des Feinstein-Materials) */
+  fine: boolean;
+  material?: Material;
+  /** nur Grundstein-Zeile: Material-ID gesetzt, Material fehlt */
+  materialMissing: boolean;
+  /** nur Grundstein-Zeile: Rohsteinmaß = Rastermaß angenommen */
+  rawAssumedGrid: boolean;
+  rawW: number;
+  rawH: number;
+  /** Steine dieser Zeile (Grundstein: alle Steine der Farbe außer den Feinsteinen) */
+  pieces: number;
+  /** davon geschnitten (Feinsteine nie) */
+  cut: number;
+  raw: number;
+  rawWithReserve: number;
+}
+
+export function colorNeedLines(cs: ColorStat): ColorNeedLine[] {
+  const f = cs.fine;
+  const out: ColorNeedLine[] = [];
+  const basePieces = f ? cs.pieces - f.pieces : cs.pieces;
+  if (basePieces > 0 || !f)
+    out.push({
+      color: cs.color,
+      fine: false,
+      material: cs.material,
+      materialMissing: cs.materialMissing,
+      rawAssumedGrid: cs.rawAssumedGrid,
+      rawW: cs.rawW,
+      rawH: cs.rawH,
+      pieces: basePieces,
+      cut: cs.cut,
+      raw: cs.raw,
+      rawWithReserve: cs.rawWithReserve,
+    });
+  if (f && f.pieces > 0)
+    out.push({
+      color: cs.color,
+      fine: true,
+      material: f.material,
+      materialMissing: false,
+      rawAssumedGrid: false,
+      rawW: f.rawW,
+      rawH: f.rawH,
+      pieces: f.pieces,
+      cut: 0,
+      raw: f.raw,
+      rawWithReserve: f.rawWithReserve,
+    });
+  return out;
+}
+
+/**
+ * Einkaufszeile mit angenommenem Rastermaß („*“)? Nur das Grundstein-Material einer Farbe kann ein angenommenes
+ * Maß haben – ein Feinstein-Material hat immer ein gültiges Maß (makeRawSizeFn). Die Zeile „ohne Material“ immer.
+ */
+export function materialRowGridAssumed(ms: Pick<MaterialStat, 'materialId' | 'colors'>, perColor: readonly ColorStat[]): boolean {
+  return ms.materialId === null || ms.colors.some((c) => !!perColor[c]?.rawAssumedGrid && perColor[c]?.material?.id === ms.materialId);
+}
+
 /** Optionen der Statistik. */
 export interface StatsOptions {
   reservePct: number;

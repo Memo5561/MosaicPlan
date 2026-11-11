@@ -13,6 +13,8 @@
  *    zeilenweise über das ganze Mosaik).
  *  - Ein Farbindex außerhalb der Palette bricht mit CsvPaletteError ab, statt Steine mit falscher oder leerer
  *    Farbe auszugeben.
+ *  - Rohstein_mm ist das Maß, aus dem das Teil tatsächlich kommt (CutInfo.rawW × rawH aus pieceCutInfo): bei
+ *    Feinsteinen (w6-fine-tiles) das Feinstein-Material, sonst der Grundstein der Farbe.
  *  - Teile ohne Fläche (analyzeCut: invalid) sind keine Steine und erscheinen nicht – wie in Statistik und PDF;
  *    die Zahl der Datenzeilen ist damit genau computeStats(...).pieces des exportierten Bereichs.
  */
@@ -265,7 +267,8 @@ export function* buildCsvChunks(
                   colorCols[p.color],
                   ci.shape,
                   cutStr(ci.needsCut, ci.signature),
-                  rawStr[p.color],
+                  // tatsächlich verwendetes Rohsteinmaß: bei Feinsteinen das Feinstein-Material (pieceCutInfo)
+                  ci.rawW === r.w && ci.rawH === r.h ? rawStr[p.color] : `${f(ci.rawW)}x${f(ci.rawH)}`,
                   (data.progress[idx] >> i) & 1 ? 'ja' : 'nein',
                   polyStr(p.poly),
                 ].join(';'),

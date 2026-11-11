@@ -142,7 +142,7 @@ function clamp255(v: number): number {
 
 /**
  * Wendet die Farb-/Tonwert-/Schärfe-Einstellungen an.
- * Gesichts-/Schutzbereiche werden von der Hintergrundvereinfachung ausgenommen.
+ * Gesichts-, Detail- und Feinbereiche werden von der Hintergrundvereinfachung ausgenommen.
  */
 export function applyAdjustments(src: RGBAImage, adj: ImageAdjust, regions: Region[] = []): RGBAImage {
   const { width: w, height: h } = src;
@@ -210,7 +210,8 @@ export function applyAdjustments(src: RGBAImage, adj: ImageAdjust, regions: Regi
     }
   }
 
-  const protect = regions.length ? regionMask(w, h, regions, ['face', 'detail']) : null;
+  // Feinbereiche (w6-fine-tiles) sind wie Gesichts- und Detailbereiche geschützt: dort soll Feines erhalten bleiben
+  const protect = regions.length ? regionMask(w, h, regions, ['face', 'detail', 'fine']) : null;
 
   if (adj.bgSimplify > 0) {
     const tmp: RGBAImage = { width: w, height: h, data: mergeChannels(R, G, B, w, h).data };

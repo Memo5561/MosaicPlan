@@ -84,20 +84,8 @@ export type WorkerRequest =
       options: PdfOptions;
       /** Export in Teilen: Teil index+1 von total (steht im PDF) */
       part?: { index: number; total: number };
-    }
-  | {
-      type: 'csv';
-      id: number;
-      layoutParams: LayoutParams;
-      mosaic: StoredMosaic;
-      palette: PaletteColor[];
-      materials: Material[];
-      sections: SectionSettings;
-      sectionIds: string[] | null;
-      decimalComma: boolean;
-      /** Sprache der automatischen Farbnamen */
-      lang?: 'de' | 'en' | 'tr';
     };
+// Koordinaten-CSV: eigener Worker (csv.worker.ts, Kanal 'csv', Paket w6-plan-exports) – nicht mehr über diesen Worker
 
 export type WorkerResponse =
   | { type: 'progress'; id: number; phase: string; fraction: number }
@@ -122,5 +110,4 @@ export type WorkerResponse =
       planMatches: boolean;
     }
   /** gemessene Teile des Seitenplans; planPdfPages(…, facts) ergibt damit die Seitenzahl des PDFs */
-  | { type: 'pdfPlan'; id: number; facts: PdfLayoutFacts }
-  | { type: 'csv'; id: number; csv: string };
+  | { type: 'pdfPlan'; id: number; facts: PdfLayoutFacts };

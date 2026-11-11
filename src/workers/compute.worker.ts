@@ -1,6 +1,5 @@
 /// <reference lib="webworker" />
 import { applyAdjustments } from '../core/imageOps';
-import { buildCsv } from '../core/csv';
 import { computeLayout, sectionsFor } from '../core/layout';
 import { computeMosaic } from '../core/mosaic';
 import { generatePdfReport, pdfLayoutFacts } from '../core/pdf';
@@ -129,14 +128,6 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           msg.options,
         );
         post({ type: 'pdfPlan', id: msg.id, facts });
-        break;
-      }
-      case 'csv': {
-        const layout = computeLayout(msg.layoutParams);
-        const data = unpackMosaic(msg.mosaic);
-        const sections = sectionsFor(layout, msg.sections);
-        const csv = buildCsv(layout, data, msg.palette, msg.materials, sections, msg.sectionIds, msg.decimalComma, msg.lang);
-        post({ type: 'csv', id: msg.id, csv });
         break;
       }
     }

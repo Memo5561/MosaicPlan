@@ -14,7 +14,7 @@
  * CSV: ';' und Dezimalkomma (de/tr), ',' und Punkt (en) – wie der Material- und Koordinatenexport; UTF-8 mit BOM,
  * damit Excel Umlaute erkennt; eine Kopfzeile, je Material eine Zeile, zuletzt die Summenzeile.
  */
-import type { Stats } from './stats';
+import { materialRowGridAssumed, type Stats } from './stats';
 import { csvFormatFor, MATERIAL_TYPE_WORDS } from './materialsCsv';
 import type { Material, PaletteColor } from './types';
 
@@ -130,7 +130,7 @@ export function shoppingRows(stats: Stats, palette: readonly PaletteColor[], mat
       rawW: ms.rawW,
       rawH: ms.rawH,
       // nur das Grundstein-Material einer Farbe kann ein angenommenes Rastermaß haben – nicht ihr Feinstein-Material (w6-fine-tiles)
-      rawAssumedGrid: ms.materialId === null || ms.colors.some((c) => stats.perColor[c]?.rawAssumedGrid && stats.perColor[c]?.material?.id === ms.materialId),
+      rawAssumedGrid: materialRowGridAssumed(ms, stats.perColor),
       pieces: ms.pieces,
       raw: ms.raw,
       need: ms.need,

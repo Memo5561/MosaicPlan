@@ -291,10 +291,15 @@ function ShoppingTable({ rows, st, pal }: { rows: ShoppingRow[]; st: Stats; pal:
   );
 }
 
-function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteColor[]; phone: boolean }) {
+/** Bedarf je Farbe (exportiert für Tests) */
+export function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteColor[]; phone: boolean }) {
   const { t, n, lang } = useI18n();
   const used = st.perColor.filter((c) => c.pieces > 0);
-  const sum = used.reduce((a, c) => ({ pieces: a.pieces + c.pieces, cut: a.cut + c.cut, raw: a.raw + c.raw, res: a.res + c.rawWithReserve }), { pieces: 0, cut: 0, raw: 0, res: 0 });
+  // Rohsteine je Farbe: Grundstein + Feinsteine (w6-fine-tiles) – Σ = Rohsteine gesamt bzw. inkl. Reserve
+  const sum = used.reduce(
+    (a, c) => ({ pieces: a.pieces + c.pieces, cut: a.cut + c.cut, raw: a.raw + c.raw + (c.fine?.raw ?? 0), res: a.res + c.rawWithReserve + (c.fine?.rawWithReserve ?? 0) }),
+    { pieces: 0, cut: 0, raw: 0, res: 0 },
+  );
   const pct = n(st.reservePct, 2);
   return (
     <Fold phone={phone} title={t('plan.perColor')} testId="mc-per-color-sec">
@@ -320,8 +325,9 @@ function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteCol
             {used.map((c) => {
               const p = pal[c.color];
               const m = c.material;
+              const f = c.fine;
               return (
-                <tr key={c.color} data-testid="mc-color-row">
+                <tr key={c.color} data-testid="mc-color-row" data-fine-raw={f ? f.raw : undefined} data-fine-reserve={f ? f.rawWithReserve : undefined}>
                   <td className="w5ms-cc-code" data-col="code">
                     <span className="w1fx-code">
                       <Swatch hex={p?.hex ?? '#000'} size={12} />
@@ -344,6 +350,11 @@ function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteCol
                     ) : (
                       <span className="muted">{t('w5ms.color.noMaterial')}</span>
                     )}
+                    {f && (
+                      <span className="w6ft-need" data-testid="mc-color-fine-mat">
+                        {t('w6int.mc.fineMat', { mat: `${materialName(t, f.material)}${f.material.colorNumber ? ` ${f.material.colorNumber}` : ''}`, w: n(f.rawW, 1), h: n(f.rawH, 1) })}
+                      </span>
+                    )}
                   </td>
                   <td className="num" data-col="pieces" data-label={t('colors.stones')}>
                     {n(c.pieces)}
@@ -354,9 +365,23 @@ function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteCol
                   <td className="num" data-col="raw" data-label={t('plan.raw')}>
                     {n(c.raw)}
                     {c.rawAssumedGrid && <span title={t('w5ms.shop.gridAssumed')}>*</span>}
+                    {f && (
+                      <span className="w6ft-need" data-testid="mc-color-fine-raw" title={t('w6int.mc.fineRawTitle', { n: n(f.raw), w: n(f.rawW, 1), h: n(f.rawH, 1) })}>
+                        {t('w6int.mc.fineRaw', { n: n(f.raw) })}
+                      </span>
+                    )}
                   </td>
                   <td className="num" data-col="rawWithReserve" data-label={`+${pct} %`}>
                     <b>{n(c.rawWithReserve)}</b>
+                    {f && (
+                      <span
+                        className="w6ft-need"
+                        data-testid="mc-color-fine-need"
+                        title={t('w6ft.fine.needTitle', { n: n(f.rawWithReserve), w: n(f.rawW, 1), h: n(f.rawH, 1), pct, p: n(f.pieces) })}
+                      >
+                        {t('w6ft.fine.need', { n: n(f.rawWithReserve) })}
+                      </span>
+                    )}
                   </td>
                 </tr>
               );

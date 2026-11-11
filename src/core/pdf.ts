@@ -73,7 +73,20 @@ import {
 } from './pdfPlan';
 import { drawTable, headerAdvance, layoutRow, layoutTable, LINE_FACTOR, PAD_R, PT_MM, wrapWords, type ColSpec, type Measure, type TableCanvas, type TableCell, type TableLayout } from './pdfTable';
 import { cellPieces, cutLineItems, type CutInfo } from './pieces';
-import { CutCache, computeAllStats, computeStats, jointAreaValid, makeRawSizeFn, pieceCutInfo, type ColorStat, type Range, type RawSizeFn, type Stats } from './stats';
+import {
+  colorNeedLines,
+  CutCache,
+  computeAllStats,
+  computeStats,
+  jointAreaValid,
+  makeRawSizeFn,
+  materialRowGridAssumed,
+  pieceCutInfo,
+  type ColorStat,
+  type Range,
+  type RawSizeFn,
+  type Stats,
+} from './stats';
 import { layoutTemplate, TPL, type TemplateLayout, type TemplateTexts } from './templateLayout';
 import { CellKind, type Material, type MosaicData, type PaletteColor, type ProjectSettings } from './types';
 
@@ -1064,6 +1077,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   chapterPage.set('legend', pg());
   const matLabel = (m: Material | undefined, missing: boolean, none: string, withType = false) =>
     m ? `${withType ? `${t(`mat.${m.type}`)} · ` : ''}${m.manufacturer} ${m.product}`.replace(/\s+/g, ' ').trim() || t(`mat.${m.type}`) : missing ? t('pdf.materialMissing') : none;
+  /** Rohsteine einer Farbe: Grundstein, mit Feinsteinen (w6-fine-tiles) „120 + 30 Fein“ – nie nur der Grundstein */
+  const rawCell = (cs: ColorStat, key: 'raw' | 'rawWithReserve') => (cs.fine ? t('w6int.pdf.rawPlusFine', { base: num(cs[key]), fine: num(cs.fine[key]) }) : num(cs[key]));
   y = table(
     t('pdf.legend'),
     [
@@ -1089,8 +1104,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
         p.hex,
         `${f1(p.lab[0])}; ${f1(p.lab[1])}; ${f1(p.lab[2])}`,
         num(cs.pieces),
-        num(cs.raw),
-        num(cs.rawWithReserve),
+        rawCell(cs, 'raw'),
+        rawCell(cs, 'rawWithReserve'),
         matLabel(m, cs.materialMissing, '–'),
         m?.colorNumber || '–',
       ];
@@ -1137,19 +1152,21 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   y = para(t('pdf.perColorHint'), M, y, AW, 7) + 2.5;
   setText('#000000');
   const usedColors = palette.map((p, i) => ({ p, i, cs: stats.perColor[i], m: p.materialId ? matById.get(p.materialId) : undefined })).filter((r) => r.cs.pieces > 0);
-  const anyGrid = usedColors.some((r) => r.cs.rawAssumedGrid);
+  // je Farbe die Grundstein-Zeile und ggf. eine eigene Zeile für ihre Feinsteine (eigenes Material und Maß, w6-fine-tiles)
+  const needRows = usedColors.flatMap(({ p, i, cs, m }) => colorNeedLines(cs).map((l) => ({ p, i, l, m: l.fine ? l.material : m })));
+  const anyGrid = needRows.some((r) => r.l.rawAssumedGrid);
   y = table(
     '',
     [{}, { kind: 'swatch' }, { kind: 'text', max: 45 }, { kind: 'text', max: 70 }, { foldInto: 3, foldOrder: 1 }, { kind: 'tokens' }, { align: 'right' }],
     [t('pdf.code'), '', t('pdf.name'), t('pdf.material'), t('pdf.colorNo'), t('pdf.rawSize'), t('pdf.needed')],
-    usedColors.map(({ p, i, cs, m }) => [
+    needRows.map(({ p, i, l, m }) => [
       code2(i),
       { swatch: p.hex },
-      p.name,
-      matLabel(m, cs.materialMissing, t('pdf.noMaterial'), true),
+      l.fine ? t('w6int.pdf.fineName', { name: p.name }) : p.name,
+      matLabel(m, l.materialMissing, t('pdf.noMaterial'), true),
       m?.colorNumber || '–',
-      `${f1(cs.rawW)} × ${f1(cs.rawH)}${cs.rawAssumedGrid ? ' *' : ''}`,
-      num(cs.rawWithReserve),
+      `${f1(l.rawW)} × ${f1(l.rawH)}${l.rawAssumedGrid ? ' *' : ''}`,
+      num(l.rawWithReserve),
     ]),
     y,
     t('pdf.materials'),
@@ -1164,7 +1181,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   if (stats.perMaterial.length) {
     const shopRows: TableCell[][] = stats.perMaterial.map((ms) => {
       const m = ms.material;
-      const grid = ms.colors.some((c) => stats.perColor[c]?.rawAssumedGrid);
+      // nur das Grundstein-Material einer Farbe kann ein angenommenes Rastermaß haben (wie shoppingCsv.ts)
+      const grid = materialRowGridAssumed(ms, stats.perColor);
       return [
         m ? matLabel(m, false, '') : t('pdf.noMaterial'),
         m?.colorNumber || '–',
@@ -1517,7 +1535,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       [t('pdf.code'), '', t('pdf.name'), 'HEX', t('pdf.colorNo'), t('pdf.stones'), t('pdf.uncut'), t('pdf.cut'), t('pdf.rawStones')],
       secStats.perColor
         .filter((c) => c.pieces > 0)
-        .map((c) => [code2(c.color), { swatch: palette[c.color].hex }, palette[c.color].name, palette[c.color].hex, colorNoOf(c.color) || '–', num(c.pieces), num(c.uncut), num(c.cut), num(c.raw)]),
+        .map((c) => [code2(c.color), { swatch: palette[c.color].hex }, palette[c.color].name, palette[c.color].hex, colorNoOf(c.color) || '–', num(c.pieces), num(c.uncut), num(c.cut), rawCell(c, 'raw')]),
       yy,
       `${t('pdf.section')} ${sec.id}`,
     );

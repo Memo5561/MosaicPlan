@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { Badge, Swatch, Toggle } from '../components';
 import { deviceKey, useCoarsePointer } from './deviceKind';
@@ -10,9 +10,20 @@ import type { ProjectApi } from './useProject';
 import type { Material } from '../../core/types';
 import { cellPieceCount } from '../../core/pieces';
 import { paletteDisplayName } from '../../core/colorNames';
+import { deviationMap, deviationSummary, hasPhotoTargets } from '../../core/deviation';
+import type { Range } from '../../core/stats';
+import { BatchPanel, type BatchScope } from './BatchPanel';
+import { DeviationLegend, DeviationPanel } from './DeviationPanel';
+import { PngExportPanel } from './PngExportPanel';
+import { PreviewOverlay } from './PreviewOverlay';
+import { computedDeltaE, restoreComputedSettings } from './staleReasons';
 import '../css/w2-colour-honesty.css';
 import '../css/w3-viewer-features.css';
 import '../css/w5-undo-editing.css';
+import '../css/w6-compare-batch.css';
+
+/** Werkzeuge unter dem Viewer (Paket w6-compare-batch) */
+type PreviewTool = 'deviation' | 'batch' | 'png';
 
 export function StepPreview({ api, materials }: { api: ProjectApi; materials: Material[] }) {
   const { t, n, lang } = useI18n();
@@ -28,6 +39,15 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const [split, setSplit] = useState(0.5);
   const [hold, setHold] = useState(false);
   const viewer = useRef<ViewerHandle>(null);
+  /** Viewer samt Zusatzebene (Abweichungskarte, gewählter Bereich) */
+  const stage = useRef<HTMLDivElement>(null);
+  /** Werkzeuge: Abweichung, Bereich bearbeiten, Bild (PNG) – null = zugeklappt */
+  const [tool, setTool] = useState<PreviewTool | null>(null);
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [scope, setScope] = useState<BatchScope>('rect');
+  const [selection, setSelection] = useState<Range | null>(null);
+  const [rectMode, setRectMode] = useState(false);
+  const [sectionId, setSectionId] = useState<string | null>(null);
   const c = api.computed;
   /** Breiter Bildschirm: Steindetail ersetzt die Seitenleiste neben dem Mosaik (kein Dialog darüber) */
   const wide = useMediaQuery(PANEL_QUERY);
@@ -67,6 +87,23 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     setFlash({ idx, piece });
   }, [api.stoneRequest, c]);
 
+  // neues Raster: die Auswahl gehört zum alten
+  useEffect(() => {
+    setSelection(null);
+    setRectMode(false);
+  }, [c?.layout]);
+
+  // ΔE-Formel und Farbmischung der BERECHNUNG (nicht eine inzwischen geänderte Einstellung)
+  const recNow = api.rec;
+  const formula = (recNow && computedDeltaE(recNow.computedWith)) ?? recNow?.settings.deltaE ?? '2000';
+  const dither = useMemo(() => (recNow ? ((restoreComputedSettings(recNow)?.settings ?? recNow.settings).dither ?? 0) > 0 : false), [recNow]);
+  const palNow = recNow?.palette;
+  const hasTargets = !!c && hasPhotoTargets(c.data);
+  const mapOn = overlayOn && hasTargets;
+  // Abweichungskarte und Legendenzahlen: neu bei jeder Bearbeitung (version) und jeder Palettenänderung
+  const devMap = useMemo(() => (mapOn && c && palNow ? deviationMap(c.layout, c.data, palNow, formula) : null), [mapOn, c, palNow, formula, api.version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const devSummary = useMemo(() => (mapOn && c && palNow ? deviationSummary(c.data, palNow, formula) : null), [mapOn, c, palNow, formula, api.version]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ohne Referenz kein Vergleich
   useEffect(() => {
     if (!reference) {
@@ -100,6 +137,40 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     viewer.current?.center(c.layout.colX[col] + c.layout.colW[col] / 2, c.layout.rowY[row] + c.layout.rowH[row] / 2, 12);
     setFlash({ idx: row * c.layout.cols + col, piece });
   };
+  const readOnly = !!api.computing || api.paletteLocked;
+  /** Element ganz ins Bild holen, falls es (teilweise) außerhalb liegt – Werkzeuge stehen unter dem Mosaik */
+  const reveal = (el: Element | null) => {
+    if (!el || typeof el.scrollIntoView !== 'function') return;
+    const r = el.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > window.innerHeight) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  /** Sprung aus der Liste „Größte Abweichungen“: Stein zeigen und öffnen, Mosaik ins Bild holen */
+  const onJump = (row: number, col: number, piece: number) => {
+    onFound(row, col, piece);
+    reveal(stage.current);
+  };
+  /** „Bereich aufziehen“: Mosaik ins Bild holen */
+  const setRectModeShow = (on: boolean) => {
+    setRectMode(on);
+    if (on) reveal(stage.current);
+  };
+  const batchSection = tool === 'batch' && scope === 'section' ? sectionId : null;
+  const toolBtn = (id: PreviewTool, label: string) => (
+    <button
+      type="button"
+      className={`w6cb-tab ${tool === id ? 'active' : ''}`}
+      aria-expanded={tool === id}
+      aria-controls="w6cb-tool-body"
+      onClick={() => {
+        setTool(tool === id ? null : id);
+        if (id !== 'batch') setRectMode(false);
+      }}
+      data-testid={`tool-${id}`}
+    >
+      {label}
+      {id === 'deviation' && mapOn && <span className="w6cb-dot" aria-hidden="true" />}
+    </button>
+  );
 
   const stone = pick && (
     <StoneDialog
@@ -128,6 +199,17 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
       <div>
         <div className="w5ue-toolbar">
           <HistoryButtons api={api} />
+          <button
+            type="button"
+            className={`btn small w6cb-quick ${mapOn ? 'active' : ''}`}
+            aria-pressed={mapOn}
+            disabled={!hasTargets}
+            title={hasTargets ? t('w6cb.overlayHint') : t('w6cb.legacy')}
+            onClick={() => setOverlayOn(!overlayOn)}
+            data-testid="deviation-quick"
+          >
+            {t('w6cb.quick')}
+          </button>
           {api.stale && <Badge kind="warn">{t('preview.stale')}</Badge>}
           {api.materialsChanged && (
             <span title={t('w3lp.materialsChanged')} data-testid="preview-materials-changed">
@@ -136,28 +218,40 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           )}
           <HistoryStatus api={api} />
         </div>
-        <Viewer
-          ref={viewer}
-          layout={c.layout}
-          data={c.data}
-          palette={palette}
-          version={api.version}
-          progressVersion={api.progressVersion}
-          groutHex={rec.settings.groutHex}
-          surface={rec.settings.surface}
-          realistic={realistic}
-          showCodes={codes}
-          progressMode={false}
-          sections={showSections ? api.sections : null}
-          highlight={pick}
-          focusColor={focus}
-          rulers={rulers}
-          flash={flash}
-          compareImage={comparing ? reference : null}
-          compareSplit={hold ? 1 : split}
-          onCompareSplit={compareOn && !hold ? setSplit : undefined}
-          onPick={(row, col, piece) => setPick({ row, col, piece })}
-        />
+        {mapOn && <DeviationLegend summary={devSummary} dither={dither} stale={api.stale} formula={formula} />}
+        <div className="w6cb-stage" ref={stage}>
+          <Viewer
+            ref={viewer}
+            layout={c.layout}
+            data={c.data}
+            palette={palette}
+            version={api.version}
+            progressVersion={api.progressVersion}
+            groutHex={rec.settings.groutHex}
+            surface={rec.settings.surface}
+            realistic={realistic}
+            showCodes={codes}
+            progressMode={false}
+            sections={showSections || batchSection ? api.sections : null}
+            selectedSection={batchSection}
+            highlight={pick}
+            focusColor={focus}
+            rulers={rulers}
+            flash={flash}
+            compareImage={comparing ? reference : null}
+            compareSplit={hold ? 1 : split}
+            onCompareSplit={compareOn && !hold ? setSplit : undefined}
+            onPick={(row, col, piece) => setPick({ row, col, piece })}
+            mode={tool === 'batch' && scope === 'rect' && rectMode ? 'rect' : 'tap'}
+            onRect={(rg) => {
+              setSelection(rg);
+              setRectMode(false);
+              // danach die Aktionen zeigen
+              requestAnimationFrame(() => reveal(document.querySelector('[data-testid="batch-panel"]')));
+            }}
+          />
+          <PreviewOverlay stage={stage} viewer={viewer} layout={c.layout} rulers={rulers} deviation={devMap} selection={tool === 'batch' && scope === 'rect' ? selection : null} />
+        </div>
         <div className="w3vf-compare" data-testid="compare-box">
           <div className="w3vf-compare-row">
             <Toggle checked={compareOn && !!reference} onChange={setCompareOn} label={t('w3vf.compareToggle')} disabled={!reference} testId="compare-toggle" />
@@ -260,6 +354,65 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           )}
         </div>
         <p className="muted small" data-testid="preview-hint">{t(deviceKey('w5fu.previewHint', coarse))}</p>
+        <section className="w6cb-tools" aria-label={t('w6cb.toolsTitle')} data-testid="preview-tools">
+          <div className="w6cb-tabs" role="group">
+            {toolBtn('deviation', t('w6cb.tab.deviation'))}
+            {toolBtn('batch', t('w6cb.tab.batch'))}
+            {toolBtn('png', t('w6cb.tab.png'))}
+          </div>
+          <div id="w6cb-tool-body">
+            {tool === 'deviation' && (
+              <DeviationPanel
+                api={api}
+                layout={c.layout}
+                data={c.data}
+                palette={palette}
+                formula={formula}
+                dither={dither}
+                overlayOn={overlayOn}
+                setOverlayOn={setOverlayOn}
+                pick={pick}
+                onJump={onJump}
+                readOnly={readOnly}
+              />
+            )}
+            {tool === 'batch' && (
+              <BatchPanel
+                api={api}
+                layout={c.layout}
+                data={c.data}
+                palette={palette}
+                formula={formula}
+                minPieceMm={rec.settings.shapes.minPieceMm}
+                readOnly={readOnly}
+                sections={api.sections}
+                scope={scope}
+                setScope={setScope}
+                selection={selection}
+                setSelection={setSelection}
+                rectMode={rectMode}
+                setRectMode={setRectModeShow}
+                sectionId={sectionId}
+                setSectionId={setSectionId}
+              />
+            )}
+            {tool === 'png' && (
+              <PngExportPanel
+                layout={c.layout}
+                data={c.data}
+                palette={palette}
+                name={rec.meta.name}
+                groutHex={rec.settings.groutHex}
+                surface={rec.settings.surface}
+                realistic={realistic}
+                codes={codes}
+                sections={api.sections}
+                selection={selection}
+                sectionId={sectionId}
+              />
+            )}
+          </div>
+        </section>
         {!wide && stone}
       </div>
       {wide && stone ? (

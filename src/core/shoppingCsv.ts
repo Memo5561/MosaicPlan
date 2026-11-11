@@ -129,7 +129,8 @@ export function shoppingRows(stats: Stats, palette: readonly PaletteColor[], mat
       unlinkedColors,
       rawW: ms.rawW,
       rawH: ms.rawH,
-      rawAssumedGrid: ms.materialId === null || ms.colors.some((c) => stats.perColor[c]?.rawAssumedGrid),
+      // nur das Grundstein-Material einer Farbe kann ein angenommenes Rastermaß haben – nicht ihr Feinstein-Material (w6-fine-tiles)
+      rawAssumedGrid: ms.materialId === null || ms.colors.some((c) => stats.perColor[c]?.rawAssumedGrid && stats.perColor[c]?.material?.id === ms.materialId),
       pieces: ms.pieces,
       raw: ms.raw,
       need: ms.need,

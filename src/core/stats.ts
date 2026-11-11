@@ -15,8 +15,13 @@
  * Gesamt- und Abschnittsstatistik entstehen in EINEM Durchlauf über das Raster (computeAllStats); gleiche
  * Geometrien werden über ganzzahlige Klassen nur einmal analysiert. Die Zahlen sind exakt dieselben wie bei
  * einer Zählung je Bereich – alle Maße stammen weiterhin aus analyzeCut auf den echten Polygonen.
+ *
+ * Feinsteine (w6-fine-tiles): Hat eine Farbe ein Feinstein-Material (PaletteColor.fineMaterialId), werden ihre
+ * Teilsteine (k×k), deren Außenmaß exakt dem Materialmaß entspricht, als ganze Feinsteine dieses Materials gezählt
+ * (analyzeCut: ungeschnitten, Ausbeute 1) – je Farbe in einer eigenen Zeile ColorStat.fine und je Material in
+ * perMaterial. Alles andere (ganze Steine, Randteile, abweichende Maße) bleibt beim Grundstein-Material.
  */
-import type { Pt, ShapeType } from './geometry';
+import { bbox, DIM_TOL, type Pt, type ShapeType } from './geometry';
 import type { Layout, SectionGrid } from './layout';
 import { invalidFreeCells } from './edits';
 import { analyzeCut, cellPieces, pieceWidthCheck, type CutInfo } from './pieces';
@@ -53,6 +58,34 @@ export interface ColorStat {
   /** Kosten nur für diese Farbe allein (nur mit Packungsgröße und Preis); Gesamtkosten: perMaterial */
   cost?: number;
   placed: number;
+  /**
+   * Feinsteine dieser Farbe (w6-fine-tiles): Teilsteine, die als ganze Steine des Feinstein-Materials gezählt werden.
+   * Nur gesetzt, wenn die Farbe solche Steine hat. Dann gilt:
+   *  - pieces/uncut/cut/area/placed oben enthalten ALLE Steine der Farbe (Grund- und Feinsteine),
+   *  - rawExact/raw/rawWithReserve/rawW/rawH/material/packs/cost oben gelten nur für das Grundstein-Material,
+   *  - die Feinsteine stehen hier mit eigenem Material, Maß und Bedarf (eigene Einkaufszeile in perMaterial).
+   * Σ (raw + fine.raw) über alle Farben = rawTotal, ebenso mit Reserve.
+   */
+  fine?: FineColorStat;
+}
+
+/** Feinsteine einer Farbe (siehe ColorStat.fine) – ganze, ungeschnittene Steine des Feinstein-Materials. */
+export interface FineColorStat {
+  material: Material;
+  rawW: number;
+  rawH: number;
+  /** Feinsteine dieser Farbe (je Stein ein Feinstein, nie geschnitten) */
+  pieces: number;
+  area: number;
+  placed: number;
+  /** benötigte Feinsteine = pieces (Ausbeute 1) */
+  raw: number;
+  /** ⌈raw · (1 + Reserve)⌉ */
+  rawWithReserve: number;
+  /** Packungen nur für diese Farbe allein (nur mit Packungsgröße) */
+  packs?: number;
+  /** Kosten nur für diese Farbe allein (nur mit Packungsgröße und Preis) */
+  cost?: number;
 }
 
 /** Bedarf je Material (Einkaufsliste). `materialId === null`: Gruppe „ohne Material“. */
@@ -181,9 +214,38 @@ export interface RawSize {
   materialMissing?: boolean;
   /** w/h sind das Rastermaß, nicht das Maß eines Materials */
   rawAssumedGrid?: boolean;
+  /**
+   * Feinstein-Material der Farbe (PaletteColor.fineMaterialId mit gültigem Maß). Gilt nur für Teilsteine (k×k), deren
+   * Außenmaß exakt dem Materialmaß entspricht – siehe fineRawFor. pieceCutInfo wählt es selbst.
+   */
+  fine?: RawSize;
+  /** fineMaterialId gesetzt, aber das Material fehlt oder hat kein gültiges Maß – Teilsteine bleiben beim Grundstein */
+  fineMissing?: boolean;
 }
 
 export type RawSizeFn = (color: number) => RawSize;
+
+/**
+ * Rohsteinmaß eines Teils: das Feinstein-Material der Farbe, wenn das Teil ein Teilstein (k×k) ist und sein Außenmaß
+ * exakt (± DIM_TOL, auch um 90° gedreht) dem Feinsteinmaß entspricht – dann ist es ein ganzer Feinstein (analyzeCut:
+ * exactRaw, ungeschnitten, Ausbeute 1). Sonst null: Das Teil wird aus dem Grundstein geschnitten. Nie wird ein Teil als
+ * ungeschnitten umgedeutet, dessen Maß nicht passt.
+ */
+export function fineRawFor(kind: number, poly: Pt[], raw: RawSize): RawSize | null {
+  const f = raw.fine;
+  if (!f || kind !== CellKind.SUB) return null;
+  const b = bbox(poly);
+  const ok = (Math.abs(b.w - f.w) < DIM_TOL && Math.abs(b.h - f.h) < DIM_TOL) || (Math.abs(b.w - f.h) < DIM_TOL && Math.abs(b.h - f.w) < DIM_TOL);
+  return ok ? f : null;
+}
+
+/**
+ * Rohsteinmaß, aus dem ein Teil der Zelle (row, col) tatsächlich kommt (Grundstein oder Feinstein, siehe fineRawFor) –
+ * dasselbe, das pieceCutInfo verwendet. Für Anzeigen, die analyzeCut selbst aufrufen (Steindetail).
+ */
+export function pieceRawSize(layout: Layout, data: MosaicData, row: number, col: number, poly: Pt[], raw: RawSize): RawSize {
+  return fineRawFor(data.kind[row * layout.cols + col], poly, raw) ?? raw;
+}
 
 /** endliche Zahl > 0 (Maße, Stück je Packung, Preis) */
 const isPositive = (v: number) => Number.isFinite(v) && v > 0;
@@ -194,8 +256,17 @@ export function makeRawSizeFn(layout: Layout, palette: PaletteColor[], materials
   const cache = palette.map((p): RawSize => {
     const m = p.materialId ? byId.get(p.materialId) : undefined;
     const materialMissing = !!p.materialId && !m;
-    if (m && isPositive(m.lengthMm) && isPositive(m.widthMm)) return { w: m.widthMm, h: m.lengthMm, material: m, materialMissing: false, rawAssumedGrid: false };
-    return { w: layout.tileW, h: layout.tileH, material: m, materialMissing, rawAssumedGrid: true };
+    const base: RawSize =
+      m && isPositive(m.lengthMm) && isPositive(m.widthMm)
+        ? { w: m.widthMm, h: m.lengthMm, material: m, materialMissing: false, rawAssumedGrid: false }
+        : { w: layout.tileW, h: layout.tileH, material: m, materialMissing, rawAssumedGrid: true };
+    // Feinstein-Material nur mit gültigem Maß – ein angenommenes Maß würde Teilsteine still als ungeschnitten zählen
+    if (p.fineMaterialId) {
+      const fm = byId.get(p.fineMaterialId);
+      if (fm && isPositive(fm.lengthMm) && isPositive(fm.widthMm)) base.fine = { w: fm.widthMm, h: fm.lengthMm, material: fm, materialMissing: false, rawAssumedGrid: false };
+      else base.fineMissing = true;
+    }
+    return base;
   });
   return (c: number) => cache[c] ?? grid;
 }
@@ -244,11 +315,14 @@ export function pieceCutInfo(
   col: number,
   pieceIdx: number,
   poly: Pt[],
-  raw: { w: number; h: number },
+  /** Rohsteinmaß der Farbe (RawSizeFn); mit `fine` wählt pieceCutInfo für passende Teilsteine das Feinsteinmaß */
+  raw: RawSize,
 ): CutInfo {
+  // Teilsteine in Feinsteingröße: aus dem Feinstein-Material (ganzer Stein); sonst aus dem Grundstein
+  const rs = raw.fine ? pieceRawSize(layout, data, row, col, poly, raw) : raw;
   const gk = cellGeomKey(layout, data, row, col);
-  if (gk === null) return analyzeCut(poly, raw.w, raw.h);
-  return cache.get(`${gk}|${pieceIdx}|${raw.w}x${raw.h}`, () => analyzeCut(poly, raw.w, raw.h));
+  if (gk === null) return analyzeCut(poly, rs.w, rs.h);
+  return cache.get(`${gk}|${pieceIdx}|${rs.w}x${rs.h}`, () => analyzeCut(poly, rs.w, rs.h));
 }
 
 /**
@@ -353,21 +427,28 @@ export function popcount(v: number): number {
 export function materialTotals(perColor: ColorStat[], layout: Layout): { perMaterial: MaterialStat[]; totalCost: number; costComplete: boolean } {
   const byMat = new Map<string | null, MaterialStat>();
   let costComplete = true;
-  for (const cs of perColor) {
-    if (cs.pieces <= 0) continue;
-    const m = cs.material;
+  const addRow = (color: number, m: Material | undefined, rawW: number, rawH: number, pieces: number, raw: number, need: number) => {
     const key = m ? m.id : null;
     let ms = byMat.get(key);
     if (!ms) {
       ms = m
-        ? { materialId: m.id, material: m, colors: [], rawW: cs.rawW, rawH: cs.rawH, pieces: 0, raw: 0, need: 0 }
+        ? { materialId: m.id, material: m, colors: [], rawW, rawH, pieces: 0, raw: 0, need: 0 }
         : { materialId: null, colors: [], rawW: layout.tileW, rawH: layout.tileH, pieces: 0, raw: 0, need: 0 };
       byMat.set(key, ms);
     }
-    ms.colors.push(cs.color);
-    ms.pieces += cs.pieces;
-    ms.raw += cs.raw;
-    ms.need += cs.rawWithReserve;
+    if (ms.colors[ms.colors.length - 1] !== color) ms.colors.push(color);
+    ms.pieces += pieces;
+    ms.raw += raw;
+    ms.need += need;
+  };
+  for (const cs of perColor) {
+    if (cs.pieces <= 0) continue;
+    const f = cs.fine;
+    // Grundstein-Zeile: alle Steine der Farbe außer den Feinsteinen (ohne Feinsteine = wie bisher)
+    const basePieces = f ? cs.pieces - f.pieces : cs.pieces;
+    if (basePieces > 0 || !f) addRow(cs.color, cs.material, cs.rawW, cs.rawH, basePieces, cs.raw, cs.rawWithReserve);
+    // Feinsteine: eigene Einkaufszeile ihres Materials
+    if (f && f.pieces > 0) addRow(cs.color, f.material, f.rawW, f.rawH, f.pieces, f.raw, f.rawWithReserve);
   }
   let totalCost = 0;
   const named: MaterialStat[] = [];
@@ -596,7 +677,8 @@ function statsPass(
   const okColor = new Uint8Array(nC).fill(1);
   const rawIds = new Map<string, number>();
   const rawClassOf = (r: RawSize) => {
-    const k = `${r.w}x${r.h}`;
+    // mit Feinstein-Material eine eigene Klasse: Teilsteine derselben Geometrie bekommen dort eine andere Schnittinfo
+    const k = r.fine ? `${r.w}x${r.h}|${r.fine.w}x${r.fine.h}` : `${r.w}x${r.h}`;
     let v = rawIds.get(k);
     if (v === undefined) rawIds.set(k, (v = rawIds.size));
     return v;
@@ -620,13 +702,20 @@ function statsPass(
   const useArray = perKind <= 1 << 16;
   const denseArr: (Entry | undefined)[] = [];
   const denseMap = new Map<number, Entry>();
+  // je dichtem Eintrag: Teil zählt als Feinstein (1) oder nicht (0) – siehe fineRawFor; nur bei Teilsteinen je 1 möglich
+  const denseFineArr: number[] = [];
+  const denseFineMap = new Map<number, number>();
   const kindSlots = new Map<number, number>(); // Art-Code → Slot (0 ganz, 1 ╲, 2 ╱, 3+ Teilsteine je Länge)
   const kindSlot = (code: number): number => {
     let v = kindSlots.get(code);
     if (v === undefined) {
       v = kindSlots.size;
       kindSlots.set(code, v);
-      if (useArray) for (let i = 0; i < perKind; i++) denseArr.push(undefined);
+      if (useArray)
+        for (let i = 0; i < perKind; i++) {
+          denseArr.push(undefined);
+          denseFineArr.push(0);
+        }
     }
     return v;
   };
@@ -711,10 +800,14 @@ function statsPass(
     if (!e) entryOfCi.set(ci, (e = makeEntry(ci)));
     return e;
   };
+  /** Teil zählt beim letzten resolve als Feinstein (fineRawFor) – nur Teilsteine einer Farbe mit Feinstein-Material */
+  let resolvedFine = 0;
   /** Cache-Fehlschlag: Schnittinfo genau wie pieceCutInfo (gleicher Textschlüssel im CutCache) */
   const resolve = (row: number, col: number, i: number, color: number): Entry => {
     const p = cellPieces(layout, data, row, col)[i];
-    return entryFor(pieceCutInfo(cache, layout, data, row, col, i, p.poly, rawFn(color)));
+    const rs = rawFn(color);
+    resolvedFine = rs.fine && fineRawFor(data.kind[row * cols + col], p.poly, rs) ? 1 : 0;
+    return entryFor(pieceCutInfo(cache, layout, data, row, col, i, p.poly, rs));
   };
   /** Teil unter der Mindestbreite? (dieselbe Prüfung wie Berechnung und Steindetail, je Geometrieklasse einmal) */
   const thinFlag = (e: Entry, row: number, col: number, i: number): boolean => {
@@ -732,6 +825,10 @@ function statsPass(
   const cPlaced = new Int32Array(nB * nC);
   const cArea = new Float64Array(nB * nC);
   const cRawExact = new Float64Array(nB * nC);
+  // Feinsteine je (Bucket, Farbe) – ganze Steine des Feinstein-Materials (Ausbeute 1); in cPieces/cArea/… mitgezählt
+  const fPieces = new Int32Array(nB * nC);
+  const fPlaced = new Int32Array(nB * nC);
+  const fArea = new Float64Array(nB * nC);
   // Teile mit Ausbeute > 1 je (Rohsteingruppe · nC + Farbe): Gesamt in einem wachsenden Array, Abschnitte in je
   // einer Map mit Lauflängen-Puffer (gleiche Farbe und Form folgen in einer Zeile meist aufeinander)
   let sharedTot = new Int32Array(Math.max(16, nC * 4));
@@ -777,9 +874,9 @@ function statsPass(
 
   /**
    * Ein Teil in Bucket b zählen. c: gültiger Farbindex oder −1. thin: 0 –, 1 automatisches Teil unter der
-   * Mindestbreite, 2 Freiformteil unter der Mindestbreite.
+   * Mindestbreite, 2 Freiformteil unter der Mindestbreite. fine: 1 = ganzer Feinstein des Feinstein-Materials.
    */
-  const addPiece = (b: number, e: Entry, c: number, placed: number, thin: number): void => {
+  const addPiece = (b: number, e: Entry, c: number, placed: number, thin: number, fine = 0): void => {
     const o = b * NS;
     if (e.invalid) {
       // kein Stein (keine Fläche): nicht zählen, nur melden
@@ -812,6 +909,13 @@ function statsPass(
     if (placed) cPlaced[k]++;
     if (e.needsCut) cCut[k]++;
     else cUncut[k]++;
+    if (fine) {
+      // ganzer Feinstein (analyzeCut: exaktes Rohsteinmaß, Ausbeute 1): eigener Bedarf beim Feinstein-Material
+      fPieces[k]++;
+      fArea[k] += e.area;
+      if (placed) fPlaced[k]++;
+      return;
+    }
     if (e.y > 1) {
       addShared(b, e.group * nC + c);
       cRawExact[k] += 1 / e.y;
@@ -840,15 +944,23 @@ function statsPass(
   const C2 = data.c2;
   const colorOk = (c: number) => (okColor[c] === 1 ? c : -1);
 
+  /** Feinstein-Kennzeichen des zuletzt mit denseEntry geholten Eintrags */
+  let denseFine = 0;
   /** Dichter Eintrag (ganze Steine, Dreiecke, Teilsteine) */
   const denseEntry = (slot: number, cc: number, rc: number, i: number, cv: number, row: number, col: number): Entry => {
     const key = slot * perKind + ((cc * nRowCls + rc) * PMAX + i) * nRaw + rawOf[cv + 1];
     let e = useArray ? denseArr[key] : denseMap.get(key);
     if (e === undefined) {
       e = resolve(row, col, i, cv);
-      if (useArray) denseArr[key] = e;
-      else denseMap.set(key, e);
-    }
+      if (useArray) {
+        denseArr[key] = e;
+        denseFineArr[key] = resolvedFine;
+      } else {
+        denseMap.set(key, e);
+        if (resolvedFine) denseFineMap.set(key, 1);
+      }
+      denseFine = resolvedFine;
+    } else denseFine = useArray ? denseFineArr[key] : (denseFineMap.get(key) ?? 0);
     return e;
   };
 
@@ -862,17 +974,19 @@ function statsPass(
     let sum = 0;
     for (let i = 0; i < ps.length; i++) {
       const p = ps[i];
-      const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, rawFn(p.color));
+      const rs = rawFn(p.color);
+      const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, rs);
       const e = cached ? entryFor(ci) : makeEntry(ci);
       const cv = okColor[p.color] === 1 ? p.color : -1;
+      const fine = cv >= 0 && rs.fine && fineRawFor(kind, p.poly, rs) ? 1 : 0;
       let thin = 0;
       if (thinOn && !e.invalid) {
         if (isFree) thin = pieceWidthCheck(p.poly, minPiece as number).ok ? 0 : 2;
         else if (isCutKind) thin = thinFlag(e, row, col, i) ? 1 : 0;
       }
       const bit = (prog >> i) & 1;
-      addPiece(0, e, cv, bit, thin);
-      if (b2) addPiece(b2, e, cv, bit, thin);
+      addPiece(0, e, cv, bit, thin, fine);
+      if (b2) addPiece(b2, e, cv, bit, thin, fine);
       if (!e.invalid) sum += e.area;
     }
     if (ps.length > 1 || isFree) flagOverlap(b2, row, col, sum);
@@ -950,10 +1064,11 @@ function statsPass(
           for (let i = 0; i < n; i++) {
             const cv = colorOk(sub ? sub[i] : C1[idx]);
             const e = denseEntry(slot, cc, rc, i, cv, row, col);
+            const fine = cv >= 0 ? denseFine : 0;
             const t = thinOn && !e.invalid && thinFlag(e, row, col, i) ? 1 : 0;
             const bit = (prog >> i) & 1;
-            addPiece(0, e, cv, bit, t);
-            if (b2) addPiece(b2, e, cv, bit, t);
+            addPiece(0, e, cv, bit, t, fine);
+            if (b2) addPiece(b2, e, cv, bit, t, fine);
             if (!e.invalid) sum += e.area;
           }
           if (n > 1) flagOverlap(b2, row, col, sum);
@@ -993,6 +1108,9 @@ function statsPass(
       placed: cPlaced.subarray(b * nC, (b + 1) * nC),
       area: cArea.subarray(b * nC, (b + 1) * nC),
       rawExact: cRawExact.subarray(b * nC, (b + 1) * nC),
+      finePieces: fPieces.subarray(b * nC, (b + 1) * nC),
+      finePlaced: fPlaced.subarray(b * nC, (b + 1) * nC),
+      fineArea: fArea.subarray(b * nC, (b + 1) * nC),
       shared: sharedOf(b),
       groupYield,
       sizeKeys,
@@ -1019,6 +1137,10 @@ interface BucketView {
   placed: Int32Array;
   area: Float64Array;
   rawExact: Float64Array;
+  /** davon ganze Feinsteine je Farbe (in pieces/area/placed enthalten) */
+  finePieces: Int32Array;
+  finePlaced: Int32Array;
+  fineArea: Float64Array;
   /** (Rohsteingruppe · Farbanzahl + Farbe) → Anzahl Teile mit Ausbeute > 1 */
   shared: Map<number, number> | undefined;
   groupYield: number[];
@@ -1096,10 +1218,33 @@ function finalizeStats(
     rawArea += cs.raw * cs.rawW * cs.rawH;
     colorStoneArea += cs.area;
     if (cs.materialMissing) missingMaterials.push(cs.color);
+    const fp = v.finePieces[cs.color];
+    const fr = fp > 0 ? rawFn(cs.color).fine : undefined;
     const mat = cs.material;
-    if (mat && isPositive(mat.piecesPerPack) && cs.pieces > 0) {
+    // Packungen/Kosten nur dieser Farbe beim Grundstein-Material (ohne Feinsteine wie bisher)
+    if (mat && isPositive(mat.piecesPerPack) && cs.pieces - (fr ? fp : 0) > 0) {
       cs.packs = packsFor(cs.rawWithReserve, mat.piecesPerPack);
       if (isPositive(mat.price)) cs.cost = cs.packs * mat.price;
+    }
+    if (fr && fr.material) {
+      const f: FineColorStat = {
+        material: fr.material,
+        rawW: fr.w,
+        rawH: fr.h,
+        pieces: fp,
+        area: v.fineArea[cs.color],
+        placed: v.finePlaced[cs.color],
+        raw: fp,
+        rawWithReserve: withReserve(fp, reservePct),
+      };
+      if (isPositive(fr.material.piecesPerPack)) {
+        f.packs = packsFor(f.rawWithReserve, fr.material.piecesPerPack);
+        if (isPositive(fr.material.price)) f.cost = f.packs * fr.material.price;
+      }
+      cs.fine = f;
+      rawTotal += f.raw;
+      rawRes += f.rawWithReserve;
+      rawArea += f.raw * f.rawW * f.rawH;
     }
   }
   const mt = materialTotals(perColor, layout);

@@ -77,7 +77,7 @@ const TAP_PX = 6;
  * - Ein Bereich wird durch Antippen/Anklicken (oder „Anpassen“ in der Liste) ausgewählt und lässt sich dann
  *   verschieben und an den Ecken in der Größe ändern (Griffe mit 44 px Trefferfläche, auch per Tastatur).
  */
-export function RegionEditor({ api }: { api: ProjectApi }) {
+export function RegionEditor({ api, typeOptions }: { api: ProjectApi; /** zusätzliche Bereichstypen nach Gesicht/Detail (z. B. Feinbereich, w6-fine-tiles) */ typeOptions?: { value: Region['type']; label: string }[] }) {
   const { t, n } = useI18n();
   const { bitmap, effectiveCrop, layout } = api;
   const rec = api.rec!;
@@ -531,7 +531,7 @@ export function RegionEditor({ api }: { api: ProjectApi }) {
         </div>
       )}
       <div className="btn-row wrap w3fg-tools">
-        <Segmented value={mode} options={[{ value: 'face', label: t('shapes.region.face') }, { value: 'detail', label: t('shapes.region.detail') }]} onChange={setMode} testId="region-type" />
+        <Segmented value={mode} options={[{ value: 'face', label: t('shapes.region.face') }, { value: 'detail', label: t('shapes.region.detail') }, ...(typeOptions ?? [])]} onChange={setMode} testId="region-type" />
         <Segmented
           value={shape}
           options={[

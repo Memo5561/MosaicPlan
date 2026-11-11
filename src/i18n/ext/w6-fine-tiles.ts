@@ -1,0 +1,183 @@
+/**
+ * w6-fine-tiles: Feinsteine in echten, kaufbaren Größen (Feinstein-Größe, Feinbereiche, Feinstein-Material je Farbe).
+ * Neue Schlüssel w6ft.* und shapes.region.fine (neuer Bereichstyp) – keine Überschreibungen.
+ */
+export const de: Record<string, string> = {
+  'shapes.region.fine': 'Feinbereich',
+
+  // ---- Schritt 6: Feinstein-Größe
+  'w6ft.size.label': 'Feinstein-Größe',
+  'w6ft.size.hint':
+    'Teilsteine eines ganzen Rastersteins: (Steinmaß + Fuge) / k − Fuge. Als ganzer, ungeschnittener Feinstein zählt ein Teilstein nur, wenn seiner Farbe in Schritt 5 ein Material in genau dieser Größe zugeordnet ist – sonst wird er aus dem Grundstein geschnitten.',
+  'w6ft.size.dims': '{w} × {h} mm',
+  'w6ft.size.split': '{k} × {k} je Rasterstein',
+  'w6ft.size.exactMats': 'exakte Größe · {n} Materialien in dieser Größe',
+  'w6ft.size.exactMats.one': 'exakte Größe · 1 Material in dieser Größe',
+  'w6ft.size.exactNoMat': 'exakte Größe · kein Material in dieser Größe – Teilsteine werden aus dem Grundstein geschnitten',
+  'w6ft.size.exact': 'exakte Größe',
+  'w6ft.size.notExact': 'kein ganzes Millimetermaß – wird aus dem Grundstein geschnitten',
+  'w6ft.size.tooSmall': 'schmaler als die Mindestbreite – keine Teilung',
+  'w6ft.size.stale': 'Gewählt war {mm} mm. Mit {w} mm Stein und {g} mm Fuge ergibt die Teilung diese Größe nicht mehr – bitte neu wählen.',
+  'w6ft.prefer.label': 'Feinere Steine in Gesichts- und Detailbereichen bevorzugen',
+  'w6ft.prefer.hint':
+    'Dort kostet eine k×k-Teilung höchstens so viel Schnittaufwand wie ein Kantenschnitt – die Berechnung wählt dort öfter Feinsteine. Wie viele es werden, zeigt Schritt 7 nach der Berechnung (exakt gezählt).',
+  'w6ft.prefer.needsSub': 'Nur zusammen mit „Feinere Steine“ möglich.',
+
+  // ---- Schritt 6: Feinbereiche
+  'w6ft.region.title': 'Feinbereiche',
+  'w6ft.region.hint':
+    'Feinbereich (Werkzeug über dem Bild): Jede Zelle, deren Mitte darin liegt, wird als {k} × {k}-Feinsteine ({w} × {h} mm) berechnet – sofern jeder Teilstein die Mindestbreite erfüllt. Gut für Augen, Mund und Haarsträhnen.',
+  'w6ft.region.none': 'Noch kein Feinbereich markiert.',
+  'w6ft.region.count': '{n} Feinbereiche markiert.',
+  'w6ft.region.count.one': '1 Feinbereich markiert.',
+  'w6ft.region.subOff': 'Feinbereiche wirken nur mit „Feinere Steine“ – so wird dort nichts erzwungen.',
+  'w6ft.region.tooSmall': 'Teilsteine {w} × {h} mm sind schmaler als die Mindestbreite – in Feinbereichen bleibt es bei der normalen Steinform.',
+  'w6ft.region.result': 'Letzte Berechnung: {sub} von {cells} Zellen in Feinbereichen als {k} × {k}-Feinsteine.',
+  'w6ft.region.resultTooSmall': '{n} Zellen zu schmal für Feinsteine (z. B. gekürzte Randsteine).',
+  'w6ft.region.resultTooSmall.one': '1 Zelle zu schmal für Feinsteine (z. B. ein gekürzter Randstein).',
+  'w6ft.region.resultOff': '„Feinere Steine“ war aus – es wurde nichts erzwungen.',
+  'w6ft.region.resultStale': 'Stand der letzten Berechnung – seitdem geändert.',
+
+  // ---- Schritt 5: Feinstein-Material je Farbe
+  'w6ft.fine.title': 'Feinsteine {w} × {h} mm ({k} × {k} je Rasterstein)',
+  'w6ft.fine.intro':
+    'Teilsteine in genau dieser Größe können ganze Steine eines eigenen Materials sein: Sie werden nicht geschnitten und stehen als eigene Zeile in der Einkaufsliste. Ganze Steine und alle anderen Teile bleiben beim Grundstein-Material.',
+  'w6ft.fine.auto': 'Feinstein-Material automatisch zuordnen',
+  'w6ft.fine.clear': 'Feinstein-Zuordnung entfernen',
+  'w6ft.fine.autoDone': '{n} Farben ein Feinstein-Material zugeordnet (nächstes Material in {w} × {h} mm nach ΔE00).',
+  'w6ft.fine.autoDone.one': '1 Farbe ein Feinstein-Material zugeordnet (nächstes Material in {w} × {h} mm nach ΔE00).',
+  'w6ft.fine.autoSkipped': '{n} Farben ohne passendes Material (ΔE00 > {max}) – ihre Teilsteine werden aus dem Grundstein geschnitten.',
+  'w6ft.fine.autoSkipped.one': '1 Farbe ohne passendes Material (ΔE00 > {max}) – ihre Teilsteine werden aus dem Grundstein geschnitten.',
+  'w6ft.fine.cleared': 'Feinstein-Zuordnung entfernt – Teilsteine werden aus dem Grundstein geschnitten.',
+  'w6ft.fine.noMats': 'Kein Material in {w} × {h} mm hinterlegt – Teilsteine werden aus dem Grundstein geschnitten. Materialien in dieser Größe unter „Materialien“ anlegen.',
+  'w6ft.fine.notExact': 'Teilsteine {w} × {h} mm sind kein ganzes Millimetermaß – sie werden aus dem Grundstein geschnitten (Feinstein-Größe in Schritt 6).',
+  'w6ft.fine.keep': 'Die Zuordnung bleibt bei gleicher Farbe oder gleichem Grundmaterial über eine Neuberechnung erhalten; neue Farben bitte erneut zuordnen.',
+  'w6ft.fine.label': 'Feinstein',
+  'w6ft.fine.aria': 'Feinstein-Material {code}',
+  'w6ft.fine.none': '– aus Grundstein –',
+  'w6ft.fine.missing': 'Feinstein-Material fehlt',
+  'w6ft.fine.missingTitle': 'Das zugeordnete Feinstein-Material gibt es nicht mehr oder es hat kein gültiges Maß – die Teilsteine dieser Farbe werden aus dem Grundstein geschnitten.',
+  'w6ft.fine.de': 'ΔE00 {de} zur Farbe',
+  'w6ft.fine.need': '+ {n} Fein',
+  'w6ft.fine.needTitle': '{n} Feinsteine {w} × {h} mm inkl. {pct} % Reserve ({p} Steine, ungeschnitten)',
+  'w6ft.fine.stats': 'Aktuelles Raster: {sub} Teilsteine, davon {fine} ganze Feinsteine (ungeschnitten) und {cut} aus dem Grundstein-Material.',
+  'w6ft.fine.statsBusy': 'Statistik wird berechnet …',
+};
+
+export const en: Record<string, string> = {
+  'shapes.region.fine': 'Fine area',
+
+  'w6ft.size.label': 'Fine-tile size',
+  'w6ft.size.hint':
+    'Sub-tiles of a whole grid tile: (tile size + joint) / k − joint. A sub-tile only counts as a whole, uncut fine tile when its colour has a material of exactly this size assigned in step 5 – otherwise it is cut from the base tile.',
+  'w6ft.size.dims': '{w} × {h} mm',
+  'w6ft.size.split': '{k} × {k} per grid tile',
+  'w6ft.size.exactMats': 'exact size · {n} materials of this size',
+  'w6ft.size.exactMats.one': 'exact size · 1 material of this size',
+  'w6ft.size.exactNoMat': 'exact size · no material of this size – sub-tiles are cut from the base tile',
+  'w6ft.size.exact': 'exact size',
+  'w6ft.size.notExact': 'not a whole millimetre size – cut from the base tile',
+  'w6ft.size.tooSmall': 'narrower than the minimum width – no subdivision',
+  'w6ft.size.stale': 'You chose {mm} mm. With {w} mm tiles and a {g} mm joint the subdivision no longer gives this size – please choose again.',
+  'w6ft.prefer.label': 'Prefer finer tiles in face and detail areas',
+  'w6ft.prefer.hint':
+    'There, a k×k subdivision costs at most as much cutting effort as an edge cut – the computation picks fine tiles there more often. Step 7 shows how many after computing (counted exactly).',
+  'w6ft.prefer.needsSub': 'Only available together with "Finer tiles".',
+
+  'w6ft.region.title': 'Fine areas',
+  'w6ft.region.hint':
+    'Fine area (tool above the image): every cell whose centre lies inside is computed as {k} × {k} fine tiles ({w} × {h} mm) – provided every sub-tile meets the minimum width. Good for eyes, mouth and strands of hair.',
+  'w6ft.region.none': 'No fine area marked yet.',
+  'w6ft.region.count': '{n} fine areas marked.',
+  'w6ft.region.count.one': '1 fine area marked.',
+  'w6ft.region.subOff': 'Fine areas only work with "Finer tiles" – nothing is forced there as it is.',
+  'w6ft.region.tooSmall': 'Sub-tiles of {w} × {h} mm are narrower than the minimum width – fine areas keep the normal tile shape.',
+  'w6ft.region.result': 'Last computation: {sub} of {cells} cells in fine areas as {k} × {k} fine tiles.',
+  'w6ft.region.resultTooSmall': '{n} cells too narrow for fine tiles (e.g. trimmed edge tiles).',
+  'w6ft.region.resultTooSmall.one': '1 cell too narrow for fine tiles (e.g. a trimmed edge tile).',
+  'w6ft.region.resultOff': '"Finer tiles" was off – nothing was forced.',
+  'w6ft.region.resultStale': 'State of the last computation – changed since.',
+
+  'w6ft.fine.title': 'Fine tiles {w} × {h} mm ({k} × {k} per grid tile)',
+  'w6ft.fine.intro':
+    'Sub-tiles of exactly this size can be whole tiles of a material of their own: they are not cut and get their own line in the shopping list. Whole tiles and all other pieces keep the base material.',
+  'w6ft.fine.auto': 'Assign fine-tile materials automatically',
+  'w6ft.fine.clear': 'Remove fine-tile assignment',
+  'w6ft.fine.autoDone': 'Fine-tile material assigned to {n} colours (nearest material of {w} × {h} mm by ΔE00).',
+  'w6ft.fine.autoDone.one': 'Fine-tile material assigned to 1 colour (nearest material of {w} × {h} mm by ΔE00).',
+  'w6ft.fine.autoSkipped': '{n} colours without a matching material (ΔE00 > {max}) – their sub-tiles are cut from the base tile.',
+  'w6ft.fine.autoSkipped.one': '1 colour without a matching material (ΔE00 > {max}) – its sub-tiles are cut from the base tile.',
+  'w6ft.fine.cleared': 'Fine-tile assignment removed – sub-tiles are cut from the base tile.',
+  'w6ft.fine.noMats': 'No material of {w} × {h} mm recorded – sub-tiles are cut from the base tile. Add materials of this size under "Materials".',
+  'w6ft.fine.notExact': 'Sub-tiles of {w} × {h} mm are not a whole millimetre size – they are cut from the base tile (fine-tile size in step 6).',
+  'w6ft.fine.keep': 'The assignment is kept across a recomputation for the same colour or the same base material; please assign new colours again.',
+  'w6ft.fine.label': 'Fine tile',
+  'w6ft.fine.aria': 'Fine-tile material {code}',
+  'w6ft.fine.none': '– from base tile –',
+  'w6ft.fine.missing': 'Fine-tile material missing',
+  'w6ft.fine.missingTitle': 'The assigned fine-tile material no longer exists or has no valid size – the sub-tiles of this colour are cut from the base tile.',
+  'w6ft.fine.de': 'ΔE00 {de} to the colour',
+  'w6ft.fine.need': '+ {n} fine',
+  'w6ft.fine.needTitle': '{n} fine tiles {w} × {h} mm incl. {pct} % reserve ({p} tiles, uncut)',
+  'w6ft.fine.stats': 'Current grid: {sub} sub-tiles, of which {fine} whole fine tiles (uncut) and {cut} from the base material.',
+  'w6ft.fine.statsBusy': 'Calculating statistics …',
+};
+
+export const tr: Record<string, string> = {
+  'shapes.region.fine': 'İnce alan',
+
+  'w6ft.size.label': 'İnce taş boyutu',
+  'w6ft.size.hint':
+    'Tam bir ızgara taşının alt taşları: (taş ölçüsü + derz) / k − derz. Bir alt taş ancak rengine 5. adımda tam bu boyutta bir malzeme atanmışsa bütün, kesilmemiş ince taş sayılır – aksi halde ana taştan kesilir.',
+  'w6ft.size.dims': '{w} × {h} mm',
+  'w6ft.size.split': 'ızgara taşı başına {k} × {k}',
+  'w6ft.size.exactMats': 'tam boyut · bu boyutta {n} malzeme',
+  'w6ft.size.exactMats.one': 'tam boyut · bu boyutta 1 malzeme',
+  'w6ft.size.exactNoMat': 'tam boyut · bu boyutta malzeme yok – alt taşlar ana taştan kesilir',
+  'w6ft.size.exact': 'tam boyut',
+  'w6ft.size.notExact': 'tam milimetre ölçüsü değil – ana taştan kesilir',
+  'w6ft.size.tooSmall': 'en küçük genişlikten dar – bölme yok',
+  'w6ft.size.stale': '{mm} mm seçilmişti. {w} mm taş ve {g} mm derz ile bölme artık bu boyutu vermiyor – lütfen yeniden seçin.',
+  'w6ft.prefer.label': 'Yüz ve ayrıntı alanlarında daha ince taşları tercih et',
+  'w6ft.prefer.hint':
+    'Orada k×k bölme en fazla bir kenar kesimi kadar kesim emeğine mal olur – hesaplama orada daha sık ince taş seçer. Kaç tane olduğunu 7. adım hesaplamadan sonra gösterir (tam sayılır).',
+  'w6ft.prefer.needsSub': 'Yalnızca “Daha ince taşlar” ile birlikte.',
+
+  'w6ft.region.title': 'İnce alanlar',
+  'w6ft.region.hint':
+    'İnce alan (resmin üstündeki araç): Merkezi içinde kalan her hücre {k} × {k} ince taş ({w} × {h} mm) olarak hesaplanır – her alt taş en küçük genişliği karşılıyorsa. Gözler, ağız ve saç telleri için uygundur.',
+  'w6ft.region.none': 'Henüz ince alan işaretlenmedi.',
+  'w6ft.region.count': '{n} ince alan işaretlendi.',
+  'w6ft.region.count.one': '1 ince alan işaretlendi.',
+  'w6ft.region.subOff': 'İnce alanlar yalnızca “Daha ince taşlar” açıkken çalışır – şu an orada hiçbir şey zorlanmaz.',
+  'w6ft.region.tooSmall': '{w} × {h} mm alt taşlar en küçük genişlikten dar – ince alanlarda normal taş biçimi kalır.',
+  'w6ft.region.result': 'Son hesaplama: ince alanlardaki {cells} hücreden {sub} tanesi {k} × {k} ince taş.',
+  'w6ft.region.resultTooSmall': '{n} hücre ince taş için çok dar (ör. kısaltılmış kenar taşları).',
+  'w6ft.region.resultTooSmall.one': '1 hücre ince taş için çok dar (ör. kısaltılmış bir kenar taşı).',
+  'w6ft.region.resultOff': '“Daha ince taşlar” kapalıydı – hiçbir şey zorlanmadı.',
+  'w6ft.region.resultStale': 'Son hesaplamanın durumu – o zamandan beri değişti.',
+
+  'w6ft.fine.title': 'İnce taşlar {w} × {h} mm (ızgara taşı başına {k} × {k})',
+  'w6ft.fine.intro':
+    'Tam bu boyuttaki alt taşlar kendi malzemesinin bütün taşları olabilir: Kesilmezler ve alışveriş listesinde ayrı bir satır olarak yer alırlar. Bütün taşlar ve diğer tüm parçalar ana taş malzemesinde kalır.',
+  'w6ft.fine.auto': 'İnce taş malzemesini otomatik ata',
+  'w6ft.fine.clear': 'İnce taş atamasını kaldır',
+  'w6ft.fine.autoDone': '{n} renge ince taş malzemesi atandı ({w} × {h} mm boyutunda ΔE00’ye göre en yakın malzeme).',
+  'w6ft.fine.autoDone.one': '1 renge ince taş malzemesi atandı ({w} × {h} mm boyutunda ΔE00’ye göre en yakın malzeme).',
+  'w6ft.fine.autoSkipped': '{n} renk için uygun malzeme yok (ΔE00 > {max}) – alt taşları ana taştan kesilir.',
+  'w6ft.fine.autoSkipped.one': '1 renk için uygun malzeme yok (ΔE00 > {max}) – alt taşları ana taştan kesilir.',
+  'w6ft.fine.cleared': 'İnce taş ataması kaldırıldı – alt taşlar ana taştan kesilir.',
+  'w6ft.fine.noMats': '{w} × {h} mm boyutunda malzeme kayıtlı değil – alt taşlar ana taştan kesilir. Bu boyuttaki malzemeleri “Malzemeler” bölümünde ekleyin.',
+  'w6ft.fine.notExact': '{w} × {h} mm alt taşlar tam milimetre ölçüsü değil – ana taştan kesilir (ince taş boyutu 6. adımda).',
+  'w6ft.fine.keep': 'Atama, aynı renk veya aynı ana malzeme için yeniden hesaplamada korunur; yeni renkleri lütfen yeniden atayın.',
+  'w6ft.fine.label': 'İnce taş',
+  'w6ft.fine.aria': 'İnce taş malzemesi {code}',
+  'w6ft.fine.none': '– ana taştan –',
+  'w6ft.fine.missing': 'İnce taş malzemesi yok',
+  'w6ft.fine.missingTitle': 'Atanan ince taş malzemesi artık yok veya geçerli bir ölçüsü yok – bu rengin alt taşları ana taştan kesilir.',
+  'w6ft.fine.de': 'renge ΔE00 {de}',
+  'w6ft.fine.need': '+ {n} ince',
+  'w6ft.fine.needTitle': '{n} ince taş {w} × {h} mm, %{pct} yedek dahil ({p} taş, kesilmemiş)',
+  'w6ft.fine.stats': 'Mevcut ızgara: {sub} alt taş; bunların {fine} tanesi bütün ince taş (kesilmemiş), {cut} tanesi ana taş malzemesinden.',
+  'w6ft.fine.statsBusy': 'İstatistik hesaplanıyor …',
+};

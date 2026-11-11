@@ -1,13 +1,31 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { anyLineSplitCuttable, diagA, diagB, maxAllowedMinWidth, pieceCuttable, subdivisionCuttable, worstWidth } from '../../core/pieces';
-import { BG_CUT_FACTOR_FOCUS, BG_CUT_FACTOR_MAX, bgCutFactorOf, withShapeOption } from '../../core/types';
-import { useI18n } from '../../i18n';
-import { Badge, Field, NumberInput, Segmented, Slider, Toggle } from '../components';
+import { BG_CUT_FACTOR_FOCUS, BG_CUT_FACTOR_MAX, bgCutFactorOf, FINE_K_OPTIONS, fineTileSize, materialHasSize, withShapeOption, type Material } from '../../core/types';
+import { tCount, useI18n } from '../../i18n';
+import { listMaterials } from '../../storage/db';
+import { Badge, Field, NumberInput, Slider, Toggle } from '../components';
 import { widthFailText } from './StoneDialog';
 import { RegionEditor } from './RegionEditor';
 import type { ProjectApi } from './useProject';
 import '../css/w1-cut-correctness.css';
 import '../css/w4-cut-placement-accents.css';
+import '../css/w6-fine-tiles.css';
+
+/** Materialdatenbank (nur lesend, für „n Materialien in dieser Größe“); null solange nicht geladen. */
+function useMaterialList(): Material[] | null {
+  const [mats, setMats] = useState<Material[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    listMaterials().then(
+      (m) => alive && setMats(m),
+      () => alive && setMats(null),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return mats;
+}
 
 export function StepShapes({ api }: { api: ProjectApi }) {
   const { t, n } = useI18n();
@@ -31,6 +49,12 @@ export function StepShapes({ api }: { api: ProjectApi }) {
   const diagOk = diagPieces.every((p) => pieceCuttable(p, sh.minPieceMm));
   const diagMax = diagOk ? 0 : maxAllowedMinWidth(diagPieces);
   const lineOk = useMemo(() => anyLineSplitCuttable(tile, s.joint, sh.minPieceMm), [s.tileW, s.tileH, s.joint, sh.minPieceMm]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ---- Feinsteine (w6-fine-tiles)
+  const mats = useMaterialList();
+  const fineNow = fineTileSize(s.tileW, s.tileH, s.joint, k);
+  const fineStale = sh.fineTileMm !== undefined && fineNow.mm !== sh.fineTileMm;
+  const fineRegions = regions.filter((r) => r.type === 'fine');
+  const fineDiag = api.computed ? api.rec!.diagnostics?.fineRegions : undefined;
   return (
     <div className="two-col">
       <div>
@@ -60,15 +84,95 @@ export function StepShapes({ api }: { api: ProjectApi }) {
         />
         <Toggle checked={sh.subdivide} onChange={(v) => set({ subdivide: v })} label={t('shapes.subdivide')} hint={t('shapes.subdivideHint')} />
         {sh.subdivide && (
-          <Field label={t('shapes.subK')} hint={t('shapes.subSize', { w: n(subSize, 2), h: n(subSizeH, 2) })}>
-            <Segmented value={sh.subdivK} options={[{ value: 2, label: '2 × 2' }, { value: 3, label: '3 × 3' }]} onChange={(v) => set({ subdivK: v })} />
-          </Field>
+          <div className="field w6ft-field">
+            <div className="field-label" id="w6ft-size-label">
+              {t('w6ft.size.label')}
+            </div>
+            {/* Feinstein-Größe statt k: je Teilung das exakte Teilsteinmaß und ob es als Feinstein kaufbar ist */}
+            <div className="w6ft-sizes" role="radiogroup" aria-labelledby="w6ft-size-label" data-testid="fine-size">
+              {FINE_K_OPTIONS.map((kk) => {
+                const fs = fineTileSize(s.tileW, s.tileH, s.joint, kk);
+                const ok = subdivisionCuttable(tile, kk, s.joint, sh.minPieceMm);
+                const nMat = mats ? mats.filter((m) => materialHasSize(m, fs.w, fs.h)).length : null;
+                const status = !ok
+                  ? t('w6ft.size.tooSmall')
+                  : !fs.exact
+                    ? t('w6ft.size.notExact')
+                    : nMat === null
+                      ? t('w6ft.size.exact')
+                      : nMat > 0
+                        ? tCount(t, 'w6ft.size.exactMats', nMat, { n: n(nMat) })
+                        : t('w6ft.size.exactNoMat');
+                const kind = !ok ? 'bad' : fs.exact && (nMat ?? 0) > 0 ? 'good' : 'cut';
+                const on = sh.subdivK === kk;
+                return (
+                  <button
+                    key={kk}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    className={`w6ft-size w6ft-${kind} ${on ? 'on' : ''}`}
+                    onClick={() => set({ subdivK: kk, fineTileMm: fs.exact ? fs.mm : undefined })}
+                    data-testid={`fine-size-k${kk}`}
+                    data-exact={fs.exact ? '1' : '0'}
+                    data-materials={nMat ?? ''}
+                  >
+                    <span className="w6ft-size-dims">{t('w6ft.size.dims', { w: n(Math.max(0, fs.w), 2), h: n(Math.max(0, fs.h), 2) })}</span>
+                    <span className="w6ft-size-split">{t('w6ft.size.split', { k: kk })}</span>
+                    <span className="w6ft-size-status">{status}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="field-hint">{t('w6ft.size.hint')}</div>
+            {fineStale && (
+              <p className="warn small" data-testid="fine-size-stale">
+                {t('w6ft.size.stale', { mm: n(sh.fineTileMm ?? 0, 2), w: n(s.tileW, 1), g: n(s.joint, 1) })}
+              </p>
+            )}
+          </div>
         )}
         {sh.subdivide && !subOk && (
           <div className="shape-note" data-testid="sub-too-small">
             <Badge kind="warn">{t('shapes.subTooSmallW', { w: n(Math.max(0, subSize), 2), h: n(Math.max(0, subSizeH), 2), min: n(sh.minPieceMm, 1) })}</Badge>
           </div>
         )}
+        <Toggle
+          checked={sh.subdivide && sh.preferSubInRegions === true}
+          disabled={!sh.subdivide}
+          onChange={(v) => set({ preferSubInRegions: v })}
+          label={t('w6ft.prefer.label')}
+          hint={sh.subdivide ? t('w6ft.prefer.hint') : t('w6ft.prefer.needsSub')}
+          testId="prefer-sub"
+        />
+        <section className="w6ft-regions" data-testid="fine-regions">
+          <h4>
+            <span className="w6ft-key" aria-hidden="true" /> {t('w6ft.region.title')}
+          </h4>
+          <p className="small w6ft-hint">{t('w6ft.region.hint', { k, w: n(Math.max(0, subSize), 2), h: n(Math.max(0, subSizeH), 2) })}</p>
+          <p className="small muted w6ft-hint" data-testid="fine-regions-count">
+            {fineRegions.length ? tCount(t, 'w6ft.region.count', fineRegions.length, { n: fineRegions.length }) : t('w6ft.region.none')}
+          </p>
+          {fineRegions.length > 0 && !sh.subdivide && (
+            <p className="warn small w6ft-hint" data-testid="fine-regions-suboff">
+              {t('w6ft.region.subOff')}
+            </p>
+          )}
+          {fineRegions.length > 0 && sh.subdivide && !subOk && (
+            <p className="warn small w6ft-hint" data-testid="fine-regions-toosmall">
+              {t('w6ft.region.tooSmall', { w: n(Math.max(0, subSize), 2), h: n(Math.max(0, subSizeH), 2) })}
+            </p>
+          )}
+          {fineDiag && (
+            <p className="small w6ft-hint w6ft-result" data-testid="fine-regions-result" data-cells={fineDiag.cells} data-sub={fineDiag.sub} data-toosmall={fineDiag.tooSmall}>
+              {fineDiag.subdivideOff
+                ? t('w6ft.region.resultOff')
+                : t('w6ft.region.result', { sub: n(fineDiag.sub), cells: n(fineDiag.cells), k: fineDiag.k })}
+              {fineDiag.tooSmall > 0 && <> {tCount(t, 'w6ft.region.resultTooSmall', fineDiag.tooSmall, { n: n(fineDiag.tooSmall) })}</>}
+              {api.stale && <span className="muted"> {t('w6ft.region.resultStale')}</span>}
+            </p>
+          )}
+        </section>
         <Slider label={t('shapes.detail')} value={Math.round(sh.detailLevel * 100)} min={0} max={100} onChange={(v) => set({ detailLevel: v / 100 })} format={(v) => `${v} %`} />
         <Toggle checked={sh.autoDetail} onChange={(v) => set({ autoDetail: v })} label={t('shapes.autoDetail')} hint={t('shapes.autoDetailHint')} />
         <Toggle checked={sh.skinProtect} onChange={(v) => set({ skinProtect: v })} label={t('shapes.skin')} hint={t('shapes.skinHint')} />
@@ -143,7 +247,7 @@ export function StepShapes({ api }: { api: ProjectApi }) {
         </div>
       </div>
       <div>
-        <RegionEditor api={api} />
+        <RegionEditor api={api} typeOptions={[{ value: 'fine', label: t('shapes.region.fine') }]} />
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import type { Lab } from './color';
 import type { EdgeMode } from './layout';
-import type { Pt } from './geometry';
+import { DIM_TOL, type Pt } from './geometry';
 import type { NameSuffix } from './colorNames';
 
 /** Zellarten im Raster. */
@@ -132,6 +132,13 @@ export interface PaletteColor {
   /** Abweichung der Steine dieser Farbe vom Foto bei der Berechnung (siehe MatchDeltaE) */
   matchDeltaE?: MatchDeltaE;
   /**
+   * Feinstein-Material (w6-fine-tiles): Material in Feinsteingröße für die Teilsteine (k×k) dieser Farbe. Ein Teilstein
+   * wird nur dann als ganzer, ungeschnittener Feinstein dieses Materials gezählt, wenn sein Außenmaß exakt (± DIM_TOL)
+   * dem Materialmaß entspricht (fineRawFor in src/core/stats.ts) – sonst bleibt er „aus dem Grundstein geschnitten“.
+   * Ganze Steine und alle übrigen Teile verwenden weiter `materialId`. Fehlt = keine Feinsteine.
+   */
+  fineMaterialId?: string;
+  /**
    * Nur „Automatisch → eigene Materialien“ beim Verfahren Bildfarbe → nächstes Material ('nearest' oder Schutz der
    * Auswahl gegriffen): Anzahl der Bildfarben (K-Means), die auf dieses Material zusammengelegt wurden. Bei der direkten
    * Auswahl aus dem Bestand nicht gesetzt – dort wird nichts zusammengelegt.
@@ -172,13 +179,26 @@ export interface ShapeOptions {
    * Fehlt/false = aus (Feld nur setzen, wenn true).
    */
   contourContinuity?: boolean;
+  /**
+   * Gewählte Feinsteingröße in mm (w6-fine-tiles): nur gesetzt, wenn die k×k-Teilung (subdivK) exakt eine ganze
+   * Millimetergröße ergibt, fine = (tileW + Fuge) / k − Fuge (fineTileSize). Die Berechnung verwendet weiter nur subdivK;
+   * der Wert hält fest, welche Größe der Benutzer gewählt hat – ändern sich Stein- oder Fugenmaß, zeigt Schritt 6, dass die
+   * Größe nicht mehr passt. Fehlt = keine exakte Größe gewählt.
+   */
+  fineTileMm?: number;
+  /**
+   * Feinere Steine in Gesichts- und Detailbereichen bevorzugen (w6-fine-tiles): Dort kostet eine k×k-Teilung höchstens
+   * so viel Schnittaufwand wie ein Kantenschnitt (1,4·λ statt 2·λ bzw. 3,2·λ). Nur mit „Feinere Steine“. Fehlt/false =
+   * aus (Feld nur setzen, wenn true) – ältere Projekte und ihr Berechnungsschlüssel bleiben unverändert.
+   */
+  preferSubInRegions?: boolean;
 }
 
 /**
  * Formoptionen, die nur gesetzt werden, wenn sie vom Standard abweichen (fehlt = Standard). „Änderungen verwerfen“
  * entfernt sie, wenn der Berechnungsschlüssel sie nicht enthält.
  */
-export const OPTIONAL_SHAPE_FIELDS = ['bgCutFactor', 'contourContinuity'] as const;
+export const OPTIONAL_SHAPE_FIELDS = ['bgCutFactor', 'contourContinuity', 'fineTileMm', 'preferSubInRegions'] as const;
 
 /**
  * Formoptionen in fester Reihenfolge (für den Berechnungsschlüssel): alle übrigen Felder in ihrer bisherigen
@@ -204,7 +224,36 @@ export function withShapeOption(sh: ShapeOptions, patch: Partial<ShapeOptions>):
   const next: ShapeOptions = { ...sh, ...patch };
   if (!(typeof next.bgCutFactor === 'number' && Number.isFinite(next.bgCutFactor) && next.bgCutFactor > 1)) delete next.bgCutFactor;
   if (next.contourContinuity !== true) delete next.contourContinuity;
+  if (!(typeof next.fineTileMm === 'number' && Number.isFinite(next.fineTileMm) && next.fineTileMm > 0)) delete next.fineTileMm;
+  if (next.preferSubInRegions !== true) delete next.preferSubInRegions;
   return next;
+}
+
+/** Mögliche k×k-Teilungen für Feinsteine (das Stichprobenraster der Berechnung, S = 6, muss durch k teilbar sein). */
+export const FINE_K_OPTIONS = [2, 3] as const;
+
+/**
+ * Maß eines Teilsteins bei k×k-Teilung eines ganzen Rastersteins: (Steinmaß + Fuge) / k − Fuge – genau das Maß von
+ * subRects (src/core/pieces.ts), w = (tileW − (k−1)·Fuge) / k. `exact`: beide Maße sind ganze Millimeter (± 1e-6), also
+ * eine Größe, die man als Feinstein kaufen kann; dann ist `mm` die Breite (bei quadratischen Steinen das Maß).
+ */
+export function fineTileSize(tileW: number, tileH: number, joint: number, k: number): { w: number; h: number; exact: boolean; mm?: number } {
+  const w = (tileW - (k - 1) * joint) / k;
+  const h = (tileH - (k - 1) * joint) / k;
+  const whole = (v: number) => v > 0 && Math.abs(v - Math.round(v)) < 1e-6;
+  const exact = whole(w) && whole(h);
+  return exact ? { w, h, exact, mm: Math.round(w) } : { w, h, exact };
+}
+
+/**
+ * Hat das Material genau das Maß w × h (± DIM_TOL, auch um 90° gedreht)? Dieselbe Regel wie fineRawFor in der
+ * Statistik: Nur solche Materialien taugen als Feinstein-Material für Teilsteine dieses Maßes.
+ */
+export function materialHasSize(m: Pick<Material, 'widthMm' | 'lengthMm'>, w: number, h: number): boolean {
+  const a = m.widthMm;
+  const b = m.lengthMm;
+  if (!(Number.isFinite(a) && a > 0 && Number.isFinite(b) && b > 0)) return false;
+  return (Math.abs(a - w) < DIM_TOL && Math.abs(b - h) < DIM_TOL) || (Math.abs(a - h) < DIM_TOL && Math.abs(b - w) < DIM_TOL);
 }
 
 /** Größter Wert für ShapeOptions.bgCutFactor („wenige Schnitte“) */
@@ -221,7 +270,12 @@ export function bgCutFactorOf(shapes: Pick<ShapeOptions, 'bgCutFactor'>): number
 
 export interface Region {
   id: string;
-  type: 'detail' | 'face';
+  /**
+   * face: Gesicht (mehr Farbgewicht, feinere Schnitte) · detail: Detailbereich (feinere Schnitte) · fine: Feinbereich
+   * (w6-fine-tiles) – jede Zelle, deren Mitte darin liegt, wird als k×k-Feinsteine berechnet, sofern alle Teilsteine die
+   * Mindestbreite erfüllen und „Feinere Steine“ eingeschaltet ist.
+   */
+  type: 'detail' | 'face' | 'fine';
   shape: 'rect' | 'ellipse';
   /** normiert (0..1) bezogen auf das zugeschnittene Bild */
   x: number;

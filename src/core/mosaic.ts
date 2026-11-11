@@ -195,6 +195,13 @@ export interface ComputeDiagnostics {
   /** Nur mit Bereichen und Faktor > 1: verwendeter Faktor für Schnitte außerhalb der Bereiche (ShapeOptions.bgCutFactor) */
   bgCutFactor?: number;
   /**
+   * Nur mit Feinbereichen (Region.type 'fine', w6-fine-tiles), exakt gezählt: Zellen, deren Mitte in einem Feinbereich
+   * liegt (`cells`), davon als k×k-Feinsteine berechnet (`sub`), und davon nicht möglich, weil ein Teilstein die
+   * Mindestbreite nicht erfüllt (`tooSmall`, z. B. gekürzte Randsteine). `subdivideOff`: „Feinere Steine“ war aus –
+   * dann wurde nichts erzwungen. `k`: verwendete Teilung.
+   */
+  fineRegions?: { cells: number; sub: number; tooSmall: number; k: number; subdivideOff?: boolean };
+  /**
    * Kantenschnitte benachbarter Steine, die beide zur gemeinsamen Fuge zeigen (`facing`), und davon die, deren Linien sich
    * auf der Fugenmitte bis auf CONTOUR_ALIGN_MM treffen (`aligned`) – exakt aus der Geometrie (contourAlignment).
    */
@@ -325,10 +332,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   const dmap = shapes.autoDetail ? detailMap(img) : null;
   const faceMask = params.regions.some((r) => r.type === 'face') ? regionMask(W, H, params.regions, ['face']) : null;
   const detMask = params.regions.some((r) => r.type === 'detail') ? regionMask(W, H, params.regions, ['detail']) : null;
+  // Feinbereiche (w6-fine-tiles): dort werden k×k-Feinsteine erzwungen. Ohne Feinbereich bitgleich zu vorher.
+  const fineMask = params.regions.some((r) => r.type === 'fine') ? regionMask(W, H, params.regions, ['fine']) : null;
   // Schnitte außerhalb markierter Bereiche: nur wenn es überhaupt einen Bereich gibt (sonst bitgleich zu Faktor 1)
-  const anyRegion = !!(faceMask || detMask);
+  const anyRegion = !!(faceMask || detMask || fineMask);
   const bgFactor = anyRegion ? bgCutFactorOf(shapes) : 1;
-  /** je Zelle: 0 = außerhalb, 1 = Detailbereich, 2 = Gesichtsbereich (nur mit Bereichen) */
+  /** je Zelle: 0 = außerhalb, 1 = Detailbereich, 2 = Gesichtsbereich, 3 = nur Feinbereich (nur mit Bereichen) */
   const regionOf = anyRegion ? new Uint8Array(N) : null;
   // Konturen durchgehend schneiden (nur sinnvoll, wenn Kantenschnitte erlaubt sind)
   const continuity = !!shapes.contourContinuity && shapes.line;
@@ -362,6 +371,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   let splitCells = 0;
   let subCells = 0;
   let recommendCells = 0;
+  // Feinbereiche: Zellen darin und davon nicht als Feinsteine möglich (Mindestbreite) – exakt gezählt
+  let fineCells = 0;
+  let fineTooSmall = 0;
+  const fineK = shapes.subdivK;
+  // „Feinere Steine in Bereichen bevorzugen“: k×k kostet in Gesichts-/Detailbereichen höchstens so viel wie ein Kantenschnitt
+  const preferSub = shapes.preferSubInRegions === true && shapes.subdivide;
 
   const sampleCell = (row: number, col: number) => {
     const x0 = layout.colX[col];
@@ -449,17 +464,18 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
           const pix = cyp * W + cxp;
           const inFace = faceMask ? faceMask[pix] > 0 : false;
           const inDetail = detMask ? detMask[pix] > 0 : false;
+          const inFine = fineMask ? fineMask[pix] > 0 : false;
           const skin = shapes.skinProtect && isSkinLab(mean[0], mean[1], mean[2]);
           const det = dmap ? dmap[pix] : 0;
           let lambda = baseLambda;
           if (inFace) lambda *= 0.4;
-          else if (inDetail) lambda *= 0.5;
+          else if (inDetail || inFine) lambda *= 0.5;
           const detMul = dmap ? 1.25 - 0.5 * det : 1;
           if (dmap) lambda *= detMul;
           // Außerhalb aller markierten Bereiche (nur mit Faktor > 1; Faktor 1 = unverändert, keine Multiplikation):
           // Schnitte um den Faktor teurer, und Kantendichte (Textur, Spiegelungen) macht sie dort nicht mehr billiger.
-          const outside = anyRegion && !inFace && !inDetail;
-          if (regionOf) regionOf[idx] = inFace ? 2 : inDetail ? 1 : 0;
+          const outside = anyRegion && !inFace && !inDetail && !inFine;
+          if (regionOf) regionOf[idx] = inFace ? 2 : inDetail ? 1 : inFine ? 3 : 0;
           if (outside && bgFactor > 1) lambda *= detMul < 1 ? bgFactor / detMul : bgFactor;
           weight[idx] = (inFace ? 3 : 1) * (skin ? 1.5 : 1);
 
@@ -593,8 +609,11 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
             // ---- Feinere Steine (k×k)
             // Mit „wenige Schnitte außerhalb markierter Bereiche“ (Faktor > 1) dort keine feineren Steine – höchstens als
             // Empfehlung (Rec.FINER, nicht berechnet)
-            const subAllowed = shapes.subdivide && (inFace || inDetail || !shapes.autoDetail || det > 0.5) && !(outside && bgFactor > 1);
+            const subAllowed = shapes.subdivide && (inFace || inDetail || inFine || !shapes.autoDetail || det > 0.5) && !(outside && bgFactor > 1);
             const k = shapes.subdivide ? shapes.subdivK : recK;
+            // Kosten der k×k-Teilung in Einheiten von λ·Stichproben; mit „Feinere Steine in Bereichen bevorzugen“ in
+            // Gesichts-/Detailbereichen höchstens die eines Kantenschnitts (1,4)
+            const subCost = preferSub && (inFace || inDetail) ? Math.min(1.4, k === 2 ? 2 : 3.2) : k === 2 ? 2 : 3.2;
             if (S % k === 0) {
               const per = S / k;
               const gs = groupOf((q) => {
@@ -604,7 +623,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
               }, k * k);
               let s = 0;
               for (const gg of gs) s += sse(gg);
-              const score = s + lambda * NS * (k === 2 ? 2 : 3.2);
+              const score = s + lambda * NS * subCost;
               // Feinere Steine nur, wenn die Teilsteine die Mindestbreite erfüllen – sonst weder
               // berechnet noch empfohlen (eine Empfehlung bedeutet „möglich, aber hier deaktiviert“).
               if (score < bestScore && subRects(r, k, g).every((p) => pieceCuttable(p, shapes.minPieceMm))) {
@@ -616,6 +635,27 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
                   bestLine = null;
                 }
               }
+            }
+          }
+
+          // ---- Feinbereich: k×k-Feinsteine erzwingen (auch ohne Kante in der Zelle), mit den Mittelwerten der Teilflächen –
+          // aber nur, wenn jeder Teilstein die Mindestbreite erfüllt (sonst bleibt die normale Wahl, gezählt in tooSmall)
+          if (inFine) {
+            fineCells++;
+            if (shapes.subdivide && bestKind !== CellKind.SUB && S % fineK === 0) {
+              const r = cellRect(layout, row, col);
+              if (subRects(r, fineK, g).every((p) => pieceCuttable(p, shapes.minPieceMm))) {
+                const per = S / fineK;
+                const gs = groupOf((q) => {
+                  const i = q % S;
+                  const j = (q / S) | 0;
+                  return ((j / per) | 0) * fineK + ((i / per) | 0);
+                }, fineK * fineK);
+                bestKind = CellKind.SUB;
+                bestColors = gs.map(meanOf);
+                bestLine = null;
+                recBits &= ~Rec.FINER;
+              } else fineTooSmall++;
             }
           }
 
@@ -1170,6 +1210,20 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     }
     regionDiag = { splitCellsInRegions: splitIn, subCellsInRegions: subIn, regionCells: inside, ...(bgFactor > 1 ? { bgCutFactor: bgFactor } : {}) };
   }
+  // Feinbereiche: wie viele Zellen wirklich Feinsteine sind (exakt aus data.kind, dieselbe Zellmitten-Regel)
+  let fineDiag: Pick<ComputeDiagnostics, 'fineRegions'> = {};
+  if (fineMask) {
+    let fineSub = 0;
+    for (let row = 0; row < rows; row++)
+      for (let col = 0; col < cols; col++) {
+        const i = row * cols + col;
+        if (data.kind[i] !== CellKind.SUB) continue;
+        const cxp = Math.min(W - 1, Math.max(0, Math.floor((layout.colX[col] + layout.colW[col] / 2) * sx)));
+        const cyp = Math.min(H - 1, Math.max(0, Math.floor((layout.rowY[row] + layout.rowH[row] / 2) * sy)));
+        if (fineMask[cyp * W + cxp] > 0) fineSub++;
+      }
+    fineDiag = { fineRegions: { cells: fineCells, sub: fineSub, tooSmall: fineTooSmall, k: fineK, ...(shapes.subdivide ? {} : { subdivideOff: true }) } };
+  }
 
   // ---------------- Pflichtfarben: was aus jeder geworden ist (Steine exakt aus der Zuordnung)
   let pinnedResults: PinnedColorResult[] | undefined;
@@ -1283,6 +1337,7 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
       ...(missingColors ? { missingColors, missingThreshold: MISSING_DELTA_E, missingChecked: imageCentres.length } : {}),
       ...(dither > 0 ? { ditherExcessMax: round2(ditherExcessMax), ditherExcessOver5 } : {}),
       ...regionDiag,
+      ...fineDiag,
       ...(shapes.line ? { contourPairs: contourAlignment(layout, data) } : {}),
       ...(continuity ? { contourContinuity: true } : {}),
       ...(missingAccents ? { missingAccents } : {}),

@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type TextareaHTMLAttributes } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type TextareaHTMLAttributes } from 'react';
 import { deltaE2000, hexToLab, isValidHex } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
 import { addPaletteColor, matchDeltaEValid, normalizePaletteNames, resetAutoName, updatePaletteColor } from '../../core/edits';
 import type { ComputeDiagnostics, MissingColor } from '../../core/mosaic';
 import { planColorRemoval, planMaterialMerge, type MaterialMergePlan, type RemovalPlan } from '../../core/paletteOps';
-import { DEFAULT_SETTINGS, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
+import { DEFAULT_SETTINGS, fineTileSize, materialHasSize, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { Badge, Field, Modal, NumberInput, Segmented, Slider, Swatch } from '../components';
 import { computedDeltaE } from './staleReasons';
@@ -15,6 +15,7 @@ import type { Step } from './stepNav';
 import '../css/w1-mosaic-core.css';
 import '../css/w2-colour-honesty.css';
 import '../css/w3-colour-quality.css';
+import '../css/w6-fine-tiles.css';
 
 export const COLOR_COUNTS = [8, 12, 16, 24, 32, 48, 64, 100, 150, 200];
 
@@ -27,6 +28,60 @@ function nearestMaterial(p: PaletteColor, mats: Material[]): { m: Material; d: n
     if (!best || d < best.d) best = { m, d };
   }
   return best;
+}
+
+/** Automatische Feinstein-Zuordnung: nur Materialien bis zu diesem ΔE00 zur Palettenfarbe (sonst sähen die Feinsteine anders aus) */
+export const FINE_AUTO_MAX_DE = 10;
+
+/** Palettenfarbe mit (oder ohne, id leer) Feinstein-Material – ohne Zuordnung fehlt das Feld ganz. */
+export function withFineMaterial(p: PaletteColor, id: string | undefined): PaletteColor {
+  const next: PaletteColor = { ...p };
+  if (id) next.fineMaterialId = id;
+  else delete next.fineMaterialId;
+  return next;
+}
+
+/**
+ * Feinstein-Material automatisch: je Farbe das nach ΔE00 nächste Material in Feinsteingröße (`fineMats`), wenn es höchstens
+ * FINE_AUTO_MAX_DE entfernt ist; sonst keine Zuordnung (Teilsteine aus dem Grundstein). Reine Funktion.
+ */
+export function autoFineMaterials(palette: readonly PaletteColor[], fineMats: Material[]): { palette: PaletteColor[]; assigned: number; skipped: number } {
+  let assigned = 0;
+  let skipped = 0;
+  const out = palette.map((p) => {
+    const nm = nearestMaterial(p, fineMats);
+    if (nm && nm.d <= FINE_AUTO_MAX_DE) {
+      assigned++;
+      return withFineMaterial(p, nm.m.id);
+    }
+    skipped++;
+    return withFineMaterial(p, undefined);
+  });
+  return { palette: out, assigned, skipped };
+}
+
+/**
+ * Feinstein-Zuordnung über eine Neuberechnung tragen: Eine neue Berechnung ersetzt die Palette (ohne fineMaterialId).
+ * Farben mit gleichem HEX oder gleichem Grundmaterial wie vorher erhalten ihr Feinstein-Material zurück – sonst nichts
+ * (neue Farben ordnet der Benutzer in Schritt 5 zu). Reine Funktion; null = nichts zu ändern.
+ */
+export function carryFineMaterials(prev: readonly PaletteColor[], next: readonly PaletteColor[]): PaletteColor[] | null {
+  const byHex = new Map<string, string>();
+  const byMat = new Map<string, string>();
+  for (const p of prev) {
+    if (!p.fineMaterialId) continue;
+    byHex.set(p.hex.toUpperCase(), p.fineMaterialId);
+    if (p.materialId) byMat.set(p.materialId, p.fineMaterialId);
+  }
+  if (!byHex.size || next.some((p) => p.fineMaterialId)) return null;
+  let changed = false;
+  const out = next.map((p) => {
+    const id = (p.materialId ? byMat.get(p.materialId) : undefined) ?? byHex.get(p.hex.toUpperCase());
+    if (!id) return p;
+    changed = true;
+    return withFineMaterial(p, id);
+  });
+  return changed ? out : null;
 }
 
 /**
@@ -48,6 +103,40 @@ export function useLocalizedPaletteNames(api: ProjectApi): void {
     if (next !== cur) api.setPalette(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang, api.loaded, api.paletteLocked, api.computed?.data, api.rec?.meta.id, api.rec?.mosaicRev]);
+  useFineMaterialCarry(api);
+}
+
+/**
+ * Feinstein-Material über eine Neuberechnung tragen (siehe carryFineMaterials): Solange dasselbe Raster angezeigt wird,
+ * gilt die aktuelle Palette als Vorlage (auch bewusstes Entfernen). Kommt ein neues Raster (Berechnung übernommen),
+ * erhalten Farben mit gleichem HEX bzw. gleichem Grundmaterial ihr Feinstein-Material zurück.
+ */
+function useFineMaterialCarry(api: ProjectApi): void {
+  const palette = api.rec?.palette;
+  const data = api.computed?.data ?? null;
+  const st = useRef<{ data: MosaicData | null; projectId: string | undefined; prev: readonly PaletteColor[] }>({ data: null, projectId: undefined, prev: [] });
+  const projectId = api.rec?.meta.id;
+  // gleiches Raster, gleiches Projekt: aktuelle Palette ist die Vorlage
+  if (palette && st.current.data === data && st.current.projectId === projectId) st.current.prev = palette;
+  useEffect(() => {
+    const cur = st.current;
+    if (!api.loaded || api.paletteLocked || !palette) return;
+    if (cur.projectId !== projectId) {
+      // anderes Projekt: nichts übertragen, nur merken
+      st.current = { data, projectId, prev: palette };
+      return;
+    }
+    if (cur.data === data) return;
+    const hadGrid = cur.data !== null;
+    st.current = { data, projectId, prev: palette };
+    if (!hadGrid || !data) return;
+    const next = carryFineMaterials(cur.prev, palette);
+    if (next) {
+      st.current.prev = next;
+      api.setPalette(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, projectId, api.loaded, api.paletteLocked, palette]);
 }
 
 /** „Angefordert N – verwendet M …“ aus den Kennzahlen der letzten Berechnung (null bei älteren Ergebnissen). */
@@ -282,6 +371,39 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
   const deLabel = resultDE === '76' ? 'ΔE76' : resultDE === '2000' ? 'ΔE00' : 'ΔE';
   const rateMatch = resultDE === '2000';
 
+  // ---------- Feinsteine (w6-fine-tiles): Maß der Teilsteine eines ganzen Rastersteins und passende Materialien
+  const shapes = rec.settings.shapes;
+  const geo = api.computed?.layout ?? rec.settings;
+  const fineK = shapes.subdivK;
+  const fineSize = fineTileSize(geo.tileW, geo.tileH, geo.joint, fineK);
+  const fineMats = materials.filter((m) => materialHasSize(m, fineSize.w, fineSize.h));
+  const gridData = api.computed?.data;
+  // Teilsteine im aktuellen Raster (exakt gezählt; die Statistik zählt davon die ganzen Feinsteine)
+  const subPieces = useMemo(() => {
+    if (!gridData) return 0;
+    let c = 0;
+    for (const v of gridData.sub.values()) c += v.length;
+    return c;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridData, api.version]);
+  const showFine = shapes.subdivide || subPieces > 0;
+  const finePieces = statsOk ? stats.perColor.reduce((a, c) => a + (c.fine?.pieces ?? 0), 0) : null;
+  const anyFine = palette.some((p) => !!p.fineMaterialId);
+  const setFine = (i: number, id: string | undefined) => api.setPalette(palette.map((q, j) => (j === i ? withFineMaterial(q, id) : q)));
+  const fineDims = { w: n(Math.max(0, fineSize.w), 2), h: n(Math.max(0, fineSize.h), 2) };
+  const fineAuto = () => {
+    const r = autoFineMaterials(palette, fineMats);
+    api.setPalette(r.palette);
+    setNotice(
+      tCount(t, 'w6ft.fine.autoDone', r.assigned, { n: r.assigned, ...fineDims }) +
+        (r.skipped > 0 ? ` ${tCount(t, 'w6ft.fine.autoSkipped', r.skipped, { n: r.skipped, max: FINE_AUTO_MAX_DE })}` : ''),
+    );
+  };
+  const fineClear = () => {
+    api.setPalette(palette.map((q) => withFineMaterial(q, undefined)));
+    setNotice(t('w6ft.fine.cleared'));
+  };
+
   const snapNow = (): Snapshot => ({ palette, data: api.computed?.data ?? null, version: api.version });
   const unchangedSince = (s: Snapshot) => s.palette === palette && s.data === (api.computed?.data ?? null) && s.version === api.version;
   const removingOk = !!removing && unchangedSince(removing.snap);
@@ -463,6 +585,41 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
         </div>
       )}
       {!editable && <p className="muted">{t('colors.afterCompute')}</p>}
+      {editable && showFine && (
+        <section className="w6ft-fine-box" data-testid="fine-box" data-fine-w={fineSize.w} data-fine-mats={fineMats.length}>
+          <h4>{t('w6ft.fine.title', { ...fineDims, k: fineK })}</h4>
+          <p className="small">{t('w6ft.fine.intro')}</p>
+          {!fineSize.exact && (
+            <p className="small warn" data-testid="fine-not-exact">
+              {t('w6ft.fine.notExact', fineDims)}
+            </p>
+          )}
+          {fineMats.length === 0 ? (
+            <p className="small warn" data-testid="fine-no-materials">
+              {t('w6ft.fine.noMats', fineDims)}
+            </p>
+          ) : (
+            <div className="btn-row wrap">
+              <button className="btn small" onClick={fineAuto} data-testid="fine-auto">
+                {t('w6ft.fine.auto')}
+              </button>
+              {anyFine && (
+                <button className="btn small" onClick={fineClear} data-testid="fine-clear">
+                  {t('w6ft.fine.clear')}
+                </button>
+              )}
+            </div>
+          )}
+          {api.computed && subPieces > 0 && (
+            <p className="small" data-testid="fine-stats" data-sub={subPieces} data-fine={finePieces ?? ''} data-busy={api.statsBusy ? '1' : '0'}>
+              {finePieces === null || api.statsBusy
+                ? t('w6ft.fine.statsBusy')
+                : t('w6ft.fine.stats', { sub: n(subPieces), fine: n(finePieces), cut: n(subPieces - finePieces) })}
+            </p>
+          )}
+          {(fineMats.length > 0 || anyFine) && <p className="small muted">{t('w6ft.fine.keep')}</p>}
+        </section>
+      )}
       {editable && (
         <>
           <div className="table-wrap">
@@ -540,6 +697,15 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
                         {cs ? (
                           <>
                             {n(Math.max(0, cs.rawWithReserve))} <span className="w2ch-unit">{t('colors.rawShort')}</span>
+                            {cs.fine && (
+                              <span
+                                className="w6ft-need"
+                                data-testid="palette-fine-need"
+                                title={t('w6ft.fine.needTitle', { n: n(cs.fine.rawWithReserve), w: n(cs.fine.rawW, 1), h: n(cs.fine.rawH, 1), pct: n(stats?.reservePct ?? 0, 2), p: n(cs.fine.pieces) })}
+                              >
+                                {t('w6ft.fine.need', { n: n(cs.fine.rawWithReserve) })}
+                              </span>
+                            )}
                           </>
                         ) : (
                           '–'
@@ -572,6 +738,9 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
                         )}
                         {/* In den Materialmodi ist die Palettenfarbe die Materialfarbe (ΔE 0) – nur eine echte Abweichung zeigen */}
                         {dm !== null && (!snapMode || dm >= 0.5) && <small className={`w2ch-mat-de ${dm > 5 ? 'warn' : 'muted'}`}>{snapMode ? t('w2ch.materialDE', { de: n(dm, 1) }) : `ΔE ${n(dm, 1)}`}</small>}
+                        {showFine && (fineMats.length > 0 || !!p.fineMaterialId) && (
+                          <FineMaterialCell p={p} code={codeStr(p.code)} idx={i} fineMats={fineMats} matById={matById} onChange={(id) => setFine(i, id)} />
+                        )}
                         {mergesReal && p.mergedFrom !== undefined && p.mergedFrom > 1 && (
                           <small className="w2ch-mat-de muted" data-testid="palette-merged" title={t('w2ch.mergedFromTitle', { n: p.mergedFrom })}>
                             {t('w2ch.mergedFrom', { n: p.mergedFrom })}
@@ -627,6 +796,61 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
         />
       )}
       {merging && mergingOk && <MergeDialogView dialog={merging} oldCount={palette.length} onCancel={() => setMerging(null)} onApply={applyMerge} />}
+    </div>
+  );
+}
+
+/** Zweite Auswahl je Farbe: Feinstein-Material (nur Materialien in Feinsteingröße; ein anders großes zugeordnetes bleibt sichtbar). */
+function FineMaterialCell(props: { p: PaletteColor; code: string; idx: number; fineMats: Material[]; matById: Map<string, Material>; onChange: (id: string | undefined) => void }) {
+  const { t, n } = useI18n();
+  const { p, fineMats } = props;
+  const fm = p.fineMaterialId ? props.matById.get(p.fineMaterialId) : undefined;
+  const missing = !!p.fineMaterialId && !fm;
+  const other = fm && !fineMats.includes(fm) ? fm : null;
+  let de: number | null = null;
+  if (fm && isValidHex(fm.hex)) {
+    const l = hexToLab(fm.hex);
+    de = deltaE2000(p.lab[0], p.lab[1], p.lab[2], l[0], l[1], l[2]);
+  }
+  const sid = `w6ft-fine-${props.idx}`;
+  return (
+    <div className="w6ft-fine-cell">
+      <label htmlFor={sid}>{t('w6ft.fine.label')}</label>
+      <select
+        id={sid}
+        value={p.fineMaterialId ?? ''}
+        onChange={(e) => props.onChange(e.target.value || undefined)}
+        aria-label={t('w6ft.fine.aria', { code: props.code })}
+        className={missing ? 'w2ch-missing' : undefined}
+        data-testid="palette-fine-material"
+      >
+        <option value="">{t('w6ft.fine.none')}</option>
+        {missing && (
+          <option value={p.fineMaterialId} disabled>
+            {t('w6ft.fine.missing')}
+          </option>
+        )}
+        {other && (
+          <option value={other.id}>
+            {other.manufacturer} {other.colorNumber} {other.colorName} ({n(other.widthMm, 1)} × {n(other.lengthMm, 1)} mm)
+          </option>
+        )}
+        {fineMats.map((mm) => (
+          <option key={mm.id} value={mm.id}>
+            {mm.manufacturer} {mm.colorNumber} {mm.colorName}
+          </option>
+        ))}
+      </select>
+      {missing && (
+        <span className="badge badge-warn w2ch-missing-badge" data-testid="palette-fine-missing" title={t('w6ft.fine.missingTitle')}>
+          {t('w6ft.fine.missing')}
+        </span>
+      )}
+      {de !== null && (
+        <small className={`w2ch-mat-de ${de > 5 ? 'warn' : 'muted'}`} data-testid="palette-fine-de">
+          {t('w6ft.fine.de', { de: n(de, 1) })}
+        </small>
+      )}
     </div>
   );
 }

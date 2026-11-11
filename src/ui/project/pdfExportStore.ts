@@ -28,6 +28,7 @@ import {
   type InFlightInfo,
   type KeyStore,
 } from '../../core/pdfExportPlan';
+import type { PdfBreakdown } from '../../core/pdf';
 import { isNative, type SaveResult } from '../../platform';
 import { cancelChannel } from '../../workers/client';
 import { downloadBlob } from '../components';
@@ -45,6 +46,15 @@ export interface PdfFile {
   sig: string;
   /** exportierte Abschnitte (null = alle) */
   ids: string[] | null;
+  /** echte Seitenzahl und Aufteilung je Teil (vom Generator gezählt); fehlt, wenn `produce` nur die Datei lieferte */
+  report?: PdfFileReport;
+}
+
+/** Seiten eines erzeugten PDFs (Paket w6-pdf-finish) */
+export interface PdfFileReport {
+  pages: number;
+  breakdown: PdfBreakdown;
+  planMatches: boolean;
 }
 
 export interface PdfJobState {
@@ -207,7 +217,7 @@ export async function runPdfJob(o: {
   ids: string[] | null;
   inFlight: InFlightInfo;
   /** `cancelled()` nach jedem Schritt außerhalb des Workers prüfen und dann mit CANCELLED abbrechen */
-  produce: (progress: (f: number, label: string) => void, cancelled: () => boolean) => Promise<ArrayBuffer>;
+  produce: (progress: (f: number, label: string) => void, cancelled: () => boolean) => Promise<ArrayBuffer | { pdf: ArrayBuffer; report: PdfFileReport }>;
 }): Promise<boolean> {
   if (running) return false;
   running = o.projectId;
@@ -239,7 +249,7 @@ export async function runPdfJob(o: {
   if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide);
   patch(o.projectId, { busy: { key: o.key, f: 0, label: 'images' }, error: null, cancelled: false });
   try {
-    const buf = await o.produce(
+    const out = await o.produce(
       (f, label) => {
         if (running === o.projectId) patch(o.projectId, { busy: { key: o.key, f, label } });
         if (Date.now() - lastBeat >= PDF_INFLIGHT_BEAT_MS) beat();
@@ -247,11 +257,14 @@ export async function runPdfJob(o: {
       () => cancelRequested,
     );
     if (cancelRequested) throw new Error(CANCELLED);
+    const withReport = 'report' in out && 'pdf' in out;
+    const buf = withReport ? out.pdf : (out as ArrayBuffer);
+    const report = withReport ? out.report : undefined;
     const blob = new Blob([buf], { type: 'application/pdf' });
     const save = await downloadBlob(blob, o.name, { announce: false });
     // Ansicht inzwischen geschlossen: Ergebnis im APK app-weit melden (sonst erführe der Benutzer nichts davon)
     if (!viewers.has(o.projectId)) announceSave(save);
-    const file: PdfFile = { key: o.key, name: o.name, size: blob.size, url: isNative() ? null : URL.createObjectURL(blob), save, sig: o.sig, ids: o.ids };
+    const file: PdfFile = { key: o.key, name: o.name, size: blob.size, url: isNative() ? null : URL.createObjectURL(blob), save, sig: o.sig, ids: o.ids, ...(report ? { report } : {}) };
     const prev = pdfJobState(o.projectId).files;
     prev.filter((f) => f.key === o.key).forEach(revoke);
     patch(o.projectId, { files: [...prev.filter((f) => f.key !== o.key), file] });

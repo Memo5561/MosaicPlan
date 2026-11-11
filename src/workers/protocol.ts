@@ -1,6 +1,6 @@
 import type { ComputeDiagnostics, ComputeParams } from '../core/mosaic';
 import type { LayoutParams, SectionSettings } from '../core/layout';
-import type { PdfImage } from '../core/pdf';
+import type { PdfBreakdown, PdfImage } from '../core/pdf';
 import type { PdfOptions } from '../core/pdfOptions';
 import type { PdfLayoutFacts } from '../core/pdfPlan';
 import type { StoredMosaic } from '../core/serialize';
@@ -110,7 +110,17 @@ export type WorkerResponse =
       /** je Abschnitt (Reihenfolge und id wie sectionsFor(...).sections); leer ohne `sections` in der Anfrage */
       perSection: { id: string; stats: Stats }[];
     }
-  | { type: 'pdf'; id: number; pdf: ArrayBuffer }
+  | {
+      type: 'pdf';
+      id: number;
+      pdf: ArrayBuffer;
+      /** Seiten des erzeugten PDFs (doc.getNumberOfPages()) */
+      pages: number;
+      /** Seiten je Teil des PDFs, beim Erzeugen gezählt (Summe = pages) */
+      breakdown: PdfBreakdown;
+      /** Seitenplan mit den Messwerten dieses PDFs = pages (Generator und Seitenplan stimmen überein) */
+      planMatches: boolean;
+    }
   /** gemessene Teile des Seitenplans; planPdfPages(…, facts) ergibt damit die Seitenzahl des PDFs */
   | { type: 'pdfPlan'; id: number; facts: PdfLayoutFacts }
   | { type: 'csv'; id: number; csv: string };

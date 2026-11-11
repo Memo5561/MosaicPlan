@@ -12,6 +12,7 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import { rowLabel, type SectionGrid } from '../../core/layout';
 import { formatSectionRange, normalizeSelection, openSections, parseSectionRange, toggleLine, toggleSection, type RangeIssue } from '../../core/pdfExportPlan';
 import { useI18n, type TFunc } from '../../i18n';
+import { deviceKey, useCoarsePointer } from './deviceKind';
 
 /** Ab so vielen Abschnitten wird das Raster in einem scrollbaren Feld gezeigt. */
 export const PICKER_SCROLL_FROM = 200;
@@ -39,6 +40,8 @@ export function SectionPicker(props: {
   const { t, n } = useI18n();
   const { grid, selected, onChange, progress, disabled } = props;
   const inputId = useId();
+  /** Finger: „antippen“, Maus: „anklicken“ */
+  const coarse = useCoarsePointer();
   const total = grid.sections.length;
   const selSet = useMemo(() => (selected ? new Set(selected) : null), [selected]);
   const canonical = useMemo(() => (selected ? formatSectionRange(selected, grid) : ''), [selected, grid]);
@@ -205,7 +208,9 @@ export function SectionPicker(props: {
           ])}
         </div>
       </div>
-      <p className="muted small w5pe-pick-hint">{t('w5pe.pick.hint')}</p>
+      <p className="muted small w5pe-pick-hint" data-testid="sec-hint">
+        {t(deviceKey('w5fu.pick.hint', coarse))}
+      </p>
     </div>
   );
 }

@@ -1,0 +1,262 @@
+/* w5-fix-ui: Korrekturen nach der Gegenprüfung von Welle 5 – Material & Einkauf auf dem Handy und im Druck,
+ * Ansichtswahl in Schritt 9, Heller/Dunkler mit anderem Farbton, Rückgängig/Wiederholen im Steindetail-Blatt. */
+
+/* ---------------- Schritt 9: Ansicht wählen (eigene Zeile unter der Fortschrittskarte) */
+.w4lw-viewbar.w5fu-viewbar {
+  display: flex;
+  margin: -4px 0 12px;
+}
+.w5fu-viewbar .segmented button {
+  min-height: 40px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+@media (max-width: 600px) {
+  .w5fu-viewbar .segmented {
+    display: flex;
+    flex-wrap: nowrap;
+    width: 100%;
+  }
+  .w5fu-viewbar .segmented button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 44px;
+  }
+}
+
+/* ---------------- Material & Einkauf: zuklappbare Abschnitte (Handy) */
+details.w5fu-fold > summary.w5fu-fold-sum {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+}
+details.w5fu-fold > summary.w5fu-fold-sum::-webkit-details-marker {
+  display: none;
+}
+details.w5fu-fold > summary.w5fu-fold-sum::before {
+  content: '▸';
+  flex: none;
+  width: 1em;
+  color: var(--ink-soft);
+  transition: transform 0.15s;
+}
+details.w5fu-fold[open] > summary.w5fu-fold-sum::before {
+  transform: rotate(90deg);
+}
+details.w5fu-fold > summary.w5fu-fold-sum .w5ms-h {
+  margin: 0;
+}
+details.w5fu-fold[open] > summary.w5fu-fold-sum {
+  margin-bottom: 8px;
+}
+.w5fu-fold:focus-within > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------------- Material & Einkauf auf dem Handy: kompakt */
+@media (max-width: 600px) {
+  /* Reserve-Knöpfe und Eingabe fingergroß */
+  .w5ms-reserve .btn.chip {
+    min-height: 44px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .w5ms-reserve .numin input {
+    min-height: 44px;
+  }
+
+  /* Bedarf je Farbe: eine Zeile je Farbe (Farbfeld + Nummer, Name, Bedarf inkl. Reserve), darunter klein die
+     übrigen Zahlen – statt einer ~118 px hohen Karte je Farbe */
+  .w5ms table.data.w5ms-cards.w5ms-colors > tbody > tr,
+  .w5ms table.data.w5ms-cards.w5ms-colors > tfoot > tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 10px;
+    row-gap: 0;
+    margin: 0;
+    padding: 4px 4px 4px calc(4px + 3rem + 10px);
+    line-height: 1.3;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: none;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors > tfoot > tr {
+    border-top: 2px solid var(--ink-soft);
+    border-bottom: 0;
+    background: #faf8f4;
+  }
+  /* Zeilenumbruch nach dem Bedarf */
+  .w5ms table.data.w5ms-cards.w5ms-colors > tbody > tr::before,
+  .w5ms table.data.w5ms-cards.w5ms-colors > tfoot > tr::before {
+    content: '';
+    order: 4;
+    flex: 0 0 100%;
+    height: 0;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td,
+  .w5ms table.data.w5ms-cards.w5ms-colors th {
+    grid-column: auto;
+    line-height: 1.3;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors .w5ms-cc-code {
+    order: 1;
+    flex: 0 0 3rem;
+    margin-left: calc(-3rem - 10px);
+    white-space: nowrap;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors .w5ms-cc-name,
+  .w5ms table.data.w5ms-cards.w5ms-colors th.w5ms-cc-sumlabel {
+    order: 2;
+    flex: 1 1 0;
+    min-width: 0;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors tfoot th.w5ms-cc-sumlabel {
+    margin-left: calc(-3rem - 10px);
+    font-size: 0.85rem;
+    color: var(--ink);
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='rawWithReserve'] {
+    order: 3;
+    flex: 0 0 auto;
+    text-align: right !important;
+    white-space: nowrap;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors .w5ms-cc-mat {
+    order: 5;
+    flex: 0 1 auto;
+    margin: 0;
+    font-size: 0.76rem;
+  }
+  /* „kein Material“ steht schon im Hinweis oben und in der Einkaufsliste – nicht in jeder Zeile wiederholen */
+  .w5ms table.data.w5ms-cards.w5ms-colors .w5ms-cc-mat.w5ms-cc-nomat {
+    display: none;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='pieces'] {
+    order: 6;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='cut'] {
+    order: 7;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='raw'] {
+    order: 8;
+  }
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='pieces'],
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='cut'],
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-col='raw'] {
+    flex: 0 0 auto;
+    font-size: 0.76rem;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  /* Beschriftung vor der Zahl in derselben Zeile („Steine 29“) */
+  .w5ms table.data.w5ms-cards.w5ms-colors td[data-label]::before {
+    display: inline;
+    margin: 0 3px 0 0;
+    font-size: 0.7rem;
+  }
+}
+
+/* ---------------- Drucken: keine klebenden Kopf-/Summenzellen (sonst liegt „Summe“ über der letzten Farbe) */
+@media print {
+  .w5ms table.data thead th,
+  .w5ms table.data thead td,
+  .w5ms table.data tbody th,
+  .w5ms table.data tfoot th,
+  .w5ms table.data tfoot td {
+    position: static !important;
+    top: auto !important;
+    bottom: auto !important;
+  }
+  .w5ms details.w5fu-fold > summary.w5fu-fold-sum {
+    display: block !important;
+    min-height: 0;
+    border: 0;
+    margin: 0;
+  }
+  .w5ms details.w5fu-fold > summary.w5fu-fold-sum::before {
+    content: none;
+  }
+}
+
+/* ---------------- Steindetail: Heller/Dunkler mit anderem Farbton */
+.w5ue-shade-btn .w5fu-hue-note {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--warn);
+  line-height: 1.2;
+}
+
+/* ---------------- Steindetail (Blatt/Dialog): Rückgängig/Wiederholen beschriftet und fingergroß */
+.w5ue-history.compact .btn.small.w5ue-hbtn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  min-width: 64px;
+  min-height: 44px;
+  padding: 2px 6px;
+  line-height: 1.15;
+}
+.w5ue-history.compact .w5ue-hbtn .w5ue-btxt {
+  /* sichtbar (vorher nur im Tooltip/aria-label) */
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.w5ue-history.compact .w5fu-hico {
+  white-space: nowrap;
+}
+
+/* Meldung „Rückgängig gemacht: …“ als Hinweis über dem Blatt – die Statuszeile der Seite liegt hinter dem
+   abgedunkelten Hintergrund. Fängt keine Berührungen ab. */
+div.w5ue-hstatus.w5fu-toast {
+  position: fixed;
+  z-index: 10;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(520px, calc(100vw - 24px));
+  min-height: 0;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--ink, #1d2a3a);
+  color: #fff;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s;
+}
+div.w5ue-hstatus.w5fu-toast.on {
+  color: #fff;
+  opacity: 1;
+  visibility: visible;
+}
+div.w5ue-hstatus.w5fu-toast.warn {
+  background: #7a4b00;
+  color: #fff;
+}
+
+/* „verlegt“ teilt sich die Zeile mit den beschrifteten ↶/↷: das Kontrollkästchen bleibt 22 px (nur der Text bricht um) */
+.w5ue-laid-row .w5ue-laid input[type='checkbox'] {
+  flex: none;
+}

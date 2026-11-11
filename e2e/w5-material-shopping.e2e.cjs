@@ -223,7 +223,7 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
     check('Bedarf je Farbe: Σ Steine = Steine gesamt, Σ inkl. Reserve = Rohsteine inkl. Reserve (auch Summenzeile)', sumPieces === pieces && sumRes === rawRes && num(v.colorSumPieces) === pieces && num(v.colorSumRes) === rawRes, `${sumPieces} / ${sumRes}`);
 
     // Hinweise
-    check('Hinweis Fehlbestand nennt Material A mit zu kaufender Menge und Packungen', /Bestand reicht nicht bei 1 Material/.test(v.shortfall) && v.shortItems.length === 1 && v.shortItems[0].includes('A-01') && v.shortItems[0].includes(`${toBuyA.toLocaleString('de-DE')} kaufen`) && /Insgesamt/.test(v.shortfall), v.shortItems.join(' | '));
+    check('Hinweis Fehlbestand nennt Material A mit zu kaufender Menge und Packungen', /Bestand reicht nicht bei 1 Material/.test(v.shortfall) && v.shortItems.length === 1 && v.shortItems[0].includes('A-01') && v.shortItems[0].includes(`${toBuyA.toLocaleString('de-DE')} kaufen`) && /Zu kaufen bei Materialien mit erfasstem Bestand/.test(v.shortfall) && /unvollständig/.test(v.shortfall), v.shortItems.join(' | '));
     check('Hinweis „Material fehlt“ bei Farbe 05', /Material fehlt/.test(v.missing) && /05/.test(v.missing), v.missing.slice(0, 90));
     check('Hinweis: Bestand für 1 Material nicht erfasst (B)', /Für 1 Material ist kein Bestand erfasst/.test(v.stockUnknown), v.stockUnknown.slice(0, 80));
 
@@ -350,6 +350,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         return { left: r.left, right: r.right, label: getComputedStyle(td, '::before').content };
       });
       const wraps = [...document.querySelectorAll('[data-testid="material-calc"] .table-wrap')].map((w) => w.scrollWidth - w.clientWidth);
+      // w5-fix-ui: „Bedarf je Farbe“ ist auf dem Handy anfangs zugeklappt – zum Messen aufklappen
+      const fold = document.querySelector('[data-testid="mc-per-color-sec"]');
+      if (fold && fold.tagName === 'DETAILS') fold.open = true;
       const colorRow = document.querySelector('[data-testid="mc-color-row"]');
       return {
         rowDisplay: getComputedStyle(shopRow).display,
@@ -361,7 +364,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         vw: window.innerWidth,
       };
     });
-    check('390 px: Einkaufsliste und Bedarf je Farbe als Karten (Kopfzeile ausgeblendet)', cards.rowDisplay === 'grid' && cards.headDisplay === 'none' && cards.colorDisplay === 'grid' && cards.colorH < 120, `${cards.rowDisplay}/${cards.headDisplay}/${cards.colorDisplay}, Farbkarte ${cards.colorH} px`);
+    // w5-fix-ui: Bedarf je Farbe als kompakte Zeile je Farbe (flex) statt ~118 px hoher Karte; mit Materialname
+    // (Farbe 01 hat hier Material A) bis zu drei kurze Textzeilen
+    check('390 px: Einkaufsliste als Karten, Bedarf je Farbe als kompakte Zeilen (Kopfzeile ausgeblendet)', cards.rowDisplay === 'grid' && cards.headDisplay === 'none' && cards.colorDisplay === 'flex' && cards.colorH < 95, `${cards.rowDisplay}/${cards.headDisplay}/${cards.colorDisplay}, Farbzeile ${cards.colorH} px`);
     check('390 px: Packungen in jeder Karte sichtbar und beschriftet', cards.packs.length > 0 && cards.packs.every((p) => p.left >= 0 && p.right <= cards.vw && /Packungen/.test(p.label)), JSON.stringify(cards.packs[0]));
     check('390 px: keine Tabelle scrollt seitlich', cards.wraps.every((d) => d <= 1), cards.wraps.join(', '));
     await pp.screenshot({ path: path.join(OUT, 'w5ms-02-phone.png'), fullPage: true });

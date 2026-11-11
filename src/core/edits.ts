@@ -808,6 +808,43 @@ export function shadeStep(palette: readonly PaletteColor[], from: number, dir: '
   return best;
 }
 
+/** ab diesem Helligkeitsunterschied (L*) gilt eine Palettenfarbe als heller/dunkler (▲/▼ in der Farbreihe) */
+export const SHADE_MARK_DL = 1;
+
+/** Vorschlag für die Knöpfe „Heller“/„Dunkler“: gleicher Farbton (shadeStep) oder Ersatz mit anderem Farbton */
+export interface ShadeSuggestion extends ShadeCandidate {
+  /** true = Regel von shadeStep erfüllt (gleicher Farbton); false = ähnlichste hellere/dunklere Farbe, Farbton weicht ab */
+  sameHue: boolean;
+}
+
+/**
+ * Vorschlag für „Heller“/„Dunkler“ – widerspricht nie den ▲/▼-Markierungen der Farbreihe:
+ *  1. die nächste Palettenfarbe gleichen Farbtons (shadeStep);
+ *  2. sonst die ÄHNLICHSTE (kleinstes ΔE) Palettenfarbe, die mindestens SHADE_MIN_DL heller bzw. dunkler ist;
+ *  3. sonst die ähnlichste, die mindestens SHADE_MARK_DL heller bzw. dunkler ist (so weit reicht ▲/▼).
+ * Fälle 2 und 3 sind als `sameHue: false` gekennzeichnet („etwas anderer Farbton“). null nur, wenn keine
+ * Palettenfarbe heller bzw. dunkler ist – dann trägt auch keine Farbe ▲ bzw. ▼. Es wird nie eine Farbe erfunden.
+ * Bei Gleichstand: kleinerer Helligkeitsschritt, dann die niedrigere Position.
+ */
+export function shadeSuggest(palette: readonly PaletteColor[], from: number, dir: 'lighter' | 'darker', formula: DeltaEFormula = '2000'): ShadeSuggestion | null {
+  const strict = shadeStep(palette, from, dir, formula);
+  if (strict) return { ...strict, sameHue: true };
+  const p = palette[from];
+  if (!p) return null;
+  for (const minDl of [SHADE_MIN_DL, SHADE_MARK_DL]) {
+    let best: ShadeCandidate | null = null;
+    for (let i = 0; i < palette.length; i++) {
+      if (i === from) continue;
+      const d = shadeDiff(p.lab, palette[i].lab);
+      if (dir === 'lighter' ? d.dL < minDl : d.dL > -minDl) continue;
+      const c: ShadeCandidate = { index: i, dL: d.dL, dab: d.dab, dH: d.dH, dE: deltaE(formula, p.lab, palette[i].lab) };
+      if (!best || c.dE < best.dE - 1e-9 || (Math.abs(c.dE - best.dE) <= 1e-9 && Math.abs(c.dL) < Math.abs(best.dL) - 1e-9)) best = c;
+    }
+    if (best) return { ...best, sameHue: false };
+  }
+  return null;
+}
+
 /** Benachbarte Zellen (oben, rechts, unten, links). */
 export function neighbors(layout: Layout, row: number, col: number): { dir: 'N' | 'E' | 'S' | 'W'; row: number; col: number }[] {
   const res: { dir: 'N' | 'E' | 'S' | 'W'; row: number; col: number }[] = [];

@@ -17,12 +17,13 @@ import {
   setCellPlaced,
   setFreePieces,
   setPieceColor,
-  shadeStep,
+  SHADE_MARK_DL,
+  shadeSuggest,
   togglePiecePlaced,
   validateFreePieces,
   type CellKindError,
   type KindChange,
-  type ShadeCandidate,
+  type ShadeSuggestion,
 } from '../../core/edits';
 import { makeRawSizeFn } from '../../core/stats';
 import { CellKind, Rec, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
@@ -34,6 +35,7 @@ import type { EditResult } from './useProject';
 import '../css/w1-cut-correctness.css';
 import '../css/w3-freeform-editor.css';
 import '../css/w5-undo-editing.css';
+import '../css/w5-fix-ui.css';
 
 export interface CutInstructionItem {
   text: string;
@@ -87,7 +89,7 @@ export function cutInstruction(info: CutInfo, t: TFunc, n: (v: number, d?: numbe
 /** Anzahl der ähnlichsten Farben in der Farbreihe (weitere über „Alle Farben“) */
 export const NEAR_COLORS = 12;
 /** ab diesem Helligkeitsunterschied (L*) zeigt eine Farbe ▲ (heller) bzw. ▼ (dunkler) */
-export const MARK_DL = 1;
+export const MARK_DL = SHADE_MARK_DL;
 
 /** Breiter Bildschirm: Steindetail neben dem Mosaik (statt als Dialog darüber). Gleiche Grenze wie .viewer-layout. */
 export const PANEL_QUERY = '(min-width: 981px)';
@@ -275,29 +277,42 @@ export function StoneDialog(p: Props) {
     }
   };
 
-  // ---------- Heller / Dunkler: nur vorhandene Palettenfarben gleichen Farbtons (shadeStep)
-  const lighter = shadeStep(palette, piece.color, 'lighter', formula);
-  const darker = shadeStep(palette, piece.color, 'darker', formula);
+  // ---------- Heller / Dunkler: nur vorhandene Palettenfarben – zuerst gleichen Farbtons (shadeStep), sonst die
+  // ähnlichste hellere/dunklere Farbe als „etwas anderer Farbton“ (shadeSuggest; passt immer zu ▲/▼ der Farbreihe)
+  const lighter = shadeSuggest(palette, piece.color, 'lighter', formula);
+  const darker = shadeSuggest(palette, piece.color, 'darker', formula);
   const fromMaterials = p.paletteMode === 'materials' || p.paletteMode === 'auto-snap';
   const shadeSrc = t(fromMaterials ? 'w5ue.shade.srcMaterial' : 'w5ue.shade.srcColor');
-  const shadeHint = !lighter && !darker ? t('w5ue.shade.noneBoth', { src: shadeSrc }) : !lighter ? t('w5ue.shade.noLighter', { src: shadeSrc }) : !darker ? t('w5ue.shade.noDarker', { src: shadeSrc }) : null;
-  const shadeBtn = (dir: 'lighter' | 'darker', c: ShadeCandidate | null) => {
+  const otherL = !!lighter && !lighter.sameHue;
+  const otherD = !!darker && !darker.sameHue;
+  const shadeHints: string[] = [];
+  if (!lighter && !darker) shadeHints.push(t('w5fu.shade.noneBoth', { src: shadeSrc }));
+  else {
+    if (!lighter) shadeHints.push(t('w5fu.shade.noLighter', { src: shadeSrc }));
+    if (!darker) shadeHints.push(t('w5fu.shade.noDarker', { src: shadeSrc }));
+    if (otherL && otherD) shadeHints.push(t('w5fu.shade.otherBoth'));
+    else if (otherL) shadeHints.push(t('w5fu.shade.otherLighter'));
+    else if (otherD) shadeHints.push(t('w5fu.shade.otherDarker'));
+  }
+  const shadeHint = shadeHints.length ? shadeHints.join(' ') : null;
+  const shadeBtn = (dir: 'lighter' | 'darker', c: ShadeSuggestion | null) => {
     const q = c ? palette[c.index] : undefined;
     const lbl = t(dir === 'lighter' ? 'w5ue.shade.lighter' : 'w5ue.shade.darker');
     const title =
       c && q
-        ? t('w5ue.shade.title', { code: codeOf(q), name: paletteDisplayName(q, lang), dl: `${c.dL > 0 ? '+' : '−'}${n(Math.abs(c.dL), 1)}`, de: n(c.dE, 1) })
-        : t(dir === 'lighter' ? 'w5ue.shade.noLighter' : 'w5ue.shade.noDarker', { src: shadeSrc });
+        ? t(c.sameHue ? 'w5ue.shade.title' : 'w5fu.shade.titleOther', { code: codeOf(q), name: paletteDisplayName(q, lang), dl: `${c.dL > 0 ? '+' : '−'}${n(Math.abs(c.dL), 1)}`, de: n(c.dE, 1) })
+        : t(dir === 'lighter' ? 'w5fu.shade.noLighter' : 'w5fu.shade.noDarker', { src: shadeSrc });
     return (
       <button
         type="button"
-        className={`btn w5ue-shade-btn ${dir}`}
+        className={`btn w5ue-shade-btn ${dir} ${c && !c.sameHue ? 'w5fu-other-hue' : ''}`}
         disabled={ro || !c}
         title={title}
         aria-label={`${lbl}: ${title}`}
         onClick={() => c && setColor(c.index)}
         data-testid={`shade-${dir}`}
         data-target={q ? codeOf(q) : ''}
+        data-same-hue={c ? (c.sameHue ? 'yes' : 'no') : ''}
       >
         <span className="w5ue-shade-dir">
           {dir === 'lighter' ? '▲' : '▼'} {lbl}
@@ -308,6 +323,11 @@ export function StoneDialog(p: Props) {
           </span>
         ) : (
           <small className="w5ue-shade-to muted">{t('w5ue.shade.none')}</small>
+        )}
+        {c && !c.sameHue && (
+          <small className="w5fu-hue-note" data-testid={`shade-${dir}-other`}>
+            {t('w5fu.shade.otherHue')}
+          </small>
         )}
       </button>
     );
@@ -365,7 +385,7 @@ export function StoneDialog(p: Props) {
   const colorSection = (
     <section className="w5ue-sec w5ue-color">
       <h4>{t('w5ue.colorTitle')}</h4>
-      <div className="w5ue-shade" title={t('w5ue.shade.rule')}>
+      <div className="w5ue-shade" title={t('w5fu.shade.rule')}>
         {shadeBtn('lighter', lighter)}
         {shadeBtn('darker', darker)}
       </div>
@@ -670,7 +690,7 @@ export function StoneDialog(p: Props) {
       <section className="w5ue-panel" role="dialog" aria-modal="false" aria-labelledby={headId} data-testid="stone-panel">
         <div className="w5ue-panel-head">
           <h3 id={headId}>{title}</h3>
-          {p.history}
+          {/* keine zweiten ↶/↷ im Kopf: Rückgängig/Wiederholen stehen beschriftet über dem Mosaik daneben (und Strg+Z) */}
           {/* gleiche Testkennung wie der Schließen-Knopf der Dialoge: das Steindetail schließt überall gleich */}
           <button type="button" className="icon-btn" onClick={p.onClose} aria-label={t('w5ue.closePanel')} title={`${t('w5ue.closePanel')} (Esc)`} data-testid="modal-close">
             ✕

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { Badge, Swatch, Toggle } from '../components';
+import { deviceKey, useCoarsePointer } from './deviceKind';
 import { FindStone } from './FindStone';
 import { HistoryButtons, HistoryStatus, useHistoryShortcuts } from './HistoryControls';
 import { PANEL_QUERY, StoneDialog, useMediaQuery } from './StoneDialog';
@@ -30,6 +31,8 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const c = api.computed;
   /** Breiter Bildschirm: Steindetail ersetzt die Seitenleiste neben dem Mosaik (kein Dialog darüber) */
   const wide = useMediaQuery(PANEL_QUERY);
+  /** Finger statt Maus: Hinweis sagt „antippen“ statt „anklicken“ */
+  const coarse = useCoarsePointer();
   /** Vergleichsfoto = bearbeitetes Foto der letzten Berechnung (mit dem Raster gespeichert, siehe useProject) */
   const reference = api.reference.canvas;
   useHistoryShortcuts(api);
@@ -256,7 +259,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
             </small>
           )}
         </div>
-        <p className="muted small">{t('preview.hint')}</p>
+        <p className="muted small" data-testid="preview-hint">{t(deviceKey('w5fu.previewHint', coarse))}</p>
         {!wide && stone}
       </div>
       {wide && stone ? (

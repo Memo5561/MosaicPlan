@@ -87,6 +87,20 @@ export interface ShoppingTotals {
   shortPacks: number;
   /** alle Materialien mit Fehlbestand haben eine Packungsgröße */
   shortPacksComplete: boolean;
+  /** Σ zu kaufen über die Materialien mit Fehlbestand (= toBuy, nur Materialien mit erfasstem Bestand) */
+  shortToBuy: number;
+  /** Σ Einkaufskosten über die Materialien mit Fehlbestand, für die sie berechenbar sind */
+  shortCost: number;
+  /** jedes Material mit Fehlbestand hat Einkaufskosten (Packungsgröße und Preis erfasst) */
+  shortCostKnown: boolean;
+  /**
+   * Die Fehlbestand-Summe deckt den ganzen Einkauf ab: Bestand für jede Zeile erfasst (keine Materialien ohne
+   * Bestand, keine Gruppe „ohne Material“) und keine Steine mit ungültiger Farbe. Sonst ist „zu kaufen“ nur
+   * eine Teilsumme und muss als unvollständig gekennzeichnet werden.
+   */
+  shortTotalComplete: boolean;
+  /** Einkaufskosten des Fehlbestands vollständig: shortCostKnown und shortTotalComplete */
+  shortCostComplete: boolean;
 }
 
 const isPos = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -146,6 +160,9 @@ export function shoppingTotals(stats: Stats, rows: readonly ShoppingRow[]): Shop
   let anyBuyCost = false;
   let shortPacks = 0;
   let shortPacksComplete = true;
+  let shortToBuy = 0;
+  let shortCost = 0;
+  let shortCostKnown = true;
   const shortfalls: ShoppingRow[] = [];
   for (const r of rows) {
     pieces += r.pieces;
@@ -164,8 +181,14 @@ export function shoppingTotals(stats: Stats, rows: readonly ShoppingRow[]): Shop
       shortfalls.push(r);
       if (r.packsToBuy !== undefined) shortPacks += r.packsToBuy;
       else shortPacksComplete = false;
+      shortToBuy += r.toBuy ?? 0;
+      if (r.buyCost !== undefined) shortCost += r.buyCost;
+      else shortCostKnown = false;
     }
   }
+  // Materialien mit Bestand ≥ Bedarf kosten nichts (0 zu kaufen) – unvollständig wird die Summe nur durch Zeilen
+  // ohne erfassten Bestand (dort ist offen, was zu kaufen ist) und Steine ohne gültige Farbe
+  const shortTotalComplete = toBuyComplete && stats.invalidColorPieces === 0;
   return {
     pieces,
     raw,
@@ -182,6 +205,11 @@ export function shoppingTotals(stats: Stats, rows: readonly ShoppingRow[]): Shop
     shortfalls,
     shortPacks,
     shortPacksComplete,
+    shortToBuy,
+    shortCost,
+    shortCostKnown,
+    shortTotalComplete,
+    shortCostComplete: shortCostKnown && shortTotalComplete,
   };
 }
 
@@ -235,7 +263,7 @@ export const SHOPPING_CSV_COLUMNS: readonly Col[] = [
 ];
 
 /** Kopfzeile und Hinweise je Sprache ({pct} = Reserve in %) */
-export const SHOPPING_CSV_TEXT: Record<ShoppingLang, Record<Col | 'sum' | 'noMaterial' | 'missing' | 'unlinked' | 'gridAssumed' | 'noSize' | 'noPack' | 'noPrice' | 'noStock' | 'costIncomplete' | 'buyIncomplete' | 'invalidColor', string>> = {
+export const SHOPPING_CSV_TEXT: Record<ShoppingLang, Record<Col | 'sum' | 'noMaterial' | 'missing' | 'unlinked' | 'gridAssumed' | 'noSize' | 'noPack' | 'noPrice' | 'noStock' | 'costIncomplete' | 'buyIncomplete' | 'toBuyIncomplete' | 'invalidColor', string>> = {
   de: {
     manufacturer: 'Hersteller',
     product: 'Produkt',
@@ -269,6 +297,7 @@ export const SHOPPING_CSV_TEXT: Record<ShoppingLang, Record<Col | 'sum' | 'noMat
     noStock: 'Bestand nicht erfasst – „Zu kaufen“ leer',
     costIncomplete: 'Kosten unvollständig',
     buyIncomplete: 'Einkaufskosten unvollständig (Bestand, Packungsgröße oder Preis fehlt)',
+    toBuyIncomplete: 'Zu kaufen unvollständig – Bestand nicht für alle Materialien erfasst (Summe nur der Materialien mit erfasstem Bestand)',
     invalidColor: '{n} Steine ohne gültige Farbe nicht enthalten',
   },
   en: {
@@ -304,6 +333,7 @@ export const SHOPPING_CSV_TEXT: Record<ShoppingLang, Record<Col | 'sum' | 'noMat
     noStock: 'stock not recorded – “To buy” empty',
     costIncomplete: 'cost incomplete',
     buyIncomplete: 'purchase cost incomplete (stock, pack size or price missing)',
+    toBuyIncomplete: 'to buy incomplete – stock not recorded for every material (total only of materials with recorded stock)',
     invalidColor: '{n} tiles without a valid colour not included',
   },
   tr: {
@@ -339,6 +369,7 @@ export const SHOPPING_CSV_TEXT: Record<ShoppingLang, Record<Col | 'sum' | 'noMat
     noStock: 'stok kayıtlı değil – “Alınacak” boş',
     costIncomplete: 'maliyet eksik',
     buyIncomplete: 'alım maliyeti eksik (stok, paket boyutu veya fiyat yok)',
+    toBuyIncomplete: 'alınacak eksik – stok her malzeme için kayıtlı değil (toplam yalnızca stoku kayıtlı malzemeler)',
     invalidColor: 'geçerli rengi olmayan {n} taş dahil değil',
   },
 };
@@ -419,6 +450,8 @@ export function buildShoppingCsv(stats: Stats, palette: readonly PaletteColor[],
   });
   const sumNotes: string[] = [];
   if (!tot.costComplete) sumNotes.push(T.costIncomplete);
+  // „Zu kaufen“-Summe nur über Materialien mit erfasstem Bestand: ausdrücklich als unvollständig kennzeichnen
+  if (tot.stockRecorded > 0 && !tot.toBuyComplete) sumNotes.push(T.toBuyIncomplete);
   if (tot.anyBuyCost && !tot.buyCostComplete) sumNotes.push(T.buyIncomplete);
   if (stats.invalidColorPieces > 0) sumNotes.push(fill(T.invalidColor, { n: stats.invalidColorPieces }));
   const sum = line({

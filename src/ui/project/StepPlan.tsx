@@ -31,6 +31,7 @@ import { tCount, useI18n } from '../../i18n';
 import { runWorker } from '../../workers/client';
 import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Swatch, Toggle } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
+import { COARSE_QUERY, deviceKey } from './deviceKind';
 import { FindStone } from './FindStone';
 import { historyEventText, HistoryButtons, historyLabelText, shortcutText, useHistoryShortcuts } from './HistoryControls';
 import { MaterialCalc } from './MaterialCalc';
@@ -45,6 +46,7 @@ import '../css/w1-review-fixes.css';
 import '../css/w4-laying-workbench.css';
 import '../css/w4-review-fixes.css';
 import '../css/w5-undo-editing.css';
+import '../css/w5-fix-ui.css';
 
 export { MaterialCalc } from './MaterialCalc';
 
@@ -98,6 +100,8 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const viewerBox = useRef<HTMLDivElement>(null);
   const cardBox = useRef<HTMLDivElement>(null);
   const wide = useMedia('(min-width: 981px)');
+  /** Finger statt Maus: Bedienhinweise sagen „antippen“ statt „anklicken“ */
+  const coarse = useMedia(COARSE_QUERY);
   const c = api.computed;
   const s = rec.settings;
   const G = api.sections;
@@ -615,19 +619,20 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
             {doneSections} / {G.sections.length}
           </b>
         </div>
-        <div className="w4lw-viewbar" role="group" aria-label={t('w4lw.view.aria')}>
-          <Segmented
-            value={view}
-            options={[
-              { value: 'lay', label: t('w4lw.view.lay') },
-              { value: 'material', label: t('w4lw.view.material') },
-            ]}
-            onChange={setView}
-            testId="plan-view"
-          />
-        </div>
         {/* ein verlegter Stein bleibt als schmaler Streifen sichtbar (wie in den Projektlisten) */}
         <ProgressBar value={pr && pr.total.placed > 0 && pr.total.placed < pr.total.total ? Math.max(0.01, pct) : pct} />
+      </div>
+      {/* Ansicht wählen: unter der Fortschrittskarte (nicht zwischen Zahlen und Balken), fingergroß – wie Reiter */}
+      <div className="w4lw-viewbar w5fu-viewbar" role="group" aria-label={t('w4lw.view.aria')}>
+        <Segmented
+          value={view}
+          options={[
+            { value: 'lay', label: t('w4lw.view.lay') },
+            { value: 'material', label: t('w4lw.view.material') },
+          ]}
+          onChange={setView}
+          testId="plan-view"
+        />
       </div>
       {view === 'material' ? (
         <div className="w4lw-material" data-testid="plan-material">
@@ -699,7 +704,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
             )}
             {/* Statuszeile mit fester Höhe: eine Meldung verschiebt das Mosaik nie unter dem Finger */}
             <div className={`w4lw-status ${status ? 'on' : ''}`} data-testid="lay-status" aria-live="polite" title={status?.text}>
-              {status ? status.text : t(layActive ? `w4lw.idle.${tool}` : 'w4lw.idle.view')}
+              {status ? status.text : layActive && tool !== 'tap' ? t(`w4lw.idle.${tool}`) : t(deviceKey(layActive ? 'w5fu.idle.tap' : 'w5fu.idle.view', coarse))}
             </div>
             <div className="w4lw-vwrap" ref={viewerBox}>
               <Viewer
@@ -779,9 +784,10 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               </div>
             </div>
             <div className="w4lw-notes">
-              {/* beschreibt, was JETZT passiert: ohne Verlegemodus öffnet Antippen das Steindetail */}
-              <small className="muted block" data-testid="tool-hint" data-mode={layActive ? tool : 'off'}>
-                {t(!layActive ? 'w4fx.toolHint.off' : tool === 'paint' ? 'w4lw.toolHint.paint' : tool === 'rect' ? 'w4lw.toolHint.rect' : 'plan.layModeHint')}
+              {/* beschreibt, was JETZT passiert: ohne Verlegemodus öffnet Antippen/Anklicken das Steindetail
+                  (Verb je Gerät: Finger „antippen“, Maus „anklicken“) */}
+              <small className="muted block" data-testid="tool-hint" data-mode={layActive ? tool : 'off'} data-pointer={coarse ? 'coarse' : 'fine'}>
+                {t(!layActive ? deviceKey('w5fu.toolHint.off', coarse) : tool === 'paint' ? 'w4lw.toolHint.paint' : tool === 'rect' ? 'w4lw.toolHint.rect' : deviceKey('w5fu.toolHint.tap', coarse))}
               </small>
               {layActive && sec && <small className="muted block">{t('w4lw.focusNote', { sec: sec.id })}</small>}
               {layActive && <WakeNote state={wake} />}
@@ -970,6 +976,8 @@ function visibleBand(cv: HTMLElement, card: HTMLElement | null): { top: number; 
 
 /** Offene Steine je Farbe (Abschnitt bzw. ganzes Mosaik); Antippen hebt die Farbe hervor */
 function ColorChips(p: { counter: ColorProgressCounter; palette: PaletteColor[]; focus: number | null; onFocus: (c: number | null) => void; scopeText: string; layActive: boolean }) {
+  /** Finger: „antippen“, Maus: „anklicken“ */
+  const coarse = useMedia(COARSE_QUERY);
   const { t, n, lang } = useI18n();
   const codeOf = (ci: number) => p.palette[ci]?.code ?? Number.MAX_SAFE_INTEGER;
   const entries = [...p.counter.counts.entries()].filter(([, e]) => e.total > 0).sort((a, b) => codeOf(a[0]) - codeOf(b[0]) || a[0] - b[0]);
@@ -1012,7 +1020,7 @@ function ColorChips(p: { counter: ColorProgressCounter; palette: PaletteColor[];
       </p>
       {/* „Nächster Stein“ gibt es nur im Verlegemodus */}
       <small className="muted block" data-testid="chips-hint">
-        {t(p.layActive ? 'w4lw.chips.hint' : 'w4fx.chips.hintView')}
+        {t(deviceKey(p.layActive ? 'w5fu.chips.hint' : 'w5fu.chips.hintView', coarse))}
       </small>
     </div>
   );

@@ -170,8 +170,9 @@ async function compute(page) {
     const th = await page.$eval('[data-testid="tool-hint"]', (e) => ({ mode: e.dataset.mode, t: e.textContent.trim() }));
     const chipsHint = await txt(page, '[data-testid="chips-hint"]');
     check(
-      'Ohne Verlegemodus: Hinweis sagt „Verlegemodus einschalten …, jetzt öffnet Antippen das Steindetail“, Farbchips ohne „Nächster Stein“',
-      th.mode === 'off' && /^Verlegemodus einschalten/.test(th.t) && /öffnet Antippen das Steindetail/.test(th.t) && !/Nächster Stein/.test(chipsHint) && !(await page.$('[data-testid="next-open"]')),
+      // w5-fix-ui: Verb je Gerät – mit der Maus „Anklicken öffnet das Steindetail. Verlegemodus einschalten, …“
+      'Ohne Verlegemodus: Hinweis sagt „Anklicken öffnet das Steindetail. Verlegemodus einschalten …“ (Maus), Farbchips ohne „Nächster Stein“',
+      th.mode === 'off' && /^Anklicken öffnet das Steindetail\. Verlegemodus einschalten/.test(th.t) && !/Antippen/.test(th.t) && !/Nächster Stein/.test(chipsHint) && !(await page.$('[data-testid="next-open"]')),
       `${th.t.slice(0, 80)} | ${chipsHint}`,
     );
 

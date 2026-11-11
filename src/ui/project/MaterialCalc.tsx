@@ -6,10 +6,12 @@ import type { Material, PaletteColor } from '../../core/types';
 import { tCount, useI18n, type TFunc } from '../../i18n';
 import { isNative } from '../../platform';
 import { Badge, downloadBlob, NumberInput, safeFileName, SaveResultNote, Swatch, type SaveResult } from '../components';
+import { useMedia } from './deviceKind';
 import { stepHash } from './stepNav';
 import type { ProjectApi } from './useProject';
 import '../css/w1-review-fixes.css';
 import '../css/w5-material-shopping.css';
+import '../css/w5-fix-ui.css';
 
 /**
  * Schritt 9, Ansicht „Material & Einkauf“ (volle Breite, ohne Viewer):
@@ -44,6 +46,34 @@ function ColorCodes({ pal, colors }: { pal: readonly PaletteColor[]; colors: num
         </Fragment>
       ))}
     </span>
+  );
+}
+
+/** Handy-Breite: wie die Kartenansicht in w5-material-shopping.css */
+export const PHONE_QUERY = '(max-width: 600px)';
+
+/**
+ * Abschnitt, der sich auf dem Handy zuklappen lässt (Bedarf je Farbe, Berechnung im Detail): dort anfangs zu,
+ * damit die Seite nicht zehntausende Pixel lang wird; auf breiten Bildschirmen ein normaler Abschnitt.
+ * Beim Drucken öffnet MaterialCalc alle <details> (beforeprint) und zeigt die Überschrift (CSS).
+ */
+function Fold(props: { phone: boolean; title: ReactNode; className?: string; testId?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const cls = `w5ms-section ${props.className ?? ''}`;
+  if (!props.phone)
+    return (
+      <section className={cls} data-testid={props.testId}>
+        <h3 className="w5ms-h">{props.title}</h3>
+        {props.children}
+      </section>
+    );
+  return (
+    <details className={`${cls} w5fu-fold`} open={open} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid={props.testId}>
+      <summary className="w5fu-fold-sum">
+        <h3 className="w5ms-h">{props.title}</h3>
+      </summary>
+      {props.children}
+    </details>
   );
 }
 
@@ -261,14 +291,13 @@ function ShoppingTable({ rows, st, pal }: { rows: ShoppingRow[]; st: Stats; pal:
   );
 }
 
-function PerColorTable({ st, pal }: { st: Stats; pal: readonly PaletteColor[] }) {
+function PerColorTable({ st, pal, phone }: { st: Stats; pal: readonly PaletteColor[]; phone: boolean }) {
   const { t, n, lang } = useI18n();
   const used = st.perColor.filter((c) => c.pieces > 0);
   const sum = used.reduce((a, c) => ({ pieces: a.pieces + c.pieces, cut: a.cut + c.cut, raw: a.raw + c.raw, res: a.res + c.rawWithReserve }), { pieces: 0, cut: 0, raw: 0, res: 0 });
   const pct = n(st.reservePct, 2);
   return (
-    <section className="w5ms-section">
-      <h3 className="w5ms-h">{t('plan.perColor')}</h3>
+    <Fold phone={phone} title={t('plan.perColor')} testId="mc-per-color-sec">
       {/* nur Rohsteine je Farbe (addieren sich zur Gesamtzahl); Packungen, Bestand und Kosten stehen je Material oben */}
       <div className={`table-wrap ${used.length > 15 ? 'tall' : ''}`}>
         <table className="data small w5ms-table w5ms-cards w5ms-colors" data-testid="mc-per-color">
@@ -302,7 +331,7 @@ function PerColorTable({ st, pal }: { st: Stats; pal: readonly PaletteColor[] })
                   <td className="w5ms-cc-name" data-col="name">
                     {p ? paletteDisplayName(p, lang) : '?'}
                   </td>
-                  <td className="w5ms-cc-mat" data-col="material">
+                  <td className={`w5ms-cc-mat ${!m && !c.materialMissing ? 'w5ms-cc-nomat' : ''}`} data-col="material">
                     {m ? (
                       <span>
                         {materialName(t, m)}
@@ -354,7 +383,7 @@ function PerColorTable({ st, pal }: { st: Stats; pal: readonly PaletteColor[] })
           </tfoot>
         </table>
       </div>
-    </section>
+    </Fold>
   );
 }
 
@@ -370,6 +399,7 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
   const [csvBusy, setCsvBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const native = isNative();
+  const phone = useMedia(PHONE_QUERY);
   const rows = useMemo(() => (st ? shoppingRows(st, pal) : []), [st, pal]);
   const tot = useMemo(() => (st ? shoppingTotals(st, rows) : null), [st, rows]);
 
@@ -421,8 +451,6 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
   const thinPieces = st.thinPieces ?? 0;
   const thinFreePieces = st.thinFreePieces ?? 0;
   const minPieceText = n(s.shapes.minPieceMm, 2);
-  const shortCostComplete = tot.shortfalls.every((r) => r.buyCost !== undefined);
-  const shortCost = tot.shortfalls.reduce((a, r) => a + (r.buyCost ?? 0), 0);
 
   const exportCsv = async () => {
     setCsvErr(null);
@@ -542,14 +570,27 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
               </li>
             ))}
           </ul>
-          <p data-testid="mc-short-total">
+          {/* Summe nur über Materialien mit erfasstem Bestand: ohne Bestand (oder ohne Material) ist offen, was zu
+              kaufen ist – dann ausdrücklich als Teilsumme und „unvollständig“ kennzeichnen */}
+          <p data-testid="mc-short-total" data-complete={tot.shortTotalComplete ? 'yes' : 'no'}>
             <b>
-              {t('w5ms.short.total', { n: n(tot.shortfalls.reduce((a, r) => a + (r.toBuy ?? 0), 0)) })}
+              {t(tot.toBuyComplete ? 'w5ms.short.total' : 'w5fu.short.totalPartial', { n: n(tot.shortToBuy) })}
               {tot.shortPacksComplete && <> · {tCount(t, 'w5ms.short.totalPacks', tot.shortPacks, { n: n(tot.shortPacks) })}</>}
-              {shortCostComplete && <> · {t('w5ms.short.totalCost', { cost: money(shortCost) })}</>}
+              {tot.shortCostKnown && <> · {t('w5ms.short.totalCost', { cost: money(tot.shortCost) })}</>}
             </b>
+            {!tot.shortTotalComplete && (
+              <>
+                {' '}
+                <Badge kind="incomplete">{t('common.incomplete')}</Badge>
+              </>
+            )}
             {!tot.shortPacksComplete && <span className="muted"> · {t('w5ms.short.packsIncomplete')}</span>}
           </p>
+          {!tot.toBuyComplete && (
+            <p className="muted small" data-testid="mc-short-partial">
+              {t('w5fu.short.partialNote')}
+            </p>
+          )}
         </div>
       )}
       {st.invalidColorPieces > 0 && (
@@ -599,9 +640,8 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
 
       {/* ---------------- Bedarf je Farbe | Berechnung im Detail */}
       <div className="w5ms-grid">
-        <PerColorTable st={st} pal={pal} />
-        <section className="w5ms-section w5ms-details">
-          <h3 className="w5ms-h">{t('w5ms.details')}</h3>
+        <PerColorTable st={st} pal={pal} phone={phone} />
+        <Fold phone={phone} title={t('w5ms.details')} className="w5ms-details" testId="mc-details-sec">
           <table className="kv small">
             <tbody>
               <tr>
@@ -749,7 +789,7 @@ export function MaterialCalc({ api }: { api: ProjectApi }) {
               )}
             </div>
           </div>
-        </section>
+        </Fold>
       </div>
     </div>
   );

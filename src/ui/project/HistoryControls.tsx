@@ -8,6 +8,7 @@ import { useI18n, type TFunc } from '../../i18n';
 import type { HistoryEvent, ProjectApi } from './useProject';
 import { isTypingTarget } from './previewPolicy';
 import '../css/w5-undo-editing.css';
+import '../css/w5-fix-ui.css';
 
 /** Text einer Verlaufsbeschriftung. Platzhalterwerte mit „t:“ am Anfang sind selbst Übersetzungsschlüssel. */
 export function historyLabelText(l: HistoryLabel | null | undefined, t: TFunc): string {
@@ -84,7 +85,12 @@ export function useHistoryShortcuts(api: ProjectApi, enabled = true): void {
   }, [enabled]);
 }
 
-/** Rückgängig/Wiederholen-Knöpfe mit Zählern; der Tooltip nennt den nächsten Schritt und das Tastenkürzel. */
+/**
+ * Rückgängig/Wiederholen-Knöpfe mit Zählern; der Tooltip nennt den nächsten Schritt und das Tastenkürzel.
+ * `compact` (Steindetail als Blatt/Dialog): schmale, fingergroße Knöpfe mit sichtbarer Beschriftung unter
+ * Pfeil und Zähler; dazu die Statuszeile als Hinweis im Blatt (die Statuszeile der Seite liegt hinter dem
+ * abgedunkelten Hintergrund).
+ */
 export function HistoryButtons(props: { api: ProjectApi; testIdPrefix?: string; compact?: boolean }) {
   const { t, n } = useI18n();
   const h = props.api.history;
@@ -104,7 +110,18 @@ export function HistoryButtons(props: { api: ProjectApi; testIdPrefix?: string; 
         aria-label={`${t('w4lw.undoLabel')} (${n(h.undoCount)})${h.undoCount ? ` – ${undoWhat}` : ''}`}
         data-testid={`${pre}-undo`}
       >
-        ↶ <span className="w5ue-btxt">{t('w4lw.undoLabel')}</span> <span className="w5ue-count">({n(h.undoCount)})</span>
+        {props.compact ? (
+          <>
+            <span className="w5fu-hico">
+              ↶ <span className="w5ue-count">({n(h.undoCount)})</span>
+            </span>
+            <span className="w5ue-btxt">{t('w4lw.undoLabel')}</span>
+          </>
+        ) : (
+          <>
+            ↶ <span className="w5ue-btxt">{t('w4lw.undoLabel')}</span> <span className="w5ue-count">({n(h.undoCount)})</span>
+          </>
+        )}
       </button>
       <button
         type="button"
@@ -115,14 +132,26 @@ export function HistoryButtons(props: { api: ProjectApi; testIdPrefix?: string; 
         aria-label={`${t('w5ue.redoLabel')} (${n(h.redoCount)})${h.redoCount ? ` – ${redoWhat}` : ''}`}
         data-testid={`${pre}-redo`}
       >
-        ↷ <span className="w5ue-btxt">{t('w5ue.redoLabel')}</span> <span className="w5ue-count">({n(h.redoCount)})</span>
+        {props.compact ? (
+          <>
+            <span className="w5fu-hico">
+              ↷ <span className="w5ue-count">({n(h.redoCount)})</span>
+            </span>
+            <span className="w5ue-btxt">{t('w5ue.redoLabel')}</span>
+          </>
+        ) : (
+          <>
+            ↷ <span className="w5ue-btxt">{t('w5ue.redoLabel')}</span> <span className="w5ue-count">({n(h.redoCount)})</span>
+          </>
+        )}
       </button>
+      {props.compact && <HistoryStatus api={props.api} testId={`${pre}-status`} toast />}
     </span>
   );
 }
 
 /** Statuszeile: was Rückgängig/Wiederholen zuletzt getan hat (verschwindet nach einigen Sekunden). */
-export function HistoryStatus(props: { api: ProjectApi; testId?: string }) {
+export function HistoryStatus(props: { api: ProjectApi; testId?: string; toast?: boolean }) {
   const { t } = useI18n();
   const ev = props.api.history.last;
   const [shown, setShown] = useState<HistoryEvent | null>(null);
@@ -136,7 +165,7 @@ export function HistoryStatus(props: { api: ProjectApi; testId?: string }) {
   }, [ev]);
   const warn = !!shown && (shown.kind === 'stale' || shown.kind === 'too-large');
   return (
-    <div className={`w5ue-hstatus ${shown ? 'on' : ''} ${warn ? 'warn' : ''}`} role={warn ? 'alert' : 'status'} aria-live="polite" data-testid={props.testId ?? 'history-status'} data-kind={shown?.kind ?? ''}>
+    <div className={`w5ue-hstatus ${props.toast ? 'w5fu-toast' : ''} ${shown ? 'on' : ''} ${warn ? 'warn' : ''}`} role={warn ? 'alert' : 'status'} aria-live="polite" data-testid={props.testId ?? 'history-status'} data-kind={shown?.kind ?? ''}>
       {shown ? historyEventText(shown, t) : ''}
     </div>
   );

@@ -308,15 +308,19 @@ async function clickCode(page, code) {
       const lighterDisabled = await page.isDisabled('[data-testid="shade-lighter"]');
       const hint = await txt(page, '[data-testid="shade-hint"]');
       let okA;
-      if (lighterDisabled) okA = /Kein hellerer Farbton dieser Farbe in der Palette – im Schritt Farben ergänzen/.test(hint);
+      // w5-fix-ui: ohne helleren Ton gleichen Farbtons wird die ähnlichste hellere Farbe angeboten (wie ▲ in der
+      // Farbreihe), gekennzeichnet als „etwas anderer Farbton“; gesperrt nur, wenn keine Farbe heller ist
+      if (lighterDisabled) okA = /Keine hellere Farbe in der Palette – im Schritt Farben ergänzen/.test(hint);
       else {
         const target = await page.getAttribute('[data-testid="shade-lighter"]', 'data-target');
+        const same = await page.getAttribute('[data-testid="shade-lighter"]', 'data-same-hue');
+        const btn = await txt(page, '[data-testid="shade-lighter"]');
         const tp = sb.palette.find((p) => String(p.code).padStart(2, '0') === target);
         const dL = tp.lab[0] - pale.lab[0];
         const dab = Math.hypot(tp.lab[1] - pale.lab[1], tp.lab[2] - pale.lab[2]);
-        okA = dL >= 3 && dab <= 10;
+        okA = same === 'yes' ? dL >= 3 && dab <= 10 : dL >= 1 && /etwas anderer Farbton/.test(btn) && /ähnlichste hellere Farbe/.test(hint);
       }
-      check(`„Heller“ auf hellblauem Stein ${id} (${String(pale.code).padStart(2, '0')} ${pale.hex}): gleicher Farbton heller – oder gesperrt mit Hinweis`, okA, lighterDisabled ? hint : 'aktiv');
+      check(`„Heller“ auf hellblauem Stein ${id} (${String(pale.code).padStart(2, '0')} ${pale.hex}): gleicher Farbton heller – sonst ähnlichste hellere Farbe („etwas anderer Farbton“) oder gesperrt mit Hinweis`, okA, lighterDisabled ? hint : 'aktiv');
       await shot(page, 'w5ue-03-lighter-before.png');
       // helleres Blau gleichen Farbtons ergänzen (L* +6) → „Heller“ wählt genau dieses
       const newHex = labToHex(pale.lab[0] + 6, pale.lab[1] * 0.92, pale.lab[2] * 0.92);

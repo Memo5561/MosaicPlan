@@ -73,8 +73,12 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
 8. **Vorschau** – realistische Glas-/Keramikdarstellung, Zoom/Pan (Maus, Touch, Pinch), Farbnummern,
    Stein anklicken → Detailfenster mit Position, Koordinaten, Farbe, Größe, Form, Schnittanweisung,
    Schnittvorlage, Nachbarn; Farbe/Form einzeln ändern (Statistik aktualisiert sich automatisch).
-9. **Verlegeplan** – Abschnitte (A1, A2 … nach max. Größe oder Anzahl), Verlegemodus (Antippen = verlegt),
+   „Heller“/„Dunkler“ wählt die nächste Palettenfarbe gleichen Farbtons, sonst die ähnlichste hellere/dunklere
+   Palettenfarbe (gekennzeichnet „etwas anderer Farbton“) – passend zu ▲/▼ in der Farbreihe, nie erfunden.
+9. **Verlegeplan** – Abschnitte (A1, A2 … nach max. Größe oder Anzahl), Verlegemodus (Antippen bzw. Anklicken = verlegt),
    Abschnitt fertig markieren, Fortschritt in %, Materialberechnung, CSV-Export aller Koordinaten.
+   „Material & Einkauf“: „zu kaufen“ nur für Materialien mit erfasstem Bestand – fehlt der Bestand bei einem Material
+   (oder gibt es Farben ohne Material), ist die Summe ausdrücklich eine Teilsumme („unvollständig“, auch in der CSV).
 10. **PDF-Export** – A4/A3/A2/A1/A0/individuell, Hoch-/Querformat, Maßstab 1:1/2:1/3:1/4:1/an Seite anpassen.
 
 ## Geometrie und Maße (verbindliche Definitionen)

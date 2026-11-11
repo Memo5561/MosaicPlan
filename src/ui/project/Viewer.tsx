@@ -25,9 +25,13 @@ import type { MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
 import '../css/w1-touch-input-safety.css';
 import '../css/w3-viewer-features.css';
+import { isCoarsePointer, useCoarsePointer } from './deviceKind';
 import { exceedsTapSlop, isTapDuration, LONG_PRESS_MS, MAX_SCALE, pieceMinSideMm, tapDecision, TOUCH_ZOOM_TARGET_PX } from './touchTap';
 import { BaseBuffer, type BaseFrame, type CanvasFactory, type RenderArea } from './viewerBase';
 import { cellNearPoint, inRange, PaintStroke, pieceAtPoint, rangePieceCount, rectRange, type PieceRef } from './viewerInput';
+
+/** Ruhetext der Statuszeile: „Mauszeiger über einen Stein bewegen“ nur, wenn das Hauptzeigegerät eine Maus ist */
+const hoverIdleKey = () => (isCoarsePointer() ? 'w5fu.hoverIdle.touch' : 'w3vf.hoverIdle');
 
 export type { PieceRef } from './viewerInput';
 
@@ -929,7 +933,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       const insideMosaic = !inRuler(px, py) && w.x >= 0 && w.y >= 0 && w.x <= L.finishedW && w.y <= L.finishedH;
       sm.dataset.idle = insideMosaic ? '0' : '1';
       if (!insideMosaic) {
-        sm.textContent = tt('w3vf.hoverIdle');
+        sm.textContent = tt(hoverIdleKey());
         ss.textContent = '';
         setHover(null);
         return;
@@ -1199,7 +1203,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       const sm = statusMain.current;
       if (sm && pointers.size === 0) {
         sm.dataset.idle = '1';
-        sm.textContent = tRef.current('w3vf.hoverIdle');
+        sm.textContent = tRef.current(hoverIdleKey());
         if (statusSub.current) statusSub.current.textContent = '';
       }
       if (pointers.size === 0) setHover(null);
@@ -1264,6 +1268,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
 
   const mode = props.mode ?? 'tap';
   const statusOn = props.hoverStatus !== false;
+  const coarse = useCoarsePointer();
   return (
     <>
       <div
@@ -1294,7 +1299,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
       {statusOn && (
         <div className="w3vf-status" data-testid="viewer-status">
           <span ref={statusMain} className="w3vf-status-main" data-idle="1" data-testid="viewer-status-main">
-            {t('w3vf.hoverIdle')}
+            {t(coarse ? 'w5fu.hoverIdle.touch' : 'w3vf.hoverIdle')}
           </span>
           <span ref={statusSub} className="w3vf-status-sub" data-testid="viewer-status-cursor" />
         </div>

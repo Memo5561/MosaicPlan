@@ -75,6 +75,13 @@ signiert werden, sonst muss die App deinstalliert werden – dabei gehen lokal g
    Schnittvorlage, Nachbarn; Farbe/Form einzeln ändern (Statistik aktualisiert sich automatisch).
    „Heller“/„Dunkler“ wählt die nächste Palettenfarbe gleichen Farbtons, sonst die ähnlichste hellere/dunklere
    Palettenfarbe (gekennzeichnet „etwas anderer Farbton“) – passend zu ▲/▼ in der Farbreihe, nie erfunden.
+   Werkzeuge unter dem Mosaik: Abweichung zum Foto (Karte und Liste; ΔE in Worten: kaum sichtbar < 2, erkennbar 2–5,
+   deutlich 5–10, stark > 10 – Wortlaut in `src/ui/deWords.ts`), Bereich bearbeiten, Bild (PNG). Das Steindetail
+   zeigt (bei offenem Werkzeug „Abweichung“ oder eingeschalteter Karte) Fotofarbe, Abweichung und „Nächste Farbe
+   übernehmen“; am Handy ist es ein niedrigeres Blatt, der Stein liegt
+   sichtbar darüber. „Form zurücksetzen“ färbt jeden ganzen Stein mit der Palettenfarbe nächst dem flächengewichteten
+   Fotomittel der Zelle (ohne Fotoreferenz: Farbe mit der größten Fläche); „Heller/Dunkler“ kennzeichnet Stufen über
+   ΔE 8 als „großer Sprung“, jede Zeile ist abwählbar (`src/core/batch.ts`).
 9. **Verlegeplan** – Abschnitte (A1, A2 … nach max. Größe oder Anzahl), Verlegemodus (Antippen bzw. Anklicken = verlegt),
    Abschnitt fertig markieren, Fortschritt in %, Materialberechnung, CSV-Export aller Koordinaten.
    „Material & Einkauf“: „zu kaufen“ nur für Materialien mit erfasstem Bestand – fehlt der Bestand bei einem Material

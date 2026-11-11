@@ -424,8 +424,13 @@ async function phone(browser) {
   await page.waitForSelector('[data-testid="preview-tools"]');
   await wait(1200);
   const toolbarRows = await page.$eval('.w5ue-toolbar', (e) => Math.round(e.getBoundingClientRect().height));
-  const quickHidden = await page.$eval('[data-testid="deviation-quick"]', (b) => getComputedStyle(b).display === 'none');
-  check('Handy: Werkzeugleiste über dem Mosaik bleibt einzeilig (ΔE-Schnellschalter nur im Reiter)', quickHidden, `Leiste ${toolbarRows} px hoch`);
+  // w6-fix-ui: der Schalter „Abweichungskarte“ bleibt am Handy sichtbar (kurz „Karte“), in derselben Zeile wie ↶/↷
+  const quickRow = await page.$eval('[data-testid="deviation-quick"]', (b) => {
+    const r = b.getBoundingClientRect();
+    const h = document.querySelector('.w5ue-toolbar .w5ue-history').getBoundingClientRect();
+    return getComputedStyle(b).display !== 'none' && Math.abs(r.top - h.top) < 4 && r.right <= window.innerWidth;
+  });
+  check('Handy: Werkzeugleiste über dem Mosaik – Kartenschalter kompakt in der Zeile von Rückgängig/Wiederholen', quickRow, `Leiste ${toolbarRows} px hoch`);
   await page.$eval('[data-testid="preview-tools"]', (e) => e.scrollIntoView({ block: 'start' }));
   await page.tap('[data-testid="tool-deviation"]');
   await page.waitForSelector('[data-testid="deviation-item"]');

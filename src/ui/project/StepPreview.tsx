@@ -12,7 +12,8 @@ import { cellPieceCount } from '../../core/pieces';
 import { paletteDisplayName } from '../../core/colorNames';
 import { deviationMap, deviationSummary, hasPhotoTargets } from '../../core/deviation';
 import type { Range } from '../../core/stats';
-import { BatchPanel, type BatchScope } from './BatchPanel';
+import { BatchPanel, rangeLabel, type BatchScope } from './BatchPanel';
+import { rangeCells } from '../../core/batch';
 import { DeviationLegend, DeviationPanel } from './DeviationPanel';
 import { PngExportPanel } from './PngExportPanel';
 import { PreviewOverlay } from './PreviewOverlay';
@@ -21,6 +22,7 @@ import '../css/w2-colour-honesty.css';
 import '../css/w3-viewer-features.css';
 import '../css/w5-undo-editing.css';
 import '../css/w6-compare-batch.css';
+import '../css/w6-fix-ui.css';
 
 /** Werkzeuge unter dem Viewer (Paket w6-compare-batch) */
 type PreviewTool = 'deviation' | 'batch' | 'png';
@@ -48,6 +50,12 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   const [selection, setSelection] = useState<Range | null>(null);
   const [rectMode, setRectMode] = useState(false);
   const [sectionId, setSectionId] = useState<string | null>(null);
+  /** zuletzt bearbeiteter Bereich (Umriss nach „Anwenden“, „Im Mosaik ansehen“) */
+  const [result, setResult] = useState<Range | null>(null);
+  /** Legende + Viewer (für „Karte an“: ins Bild holen) */
+  const mapArea = useRef<HTMLDivElement>(null);
+  /** Ansicht und Seitenposition vor dem Verschieben für das Blatt – beim Schließen wiederhergestellt (nur Antippen) */
+  const beforeSheet = useRef<{ view: { scale: number; ox: number; oy: number }; scrollY: number } | null>(null);
   const c = api.computed;
   /** Breiter Bildschirm: Steindetail ersetzt die Seitenleiste neben dem Mosaik (kein Dialog darüber) */
   const wide = useMediaQuery(PANEL_QUERY);
@@ -91,6 +99,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
   useEffect(() => {
     setSelection(null);
     setRectMode(false);
+    setResult(null);
   }, [c?.layout]);
 
   // ΔE-Formel und Farbmischung der BERECHNUNG (nicht eine inzwischen geänderte Einstellung)
@@ -144,8 +153,79 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     const r = el.getBoundingClientRect();
     if (r.top < 0 || r.bottom > window.innerHeight) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
+  /** Unterkante der klebenden Kopfzeile (darunter beginnt der sichtbare Bereich) */
+  const barBottom = () => document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0;
+  /**
+   * Schmale Bildschirme: Das Steindetail liegt als Blatt unten über der Seite. Den Stein so legen, dass er im freien
+   * Streifen ÜBER dem Blatt mittig liegt; reicht der sichtbare Teil des Mosaiks dafür nicht, erst die Seite schieben.
+   * `onlyIfHidden`: nichts tun, wenn der Stein schon sichtbar über dem Blatt liegt. Liefert true, wenn bewegt wurde.
+   */
+  const placeAboveSheet = (xMm: number, yMm: number, onlyIfHidden: boolean): boolean => {
+    const st = stage.current;
+    const vw = viewer.current;
+    const sheet = document.querySelector('.w5ue-stone-modal')?.closest('.modal');
+    if (!st || !vw || !sheet) return false;
+    const sheetTop = sheet.getBoundingClientRect().top;
+    const bar = barBottom();
+    let r = st.getBoundingClientRect();
+    if (onlyIfHidden) {
+      const v = vw.getView();
+      const sy = r.top + v.oy + yMm * v.scale;
+      if (sy > Math.max(r.top, bar) + 12 && sy < Math.min(r.bottom, sheetTop) - 12) return false;
+    }
+    const free = () => Math.min(r.bottom, sheetTop) - Math.max(r.top, bar);
+    if (free() < Math.min(160, (sheetTop - bar) * 0.8)) {
+      window.scrollBy({ top: r.top - bar - 4, left: 0, behavior: 'instant' as ScrollBehavior });
+      r = st.getBoundingClientRect();
+    }
+    const top = Math.max(r.top, bar);
+    const bottom = Math.min(r.bottom, sheetTop);
+    if (bottom - top < 24) return true;
+    const atY = (top + bottom) / 2 - r.top;
+    if (onlyIfHidden) {
+      // angetippter Stein: nur senkrecht schieben (waagrecht liegt er schon unter dem Finger)
+      const v = vw.getView();
+      vw.setView({ ...v, oy: atY - yMm * v.scale });
+    } else vw.center(xMm, yMm, 0, atY);
+    return true;
+  };
+  /** Stein (Mitte in mm) nach dem Öffnen des Blatts über dem Blatt zeigen – zwei Bilder später steht seine Höhe fest */
+  const afterSheet = (row: number, col: number, onlyIfHidden: boolean, restore: boolean) => {
+    const x = c.layout.colX[col] + c.layout.colW[col] / 2;
+    const y = c.layout.rowY[row] + c.layout.rowH[row] / 2;
+    const prev = viewer.current ? { view: viewer.current.getView(), scrollY: window.scrollY } : null;
+    beforeSheet.current = null;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (placeAboveSheet(x, y, onlyIfHidden) && restore) beforeSheet.current = prev;
+      }),
+    );
+  };
+  /** Stein im Mosaik angetippt: öffnen; am Handy nur verschieben, wenn das Blatt ihn verdecken würde */
+  const onPickStone = (row: number, col: number, piece: number) => {
+    setPick({ row, col, piece });
+    if (!wide) afterSheet(row, col, true, true);
+  };
+  /** Steindetail schließen – nach einer Verschiebung für das Blatt die vorige Ansicht wiederherstellen */
+  const closeStone = () => {
+    setPick(null);
+    const prev = beforeSheet.current;
+    beforeSheet.current = null;
+    if (!prev) return;
+    viewer.current?.setView(prev.view);
+    window.scrollTo({ top: prev.scrollY, left: 0, behavior: 'instant' as ScrollBehavior });
+  };
+  /** Stein zeigen (mittig bzw. über dem Blatt) und öffnen */
+  const showStone = (row: number, col: number, piece: number) => {
+    onFound(row, col, piece);
+    if (!wide) afterSheet(row, col, false, false);
+  };
   /** Sprung aus der Liste „Größte Abweichungen“: Stein zeigen und öffnen, Mosaik ins Bild holen */
   const onJump = (row: number, col: number, piece: number) => {
+    if (!wide) {
+      showStone(row, col, piece);
+      return;
+    }
     onFound(row, col, piece);
     reveal(stage.current);
   };
@@ -154,6 +234,40 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
     setRectMode(on);
     if (on) reveal(stage.current);
   };
+  /** Legende und Mosaik ganz oben unter der Kopfzeile zeigen (Karte an, Ergebnis ansehen) */
+  const revealMap = () => {
+    const el = mapArea.current;
+    if (!el || typeof el.scrollIntoView !== 'function') return;
+    const r = el.getBoundingClientRect();
+    const bar = barBottom();
+    if (r.top < bar - 1 || r.top > Math.max(bar + 80, window.innerHeight * 0.35)) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  };
+  /** Abweichungskarte an/aus – beim Einschalten das Mosaik ins Bild holen */
+  const setMap = (on: boolean) => {
+    setOverlayOn(on);
+    if (on) requestAnimationFrame(() => revealMap());
+  };
+  /** Ergebnis der Bereichsbearbeitung hervorheben; `go`: hinzoomen und Mosaik ins Bild holen */
+  const onShowResult = (where: Range | 'all', go: boolean) => {
+    const rg = where === 'all' ? { r0: 0, r1: c.layout.rows, c0: 0, c1: c.layout.cols } : where;
+    setResult(rg);
+    if (!go) return;
+    setPick(null);
+    if (where === 'all') viewer.current?.fit();
+    else {
+      const x0 = c.layout.colX[rg.c0];
+      const y0 = c.layout.rowY[rg.r0];
+      const x1 = c.layout.colX[rg.c1 - 1] + c.layout.colW[rg.c1 - 1];
+      const y1 = c.layout.rowY[rg.r1 - 1] + c.layout.rowH[rg.r1 - 1];
+      viewer.current?.zoomTo({ x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) });
+    }
+    setFlash({ idx: rg.r0 * c.layout.cols + rg.c0, piece: 0 });
+    requestAnimationFrame(() => revealMap());
+  };
+  /** Viewer im Modus „Rechteck aufziehen“ */
+  const rectActive = tool === 'batch' && scope === 'rect' && rectMode;
+  /** Umriss im Mosaik: Auswahl (Bereich bearbeiten, Rechteck) bzw. zuletzt geänderter Bereich */
+  const outline = tool === 'batch' && scope === 'rect' && selection ? selection : tool === 'batch' ? result : null;
   const batchSection = tool === 'batch' && scope === 'section' ? sectionId : null;
   const toolBtn = (id: PreviewTool, label: string) => (
     <button
@@ -164,6 +278,7 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
       onClick={() => {
         setTool(tool === id ? null : id);
         if (id !== 'batch') setRectMode(false);
+        setResult(null);
       }}
       data-testid={`tool-${id}`}
     >
@@ -188,7 +303,11 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
       history={<HistoryButtons api={api} testIdPrefix="stone-history" compact />}
       paletteMode={rec.settings.paletteMode}
       deltaE={rec.settings.deltaE}
-      onClose={() => setPick(null)}
+      // Abweichung zum Foto im Steindetail, solange das Werkzeug „Abweichung“ offen oder die Karte an ist (sonst bleibt die
+      // Farbreihe am Handy ohne Blättern sichtbar)
+      photoFormula={tool === 'deviation' || mapOn ? formula : undefined}
+      shortSheet
+      onClose={closeStone}
       onNavigate={(row, col, piece) => setPick({ row, col, piece })}
       onEdit={api.editCell}
     />
@@ -203,12 +322,17 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
             type="button"
             className={`btn small w6cb-quick ${mapOn ? 'active' : ''}`}
             aria-pressed={mapOn}
+            aria-label={t('w6cb.quick')}
             disabled={!hasTargets}
             title={hasTargets ? t('w6cb.overlayHint') : t('w6cb.legacy')}
-            onClick={() => setOverlayOn(!overlayOn)}
+            onClick={() => setMap(!overlayOn)}
             data-testid="deviation-quick"
           >
-            {t('w6cb.quick')}
+            <span className="w6fx-q-icon" aria-hidden="true" />
+            <span className="w6fx-q-long">{t('w6cb.quick')}</span>
+            <span className="w6fx-q-short" aria-hidden="true">
+              {t('w6fx.quickShort')}
+            </span>
           </button>
           {api.stale && <Badge kind="warn">{t('preview.stale')}</Badge>}
           {api.materialsChanged && (
@@ -218,39 +342,63 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           )}
           <HistoryStatus api={api} />
         </div>
-        {mapOn && <DeviationLegend summary={devSummary} dither={dither} stale={api.stale} formula={formula} />}
-        <div className="w6cb-stage" ref={stage}>
-          <Viewer
-            ref={viewer}
-            layout={c.layout}
-            data={c.data}
-            palette={palette}
-            version={api.version}
-            progressVersion={api.progressVersion}
-            groutHex={rec.settings.groutHex}
-            surface={rec.settings.surface}
-            realistic={realistic}
-            showCodes={codes}
-            progressMode={false}
-            sections={showSections || batchSection ? api.sections : null}
-            selectedSection={batchSection}
-            highlight={pick}
-            focusColor={focus}
-            rulers={rulers}
-            flash={flash}
-            compareImage={comparing ? reference : null}
-            compareSplit={hold ? 1 : split}
-            onCompareSplit={compareOn && !hold ? setSplit : undefined}
-            onPick={(row, col, piece) => setPick({ row, col, piece })}
-            mode={tool === 'batch' && scope === 'rect' && rectMode ? 'rect' : 'tap'}
-            onRect={(rg) => {
-              setSelection(rg);
-              setRectMode(false);
-              // danach die Aktionen zeigen
-              requestAnimationFrame(() => reveal(document.querySelector('[data-testid="batch-panel"]')));
-            }}
-          />
-          <PreviewOverlay stage={stage} viewer={viewer} layout={c.layout} rulers={rulers} deviation={devMap} selection={tool === 'batch' && scope === 'rect' ? selection : null} />
+        <div className="w6fx-map-area" ref={mapArea}>
+          {mapOn && <DeviationLegend summary={devSummary} dither={dither} stale={api.stale} formula={formula} />}
+          <div className="w6cb-stage" ref={stage}>
+            <Viewer
+              ref={viewer}
+              layout={c.layout}
+              data={c.data}
+              palette={palette}
+              version={api.version}
+              progressVersion={api.progressVersion}
+              groutHex={rec.settings.groutHex}
+              surface={rec.settings.surface}
+              realistic={realistic}
+              showCodes={codes}
+              progressMode={false}
+              sections={showSections || batchSection ? api.sections : null}
+              selectedSection={batchSection}
+              highlight={pick}
+              focusColor={focus}
+              rulers={rulers}
+              flash={flash}
+              compareImage={comparing ? reference : null}
+              compareSplit={hold ? 1 : split}
+              onCompareSplit={compareOn && !hold ? setSplit : undefined}
+              onPick={onPickStone}
+              mode={rectActive ? 'rect' : 'tap'}
+              onRect={(rg) => {
+                setSelection(rg);
+                setRectMode(false);
+                setResult(null);
+                // breite Bildschirme: danach die Aktionen zeigen; schmale: Auswahl bleibt sichtbar, die Leiste führt weiter
+                if (wide) requestAnimationFrame(() => reveal(document.querySelector('[data-testid="batch-panel"]')));
+              }}
+            />
+            <PreviewOverlay stage={stage} viewer={viewer} layout={c.layout} rulers={rulers} deviation={devMap} selection={outline} />
+            {rectActive && (
+              <div className="w6fx-banner" role="status" data-testid="rect-banner">
+                <span>{t(deviceKey('w6fx.rect.banner', coarse))}</span>
+                <button type="button" className="btn small" onClick={() => setRectMode(false)} data-testid="rect-banner-cancel">
+                  {t('w6fx.rect.cancel')}
+                </button>
+              </div>
+            )}
+            {!rectActive && tool === 'batch' && scope === 'rect' && selection && !wide && (
+              <div className="w6fx-banner" role="status" data-testid="selection-banner">
+                <span>
+                  {t('w6fx.sel.banner', {
+                    range: rangeLabel(c.layout, selection),
+                    cells: t('w6cb.allInfo', { cells: n(rangeCells(selection)) }),
+                  })}
+                </span>
+                <button type="button" className="btn small primary" onClick={() => reveal(document.querySelector('[data-testid="batch-panel"]'))} data-testid="selection-banner-actions">
+                  {t('w6fx.sel.actions')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="w3vf-compare" data-testid="compare-box">
           <div className="w3vf-compare-row">
@@ -354,8 +502,11 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
           )}
         </div>
         <p className="muted small" data-testid="preview-hint">{t(deviceKey('w5fu.previewHint', coarse))}</p>
-        <section className="w6cb-tools" aria-label={t('w6cb.toolsTitle')} data-testid="preview-tools">
-          <div className="w6cb-tabs" role="group">
+        <section className="w6cb-tools" aria-labelledby="w6fx-tools-h" data-testid="preview-tools">
+          <h3 className="w6fx-tools-h" id="w6fx-tools-h">
+            {t('w6fx.tools.heading')}
+          </h3>
+          <div className="w6cb-tabs" role="group" aria-label={t('w6cb.toolsTitle')}>
             {toolBtn('deviation', t('w6cb.tab.deviation'))}
             {toolBtn('batch', t('w6cb.tab.batch'))}
             {toolBtn('png', t('w6cb.tab.png'))}
@@ -370,10 +521,8 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
                 formula={formula}
                 dither={dither}
                 overlayOn={overlayOn}
-                setOverlayOn={setOverlayOn}
-                pick={pick}
+                setOverlayOn={setMap}
                 onJump={onJump}
-                readOnly={readOnly}
               />
             )}
             {tool === 'batch' && (
@@ -394,6 +543,8 @@ export function StepPreview({ api, materials }: { api: ProjectApi; materials: Ma
                 setRectMode={setRectModeShow}
                 sectionId={sectionId}
                 setSectionId={setSectionId}
+                coarse={coarse}
+                onShow={onShowResult}
               />
             )}
             {tool === 'png' && (

@@ -168,7 +168,12 @@ const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
     await tapAt(page, SPOTS.tile);
     const measured = (await page.textContent('[data-testid="measure-hex"]')).trim();
     const resultText = (await page.textContent('[data-testid="measure-result"]')).replace(/\s+/g, ' ');
-    check('Messwert mit HEX, Lab, ΔE zum bisherigen Wert und Streuung', /^#[0-9A-F]{6}$/.test(measured) && /Lab/.test(resultText) && /ΔE00 zum bisherigen Wert/.test(resultText) && /Streuung der Fläche: ±/.test(resultText), `${measured} | ${resultText.slice(0, 200)}`);
+    // w6-fix-ui: neues Material (Platzhalter #808080) hat noch keine echte Farbe – kein „Bisher“, keine Abweichung dazu
+    check(
+      'Messwert mit HEX, Lab (aufklappbar erklärt) und Streuung; neues Material ohne „Abweichung zum bisherigen Wert“',
+      /^#[0-9A-F]{6}$/.test(measured) && /Lab/.test(resultText) && /Was bedeuten Lab und ΔE/.test(resultText) && !/bisherigen Wert/.test(resultText) && /Streuung der Fläche: ±/.test(resultText),
+      `${measured} | ${resultText.slice(0, 200)}`,
+    );
     check('Glanzlichter verworfen und angezeigt', /% übersteuert verworfen/.test(resultText));
     check('Ehrlichkeitshinweis „Richtwert … keine kalibrierte Farbmessung“', /Richtwert/.test(resultText) && /keine kalibrierte Farbmessung/.test(resultText));
     const hexWhileOpen = await page.inputValue('[data-testid="mat-hex"]');

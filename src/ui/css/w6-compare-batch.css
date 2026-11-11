@@ -59,17 +59,12 @@
   background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0 1.5px, transparent 1.5px 4px);
 }
 
-/* Schnellschalter in der Werkzeugleiste (am Handy im Reiter „Abweichung zum Foto“ – die Leiste bleibt einzeilig) */
+/* Schnellschalter in der Werkzeugleiste (am Handy kurz beschriftet, siehe w6-fix-ui.css) */
 .btn.w6cb-quick.active,
 .btn.w6cb-quick.active:hover {
   background: var(--ink);
   color: #fff;
   border-color: var(--ink);
-}
-@media (max-width: 600px) {
-  .btn.w6cb-quick {
-    display: none;
-  }
 }
 
 /* Werkzeuge */

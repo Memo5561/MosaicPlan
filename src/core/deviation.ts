@@ -575,19 +575,51 @@ export interface NearestColor {
 export function nearestColorForPiece(data: MosaicData, palette: readonly PaletteColor[], idx: number, piece: number, formula: DeltaEFormula): NearestColor | null {
   const l = pieceTarget(data, idx, piece);
   if (!l) return null;
+  const near = nearestPaletteColor(palette, l, formula);
+  if (!near) return null;
+  const current = deviationForPiece(data, palette, idx, piece, formula);
+  return { index: near.index, deltaE: near.deltaE, current, better: current === null || near.deltaE < current };
+}
+
+/**
+ * Palettenfarbe mit dem kleinsten ΔE (Formel `formula`) zu einer Farbe `lab` – jede Palettenfarbe exakt verglichen, bei
+ * Gleichstand der kleinere Index. null bei leerer Palette bzw. ohne gültiges L*a*b*.
+ */
+export function nearestPaletteColor(palette: readonly PaletteColor[], lab: Lab, formula: DeltaEFormula): { index: number; deltaE: number } | null {
   const f = dEFn(formula);
   let best = -1;
   let bd = Infinity;
   for (let i = 0; i < palette.length; i++) {
     const p = paletteLab(palette, i);
     if (!p) continue;
-    const d = f(l[0], l[1], l[2], p[0], p[1], p[2]);
+    const d = f(lab[0], lab[1], lab[2], p[0], p[1], p[2]);
     if (d < bd) {
       bd = d;
       best = i;
     }
   }
-  if (best < 0) return null;
-  const current = deviationForPiece(data, palette, idx, piece, formula);
-  return { index: best, deltaE: bd, current, better: current === null || bd < current };
+  return best < 0 ? null : { index: best, deltaE: bd };
+}
+
+/**
+ * Flächengewichtete Fotofarbe einer ganzen Zelle: Mittel (L*a*b*) der Fotofarben ihrer Teilstücke, gewichtet mit den
+ * Flächen `areas` (gleiche Reihenfolge wie cellPieces). null, wenn nicht JEDES Teilstück eine Fotoreferenz hat (siehe
+ * targetState) oder die Flächen nicht passen.
+ */
+export function cellPhotoTarget(data: MosaicData, idx: number, areas: readonly number[]): Lab | null {
+  if (!areas.length) return null;
+  let L = 0;
+  let a = 0;
+  let b = 0;
+  let w = 0;
+  for (let q = 0; q < areas.length; q++) {
+    const tg = pieceTarget(data, idx, q);
+    const A = areas[q];
+    if (!tg || !(A > 0)) return null;
+    L += tg[0] * A;
+    a += tg[1] * A;
+    b += tg[2] * A;
+    w += A;
+  }
+  return w > 0 ? [L / w, a / w, b / w] : null;
 }

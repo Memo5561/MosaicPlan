@@ -4,6 +4,11 @@
  * Kantenschatten verworfen, Mittel in linearem sRGB, siehe core/colorMeasure.ts). Es wird nichts gespeichert:
  * „Übernehmen“ setzt nur den HEX-Wert im Materialformular, gespeichert wird dort mit „Speichern“.
  * Das Ergebnis ist eine Näherung (Richtwert) und wird nie als kalibriert dargestellt (Anforderung 18).
+ *
+ * Handy (Paket w6-fix-ui): Zoom-Knöpfe unter dem Foto (nicht darüber – sie verdeckten das Foto und fingen Antippen ab),
+ * Zoomen mit zwei Fingern. „Bisher“ und die Abweichung dazu nur, wenn das Material schon eine echte Farbe hat
+ * (`currentHex` leer = Platzhalter eines neuen Materials). Die Abweichung steht in Worten („deutlich (26,5)“); was Lab
+ * und ΔE bedeuten, erklärt ein aufklappbarer Hinweis.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isValidHex } from '../core/color';
@@ -21,12 +26,18 @@ import {
 } from '../core/colorMeasure';
 import { useI18n, type Lang, type TFunc } from '../i18n';
 import { Modal, Swatch } from './components';
+import { deText } from './deWords';
+import { useCoarsePointer } from './project/deviceKind';
 import { loadWorkingBitmap, photoErrorKey } from './project/imagePrep';
 import './css/w6-colour-measure.css';
 
 /** Längste Seite des Messbilds (Speicher auf Android begrenzen; für eine Steinfläche mehr als genug). */
 const MEASURE_MAX_SIDE = 2000;
 const ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
+const MAX_ZOOM = ZOOMS[ZOOMS.length - 1];
+const clampZoom = (z: number) => Math.max(1, Math.min(MAX_ZOOM, Number.isFinite(z) ? z : 1));
+/** nach einer Zwei-Finger-Geste so lange kein Messen durch Antippen (ms) */
+const PINCH_TAP_GUARD_MS = 400;
 
 type RefChoice = 'none' | ReferenceMode;
 type Pt = { x: number; y: number };
@@ -84,15 +95,20 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
   const [refPt, setRefPt] = useState<Pt | null>(null);
   const [tilePt, setTilePt] = useState<Pt | null>(null);
   const [radius, setRadius] = useState(12);
-  const [zoomIdx, setZoomIdx] = useState(0);
+  /** Vergrößerung (1 = ganzes Foto); Knöpfe springen über ZOOMS, zwei Finger zoomen stufenlos */
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  const pinchedAt = useRef(0);
+  const coarse = useCoarsePointer();
   const [fitW, setFitW] = useState(0);
   const camRef = useRef<HTMLInputElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLCanvasElement>(null);
   const cropRef = useRef<HTMLCanvasElement>(null);
-  const zoomFocus = useRef<{ fx: number; fy: number } | null>(null);
-  const zoom = ZOOMS[zoomIdx];
+  /** Punkt (Anteil der Fotobreite/-höhe), der nach dem Zoomen an der Stelle ax/ay (Pixel im Rahmen; sonst Mitte) liegt */
+  const zoomFocus = useRef<{ fx: number; fy: number; ax?: number; ay?: number } | null>(null);
 
   const onFile = async (file: File) => {
     setError(null);
@@ -115,7 +131,7 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
       setPhoto({ canvas, img: { data: data.data, width: w, height: h }, w, h, srcW: wb.srcW, srcH: wb.srcH });
       setRefPt(null);
       setTilePt(null);
-      setZoomIdx(0);
+      setZoom(1);
       setRadius(Math.max(4, Math.round(Math.max(w, h) * 0.015)));
       setTarget(refChoice === 'none' ? 'tile' : 'ref');
     } catch (e) {
@@ -191,26 +207,80 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
     ctx.stroke();
   }, [photo, tilePt, radius]);
 
-  // Zoom um den zuletzt angetippten Punkt (sonst um die Mitte der Ansicht)
+  // Zoom um den zuletzt angetippten Punkt (sonst um die Mitte der Ansicht) bzw. um die Mitte zwischen zwei Fingern
   useLayoutEffect(() => {
     const st = stageRef.current;
     const f = zoomFocus.current;
     if (!st || !f) return;
     zoomFocus.current = null;
-    st.scrollLeft = f.fx * st.scrollWidth - st.clientWidth / 2;
-    st.scrollTop = f.fy * st.scrollHeight - st.clientHeight / 2;
-  }, [zoomIdx]);
+    st.scrollLeft = f.fx * st.scrollWidth - (f.ax ?? st.clientWidth / 2);
+    st.scrollTop = f.fy * st.scrollHeight - (f.ay ?? st.clientHeight / 2);
+  }, [zoom]);
 
-  const changeZoom = (idx: number) => {
+  const changeZoom = (next: number) => {
     const st = stageRef.current;
     const p = target === 'ref' ? (refPt ?? tilePt) : (tilePt ?? refPt);
     if (photo && p) zoomFocus.current = { fx: p.x / photo.w, fy: p.y / photo.h };
     else if (st) zoomFocus.current = { fx: (st.scrollLeft + st.clientWidth / 2) / Math.max(1, st.scrollWidth), fy: (st.scrollTop + st.clientHeight / 2) / Math.max(1, st.scrollHeight) };
-    setZoomIdx(Math.max(0, Math.min(ZOOMS.length - 1, idx)));
+    setZoom(clampZoom(next));
   };
+  const zoomInTo = ZOOMS.find((z) => z > zoom + 1e-6) ?? MAX_ZOOM;
+  const zoomOutTo = [...ZOOMS].reverse().find((z) => z < zoom - 1e-6) ?? 1;
+
+  // Zwei Finger: stufenlos zoomen um die Mitte zwischen den Fingern (der Browser selbst zoomt hier nicht, touch-action)
+  useEffect(() => {
+    const st = stageRef.current;
+    if (!st || !photo) return;
+    let start: { d: number; z: number; fx: number; fy: number } | null = null;
+    const two = (e: TouchEvent) => {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      return { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+    };
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      e.preventDefault();
+      const g = two(e);
+      const r = st.getBoundingClientRect();
+      start = {
+        d: Math.max(1, g.d),
+        z: zoomRef.current,
+        fx: (st.scrollLeft + g.x - r.left) / Math.max(1, st.scrollWidth),
+        fy: (st.scrollTop + g.y - r.top) / Math.max(1, st.scrollHeight),
+      };
+      pinchedAt.current = Date.now();
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!start || e.touches.length !== 2) return;
+      e.preventDefault();
+      const g = two(e);
+      const r = st.getBoundingClientRect();
+      zoomFocus.current = { fx: start.fx, fy: start.fy, ax: g.x - r.left, ay: g.y - r.top };
+      setZoom(clampZoom((start.z * g.d) / start.d));
+      pinchedAt.current = Date.now();
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (start && e.touches.length < 2) {
+        start = null;
+        pinchedAt.current = Date.now();
+      }
+    };
+    st.addEventListener('touchstart', onStart, { passive: false });
+    st.addEventListener('touchmove', onMove, { passive: false });
+    st.addEventListener('touchend', onEnd);
+    st.addEventListener('touchcancel', onEnd);
+    return () => {
+      st.removeEventListener('touchstart', onStart);
+      st.removeEventListener('touchmove', onMove);
+      st.removeEventListener('touchend', onEnd);
+      st.removeEventListener('touchcancel', onEnd);
+    };
+  }, [photo]);
 
   const onTap = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!photo) return;
+    // das Ende einer Zwei-Finger-Geste ist kein Antippen zum Messen
+    if (Date.now() - pinchedAt.current < PINCH_TAP_GUARD_MS) return;
     const r = e.currentTarget.getBoundingClientRect();
     const p = { x: ((e.clientX - r.left) / r.width) * photo.w, y: ((e.clientY - r.top) / r.height) * photo.h };
     if (p.x < 0 || p.y < 0 || p.x > photo.w || p.y > photo.h) return;
@@ -228,7 +298,9 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
   };
 
   const maxRadius = photo ? Math.max(6, Math.round(Math.min(photo.w, photo.h) / 6)) : 100;
-  const deCurrent = res && usable && isValidHex(currentHex) ? deltaEHex(currentHex, res.hex) : NaN;
+  /** „Bisher“ nur mit echter Farbe (leerer bzw. ungültiger Wert = Platzhalter eines neuen Materials) */
+  const hasCurrent = isValidHex(currentHex);
+  const deCurrent = res && usable && hasCurrent ? deltaEHex(currentHex, res.hex) : NaN;
   const refStatus = refChoice === 'none' ? null : !refRes ? null : refRes.ok ? { cls: 'ok', text: t('w6cm.refOk', { n: n(refRes.patch.n) }) } : { cls: 'error', text: t(`w6cm.refErr.${refRes.reason}`) };
 
   return (
@@ -323,7 +395,10 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
           <div className="w6cm-main">
             <div className="w6cm-left">
               <p className="w6cm-step" data-testid="measure-step">
-                <b>{target === 'ref' && refChoice !== 'none' ? t('w6cm.step.ref') : t('w6cm.step.tile')}</b> <span className="muted small">{zoom > 1 ? t('w6cm.panHint') : ''}</span>
+                <b>{target === 'ref' && refChoice !== 'none' ? t('w6cm.step.ref') : t('w6cm.step.tile')}</b>{' '}
+                <span className="muted small">
+                  {zoom > 1 ? t('w6cm.panHint') : ''} {coarse ? t('w6fx.measure.pinch') : ''}
+                </span>
               </p>
               {refStatus && (
                 <p className={`${refStatus.cls} small`} role="status" data-testid="measure-ref-status">
@@ -334,14 +409,14 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
                 <div className="w6cm-stage" ref={stageRef}>
                   <canvas ref={viewRef} className="w6cm-view" style={{ width: fitW ? Math.round(fitW * zoom) : '100%' }} onClick={onTap} data-testid="measure-canvas" />
                 </div>
-                <div className="w6cm-zoom">
-                  <button className="icon-btn" onClick={() => changeZoom(zoomIdx + 1)} disabled={zoomIdx >= ZOOMS.length - 1} aria-label={t('w6cm.zoomIn')} title={t('w6cm.zoomIn')} data-testid="measure-zoom-in">
+                <div className="w6cm-zoom" data-testid="measure-zoom" data-zoom={zoom}>
+                  <button className="icon-btn" onClick={() => changeZoom(zoomInTo)} disabled={zoom >= MAX_ZOOM - 1e-6} aria-label={t('w6cm.zoomIn')} title={t('w6cm.zoomIn')} data-testid="measure-zoom-in">
                     +
                   </button>
-                  <button className="icon-btn" onClick={() => changeZoom(zoomIdx - 1)} disabled={zoomIdx === 0} aria-label={t('w6cm.zoomOut')} title={t('w6cm.zoomOut')}>
+                  <button className="icon-btn" onClick={() => changeZoom(zoomOutTo)} disabled={zoom <= 1 + 1e-6} aria-label={t('w6cm.zoomOut')} title={t('w6cm.zoomOut')} data-testid="measure-zoom-out">
                     −
                   </button>
-                  <button className="icon-btn" onClick={() => changeZoom(0)} disabled={zoomIdx === 0} aria-label={t('w6cm.zoomFit')} title={t('w6cm.zoomFit')}>
+                  <button className="icon-btn" onClick={() => changeZoom(1)} disabled={zoom <= 1 + 1e-6} aria-label={t('w6cm.zoomFit')} title={t('w6cm.zoomFit')} data-testid="measure-zoom-fit">
                     ⤢
                   </button>
                 </div>
@@ -369,8 +444,8 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
                       <span className="w6cm-swatch" style={{ background: usable ? res.hex : 'transparent' }} />
                       <figcaption>{t('w6cm.res.measured')}</figcaption>
                     </figure>
-                    {isValidHex(currentHex) && (
-                      <figure>
+                    {hasCurrent && (
+                      <figure data-testid="measure-current">
                         <span className="w6cm-swatch small" style={{ background: currentHex }} />
                         <figcaption>{t('w6cm.res.current')}</figcaption>
                       </figure>
@@ -380,12 +455,16 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
                         <div className="mono" data-testid="measure-hex">
                           {res.hex}
                         </div>
-                        <div className="mono">
-                          Lab {n(res.lab[0], 1)} / {n(res.lab[1], 1)} / {n(res.lab[2], 1)}
-                        </div>
-                        {Number.isFinite(deCurrent) && <div>{t('w6cm.res.de', { de: n(deCurrent, 1) })}</div>}
+                        {Number.isFinite(deCurrent) && <div data-testid="measure-de">{t('w6cm.res.de', { de: deText(t, n, deCurrent, true) })}</div>}
                         <div data-testid="measure-spread">{t('w6cm.res.spread', { de: n(res.spreadDE, 1) })}</div>
                         <div className="muted">{t('w6cm.res.pixels', { n: n(res.n), clip: n(res.clippedFrac * 100, 0) })}</div>
+                        <details className="w6fx-explain" data-testid="measure-explain">
+                          <summary>{t('w6fx.measure.explain')}</summary>
+                          <div className="mono" data-testid="measure-lab">
+                            Lab {n(res.lab[0], 1)} / {n(res.lab[1], 1)} / {n(res.lab[2], 1)}
+                          </div>
+                          <p className="muted">{t('w6fx.measure.explainText')}</p>
+                        </details>
                       </div>
                     )}
                   </div>
@@ -404,9 +483,9 @@ export function MeasureColorDialog({ currentHex, onApply, onClose }: { currentHe
             </section>
           </div>
         )}
-        {!photo && (
-          <p className="muted small">
-            <Swatch hex={isValidHex(currentHex) ? currentHex : '#808080'} size={14} /> {t('w6cm.res.current')}: <span className="mono">{currentHex}</span>
+        {!photo && hasCurrent && (
+          <p className="muted small" data-testid="measure-current-hex">
+            <Swatch hex={currentHex} size={14} /> {t('w6cm.res.current')}: <span className="mono">{currentHex}</span>
           </p>
         )}
       </div>

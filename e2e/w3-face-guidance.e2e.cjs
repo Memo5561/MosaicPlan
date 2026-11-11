@@ -299,11 +299,17 @@ async function touchDrag(cdp, page, x0, y0, dx, dy, steps = 12, end = 'touchEnd'
   await mp.screenshot({ path: path.join(OUT, '09-mobile-draw-on.png') });
   hbm = await (await mp.$('[data-testid="region-holder"]')).boundingBox();
   const sy2 = await mp.evaluate(() => window.scrollY);
+  // Höhe der klebenden Live-Vorschau: am Handy blendet sie sich nach dem Zug wieder ein (Paket w6-fix-ui);
+  // der Browser gleicht das per Scroll-Verankerung aus – diese Verschiebung ist kein Seiten-Scrollen durch den Zug.
+  const lpH = () => mp.evaluate(() => document.querySelector('.w3lp')?.getBoundingClientRect().height ?? 0);
+  const lp2 = await lpH();
   await touchDrag(cdp, mp, hbm.x + hbm.width * 0.1, hbm.y + 40, hbm.width * 0.3, 90, 12);
+  await mp.waitForTimeout(300);
   const sy3 = await mp.evaluate(() => window.scrollY);
+  const lp3 = await lpH();
   const n2 = (await readProject(mp)).regions.length;
   const pressed2 = await mp.getAttribute('[data-testid="region-draw-toggle"]', 'aria-pressed');
-  check('Handy: mit Zeichenmodus legt ein Zug genau einen Bereich an und der Modus schaltet ab', n2 === n1 + 1 && pressed2 === 'false' && Math.abs(sy3 - sy2) < 2, `Bereiche ${n1} → ${n2}, aria-pressed ${pressed2}, scroll ${sy2}→${sy3}`);
+  check('Handy: mit Zeichenmodus legt ein Zug genau einen Bereich an und der Modus schaltet ab', n2 === n1 + 1 && pressed2 === 'false' && Math.abs(sy3 - sy2 - (lp3 - lp2)) < 3, `Bereiche ${n1} → ${n2}, aria-pressed ${pressed2}, scroll ${sy2}→${sy3}, Vorschau ${Math.round(lp2)}→${Math.round(lp3)} px`);
   await mp.screenshot({ path: path.join(OUT, '10-mobile-drawn.png') });
 
   // abgebrochene Geste (pointercancel): nichts gespeichert, kein Entwurf bleibt stehen

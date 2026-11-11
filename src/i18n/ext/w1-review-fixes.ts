@@ -55,8 +55,7 @@ export const de: Record<string, string> = {
   'pdf.perColorHint': 'Bedarf je Farbe (Rohsteine mit Reserve). Packungen und Kosten stehen in der Einkaufsliste je Material.',
   'pdf.notchLine': 'Einschnitt {i}: ({x1}; {y1}) → Innenecke ({x2}; {y2}) – nicht durchritzen',
   'pdf.notchEdgeLine': 'Einschnitt {i}: ({x1}; {y1}) → Steinkante ({x2}; {y2}) – nicht durchritzen',
-  'pdf.templatesHint':
-    'Jede Vorlage ist geometrisch berechnet. Gestrichelt: Rohstein · Fläche: Stein · Rot: durchgehende Schnitte (ritzen und brechen) · Orange gepunktet: Einschnitte bis zur Innenecke – nicht durchritzen, mit der Zange ausknabbern bzw. schleifen. Koordinaten in mm ab oberer linker Rohsteinecke.',
+  // 'pdf.templatesHint': Text steht in w5-pdf-content.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'pdf.templateMore': '… weitere Angaben im Steindetail der App',
 };
 
@@ -112,8 +111,7 @@ export const en: Record<string, string> = {
   'pdf.perColorHint': 'Need per colour (raw tiles incl. reserve). Packs and cost are in the shopping list per material.',
   'pdf.notchLine': 'Notch {i}: ({x1}; {y1}) → inner corner ({x2}; {y2}) – do not score through',
   'pdf.notchEdgeLine': 'Notch {i}: ({x1}; {y1}) → tile edge ({x2}; {y2}) – do not score through',
-  'pdf.templatesHint':
-    'Every template is computed geometrically. Dashed: raw tile · Fill: tile · Red: through cuts (score and snap) · Dotted orange: notches up to the inner corner – do not score through, nibble out with nippers or grind. Coordinates in mm from the top-left corner of the raw tile.',
+  // 'pdf.templatesHint': Text steht in w5-pdf-content.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'pdf.templateMore': '… more details in the tile details of the app',
 };
 
@@ -169,7 +167,6 @@ export const tr: Record<string, string> = {
   'pdf.perColorHint': 'Renk başına ihtiyaç (yedekli ham taş). Paketler ve maliyet malzeme başına alışveriş listesindedir.',
   'pdf.notchLine': 'Çentik {i}: ({x1}; {y1}) → iç köşe ({x2}; {y2}) – boydan boya çizmeyin',
   'pdf.notchEdgeLine': 'Çentik {i}: ({x1}; {y1}) → taş kenarı ({x2}; {y2}) – boydan boya çizmeyin',
-  'pdf.templatesHint':
-    'Her şablon geometrik olarak hesaplanır. Kesikli: ham taş · Dolgu: taş · Kırmızı: boydan boya kesimler (çizip kırın) · Turuncu noktalı: iç köşeye kadar çentikler – boydan boya çizmeyin, pense ile kemirin veya taşlayın. Koordinatlar ham taşın sol üst köşesinden mm.',
+  // 'pdf.templatesHint': Text steht in w5-pdf-content.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'pdf.templateMore': '… diğer ayrıntılar uygulamadaki taş ayrıntısında',
 };

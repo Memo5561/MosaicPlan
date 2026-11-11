@@ -78,3 +78,72 @@ export function usePdfFacts(token: object, build: () => PdfPlanRequest, paused: 
   if (result && result.token === token) return { status: result.facts ? 'ready' : 'failed', facts: result.facts, error: result.error, ms: result.facts ? result.ms : null };
   return { status: 'measuring', facts: null, error: null, ms: null };
 }
+
+/**
+ * Export in Teilen (w5-fix-pdf): misst JEDEN Teil mit genau seiner Abschnittsauswahl – mit demselben Trockenlauf wie
+ * eine Einzeldatei dieser Abschnitte. So nennen Teil und gleich gewählte Einzeldatei dieselbe Seitenzahl. Die Teile
+ * werden nacheinander gemessen (ein Worker), erst wenn `paused` false ist (nach der Messung des Ganzen, nie während
+ * eines Exports); eine unterbrochene Messung wird später fortgesetzt. Neuer `token` oder andere Teile: neu gemessen.
+ * Liefert je Teil die Messwerte oder null (noch nicht gemessen bzw. gescheitert).
+ */
+export function usePartFacts(
+  token: object,
+  parts: readonly (readonly string[])[],
+  build: (ids: string[], index: number, total: number) => PdfPlanRequest,
+  paused: boolean,
+): (PdfLayoutFacts | null)[] {
+  const key = JSON.stringify(parts);
+  const [res, setRes] = useState<{ token: object; key: string; facts: (PdfLayoutFacts | null)[]; failed: boolean[] } | null>(null);
+  const buildRef = useRef(build);
+  buildRef.current = build;
+  const partsRef = useRef(parts);
+  partsRef.current = parts;
+  const cur = res && res.token === token && res.key === key ? res : null;
+  const curRef = useRef(cur);
+  curRef.current = cur;
+  const done = cur ? cur.facts.filter((f, i) => f || cur.failed[i]).length : 0;
+
+  useEffect(() => {
+    const ps = partsRef.current;
+    if (paused || ps.length < 2) return;
+    const c = curRef.current;
+    const facts = c?.facts ?? ps.map(() => null);
+    const failed = c?.failed ?? ps.map(() => false);
+    const i = facts.findIndex((f, k) => !f && !failed[k]);
+    if (i < 0) return;
+    let started = false;
+    let live = true;
+    const store = (f: PdfLayoutFacts | null) => {
+      if (!live) return;
+      const nf = [...facts];
+      const nx = [...failed];
+      nf[i] = f;
+      nx[i] = !f;
+      setRes({ token, key, facts: nf, failed: nx });
+    };
+    const timer = window.setTimeout(() => {
+      started = true;
+      let req: PdfPlanRequest;
+      try {
+        req = buildRef.current([...ps[i]], i, ps.length);
+      } catch {
+        store(null);
+        return;
+      }
+      runWorker<'pdfPlan'>('pdfPlan', req).then(
+        (r) => store(r.facts),
+        (e: unknown) => {
+          // abgebrochen (neuer Stand, Export gestartet): später erneut; sonst als gescheitert merken
+          if ((e instanceof Error ? e.message : String(e)) !== CANCELLED) store(null);
+        },
+      );
+    }, DEBOUNCE_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+      if (started && channelBusy('pdfPlan')) cancelChannel('pdfPlan');
+    };
+  }, [token, key, paused, done]);
+
+  return cur ? cur.facts : parts.map(() => null);
+}

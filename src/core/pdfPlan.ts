@@ -623,8 +623,18 @@ export interface PdfLayoutFacts {
   templateBoxes?: TemplateBoxSpec[];
   /** Seiten der kompakten Koordinatenliste (gemessen) */
   coordPages?: number;
-  /** Steine je Abschnitt (= computeStats().pieces) */
-  stones: Record<string, number>;
+  /**
+   * je Abschnitt: Steine (= computeStats().pieces) und zugeschnittene Steine (= computeStats().cutPieces = Sonderteile
+   * der kompakten Koordinatenliste) – damit schätzt planForSelection auch Teilmengen (Export in Teilen) richtig
+   */
+  stones: Record<string, SectionCounts>;
+  /**
+   * Schnittvorlagen des ganzen Mosaiks (globale Reihenfolge T1 …): je Vorlage die Abschnitte, in denen sie vorkommt –
+   * für Teilmengen (Export in Teilen) zählt nur, was in den exportierten Abschnitten vorkommt
+   */
+  templateSections?: string[][];
+  /** globale Vorlagennummern (T1 = 1) der gedruckten Kästen, in derselben Reihenfolge wie templateBoxes */
+  templateBoxNos?: number[];
 }
 
 /** Zahlen je Abschnitt aus der Statistik (für Schätzungen ohne gemessene Teile). */
@@ -801,10 +811,13 @@ export function planPdfPages(
   }
   for (const s of plan.sections) {
     if (!s.selected) continue;
-    const st = facts?.stones?.[s.section.id] ?? countsOf(piecesPerSection, s.section.id)?.pieces;
+    const measured = facts?.stones?.[s.section.id];
+    const counted = countsOf(piecesPerSection, s.section.id);
+    const st = measured?.pieces ?? counted?.pieces;
     if (st === undefined && coordMode === 'perStone') estimated.add('coords');
     stonesPerSection.push(st ?? 0);
-    compactSections.push({ cols: s.section.c1 - s.section.c0, rows: s.section.r1 - s.section.r0, specials: countsOf(piecesPerSection, s.section.id)?.cutPieces ?? 0 });
+    // Sonderteile der kompakten Liste = zugeschnittene Steine (computeStats().cutPieces), gemessen bevorzugt
+    compactSections.push({ cols: s.section.c1 - s.section.c0, rows: s.section.r1 - s.section.r0, specials: measured?.cutPieces ?? counted?.cutPieces ?? 0 });
   }
 
   // ---- Schnittvorlagen

@@ -934,6 +934,14 @@ export interface PreviewInfo {
   committedCurrent: boolean;
 }
 
+/**
+ * Zähler „manuelle Änderungen am Raster seit der Berechnung“ nach einer Bearbeitung (+1, auch Wiederholen) bzw.
+ * Rückgängig (−1), nie unter 0. Netto: ein Mosaik, das bis zum berechneten Stand zurückgenommen ist, zählt 0.
+ */
+export function nextManualEdits(current: number | undefined, delta: 1 | -1): number {
+  return Math.max(0, (current ?? 0) + delta);
+}
+
 export function useProject(id: string, materials: Material[], lang: Lang) {
   const [rec, setRecState] = useState<ProjectRecord | null>(null);
   const [image, setImageState] = useState<ImageRecord | null>(null);
@@ -1624,9 +1632,12 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
    * Nach manuellen Änderungen am Raster (ohne Verlaufseintrag – der kommt von editCells/paletteOp).
    * `dirtyCells`: geänderte Zellen (Zellindizes). Mit Liste werden die Fortschrittszähler nur für diese Zellen
    * nachgeführt (auch eine geänderte Teilezahl), ohne Liste beim nächsten Zugriff neu aufgebaut.
+   * `editsDelta`: Änderung des Zählers „manuelle Änderungen seit der Berechnung“ (meta.manualEdits): +1 für eine neue
+   * Bearbeitung und für Wiederholen, −1 für Rückgängig (nie unter 0) – so zählt ein bis zum berechneten Stand
+   * zurückgenommenes Mosaik wieder als unverändert (ΔE je Farbe gilt, der Schutz vor dem Neuberechnen warnt nicht).
    */
   const touchMosaicRaw = useCallback(
-    (dirtyCells?: Iterable<number>) => {
+    (dirtyCells?: Iterable<number>, editsDelta: 1 | -1 = 1) => {
       const cells = cellList(dirtyCells);
       const index = liveIndex();
       const c = computedRef.current;
@@ -1635,7 +1646,7 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
       noteEdit(id);
       setVersion((v) => v + 1);
       markDirty('mosaic');
-      update((r) => ({ ...r, meta: { ...r.meta, manualEdits: (r.meta.manualEdits ?? 0) + 1 } }));
+      update((r) => ({ ...r, meta: { ...r.meta, manualEdits: nextManualEdits(r.meta.manualEdits, editsDelta) } }));
       // Teilezahl (Form geändert) und damit die Zahlen für „Meine Projekte“ können sich geändert haben
       syncSummary(false);
     },
@@ -1803,7 +1814,8 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
         const pal = normalizePaletteNames(res.palette, lang);
         update((x) => ({ ...x, palette: pal }));
       }
-      if (res.mosaicChanged) touchMosaicRaw(res.cells ?? undefined);
+      // Verlauf netto: Rückgängig nimmt die gezählte Bearbeitung zurück, Wiederholen zählt sie wieder
+      if (res.mosaicChanged) touchMosaicRaw(res.cells ?? undefined, dir === 'undo' ? -1 : 1);
       if (res.progressChanged) touchProgress(res.cells ?? undefined);
       setHistoryApplied((v) => v + 1);
       emitHistory({ kind: dir, label: res.entry.label, flash: res.entry.flash, entryType: res.entry.type });

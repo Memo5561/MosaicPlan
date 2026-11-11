@@ -124,6 +124,15 @@ Schnittvorlagen (vergrößert + 1:1, Kantenmaße, Winkel, Schnittlinien) · Koor
 Große Abschnitte werden automatisch auf mehrere Blätter verteilt; Blattgrenzen liegen auf Rasterlinien.
 Beim Druck **„Tatsächliche Größe / 100 %“** wählen und die Kontrollstrecke nachmessen.
 
+Abschnittsauswahl und **Export in Teilen**: Schnittvorlagen enthalten nur die Vorlagen der exportierten Abschnitte
+(Nummern T1 … bleiben global, Stückzahlen gelten für die exportierten Abschnitte, das ganze Mosaik steht daneben).
+Jedes Teil-PDF nennt „Teil k von n“ auf dem Deckblatt und in jeder Fußzeile; die Seitenzahl jedes Teils wird mit
+seinen Abschnitten gemessen (`usePartFacts`, wie eine Einzeldatei derselben Abschnitte). Fertige Dateien gehören
+zu allem, was im PDF steht (Optionen, Raster, Palette, Materialien, Einstellungen, Name, Foto, Sprache – `pdfFileSig`);
+der Vermerk „Export läuft“ (`mp.pdfInFlight`) trägt Tab-Kennung und Lebenszeichen bzw. eine Web-Sperre, damit ein
+zweiter Tab einen laufenden Export nie für einen Absturz hält. Dateinamen sind ASCII (`safeFileName`: ä → ae, ş → s …)
+mit dem Wort der Oberflächensprache (`…_verlegeplan.pdf`, `…_laying-plan.pdf`, `…_doseme-plani.pdf`).
+
 ## Technik
 
 React 19 + TypeScript, Vite, Canvas 2D (virtuelles Rendering nur sichtbarer Steine; Übersichtsbitmap beim

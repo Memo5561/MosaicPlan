@@ -30,6 +30,7 @@ import { invalidFreeCells } from './edits';
 import { maxColorIndex } from './integrity';
 import { cellId, pieceId, rowLabel, type Layout, type Section, type SectionGrid } from './layout';
 import { coordModeOf, fitSheetScale, fmtScale, pageSize, sheetPrintArea, SHEET_LEFT_RESERVE, SHEET_TOP_RESERVE, type CodePlanMode, type PdfOptions } from './pdfOptions';
+import { formatSectionRange } from './pdfExportPlan';
 import {
   codePlanParts,
   codePlanZoom,
@@ -95,6 +96,8 @@ export interface PdfInput {
   t: TFn;
   locale: 'de' | 'en' | 'tr';
   fonts?: { regular: string; bold: string };
+  /** Export in Teilen: dieses PDF ist Teil index+1 von total (steht auf dem Deckblatt und in jeder Fußzeile) */
+  part?: { index: number; total: number };
 }
 
 export interface TemplateGroup {
@@ -106,6 +109,8 @@ export interface TemplateGroup {
   colors: Set<number>;
   /** Vorkommen je Blatt (Blatt-ID → Anzahl), wenn beim Sammeln eine Blattzuordnung übergeben wurde */
   sheets: Map<string, number>;
+  /** Farben je Blatt (Blatt-ID → Farbindizes), wenn beim Sammeln eine Blattzuordnung übergeben wurde */
+  sheetColors: Map<string, Set<number>>;
 }
 
 /**
@@ -133,7 +138,7 @@ export function collectTemplates(
         if (!ci.needsCut) return;
         let g = bySig.get(ci.signature);
         if (!g) {
-          g = { no: 0, info: ci, count: 0, color: p.color, ids: [], colors: new Set(), sheets: new Map() };
+          g = { no: 0, info: ci, count: 0, color: p.color, ids: [], colors: new Set(), sheets: new Map(), sheetColors: new Map() };
           bySig.set(ci.signature, g);
         }
         g.count++;
@@ -142,6 +147,9 @@ export function collectTemplates(
         if (locate) {
           const key = locate(row, col)?.key ?? '';
           g.sheets.set(key, (g.sheets.get(key) ?? 0) + 1);
+          let cs = g.sheetColors.get(key);
+          if (!cs) g.sheetColors.set(key, (cs = new Set()));
+          cs.add(p.color);
         }
       });
     }
@@ -550,6 +558,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     FONT = 'DejaVu';
   }
   const f1 = (v: number, d = 1) => fmtMm(v, d, loc);
+  /** feste Nachkommastellen (Flächen, Anteile): gleiche Genauigkeit in jeder Zeile */
+  const fx = (v: number, d: number) => (Number.isFinite(v) ? (loc === 'en' ? v.toFixed(d) : v.toFixed(d).replace('.', ',')) : '–');
   const font = (size: number, bold = false) => {
     doc.setFont(FONT, bold ? 'bold' : 'normal');
     doc.setFontSize(size);
@@ -784,6 +794,15 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   font(9);
   text(`${t('pdf.created')}: ${input.dateStr}`, M, y + 7);
   y += 15;
+  // Export in Teilen: „Teil k von n“ gut sichtbar unter dem Projektnamen (und in jeder Fußzeile)
+  const partInfo = input.part && input.part.total > 1 ? input.part : null;
+  if (partInfo) {
+    font(13, true);
+    setText('#B3261E');
+    text(t('w5fp.pdf.partCover', { k: partInfo.index + 1, n: partInfo.total }), M, y);
+    setText('#000000');
+    y += 7;
+  }
   const kv: [string, string][] = [
     [t('pdf.requestedSize'), `${f1(layout.requestedW / 10, 2)} × ${f1(layout.requestedH / 10, 2)} cm`],
     [t('pdf.finishedSize'), `${f1(layout.finishedW, 2)} × ${f1(layout.finishedH, 2)} mm`],
@@ -796,6 +815,11 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     [t('pdf.origin'), t('pdf.originText')],
     [t('pdf.sheetScale'), opts.sheetScale > 0 ? scaleStr : t('pdf.fitScale', { scale: scaleStr })],
   ];
+  if (partInfo)
+    kv.push([
+      t('w5fp.pdf.partLabel'),
+      t('w5fp.pdf.partValue', { k: partInfo.index + 1, n: partInfo.total, range: opts.sectionIds ? formatSectionRange(opts.sectionIds, input.sections) : t('w5fp.pdf.allSections') }),
+    ]);
   if (layout.restX > 1e-6 || layout.restY > 1e-6) kv.push([t('pdf.rest'), `${f1(layout.restX, 2)} × ${f1(layout.restY, 2)} mm`]);
   {
     // Platz für alle Angaben + Druckhinweis über der Kontrollstrecke; das Vorschaubild bekommt den Rest
@@ -1006,11 +1030,12 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     [t('pdf.stonesTotal'), num(stats.pieces)],
     [t('pdf.uncut'), num(stats.uncutPieces)],
     [t('pdf.cut'), num(stats.cutPieces)],
-    [t('pdf.areaTotal'), `${f1(stats.finishedArea / 1e6, 4)} m²`],
-    [t('pdf.areaStones'), `${f1(stats.stoneArea / 1e6, 4)} m² (${f1((stats.stoneArea / stats.finishedArea) * 100, 1)} %)`],
-    [t('pdf.areaJoints'), `${f1(stats.jointArea / 1e6, 4)} m² (${f1((stats.jointArea / stats.finishedArea) * 100, 1)} %)`],
+    // Flächen einheitlich mit 4 festen Nachkommastellen (m²), Anteile mit 1 – nie „0,075“ neben „0,0679“
+    [t('pdf.areaTotal'), `${fx(stats.finishedArea / 1e6, 4)} m²`],
+    [t('pdf.areaStones'), `${fx(stats.stoneArea / 1e6, 4)} m² (${fx((stats.stoneArea / stats.finishedArea) * 100, 1)} %)`],
+    [t('pdf.areaJoints'), `${fx(stats.jointArea / 1e6, 4)} m² (${fx((stats.jointArea / stats.finishedArea) * 100, 1)} %)`],
     [t('pdf.rawTotal'), num(stats.rawTotal)],
-    [t('pdf.waste'), `${f1(stats.wasteArea / 1e6, 4)} m² (${f1(stats.wastePct, 1)} %)`],
+    [t('pdf.waste'), `${fx(stats.wasteArea / 1e6, 4)} m² (${fx(stats.wastePct, 1)} %)`],
     [t('pdf.reserve'), `${settings.reservePct} % → ${num(stats.rawWithReserveTotal)} ${t('pdf.rawStones')}`],
     [t('pdf.grout'), `≈ ${f1(stats.groutKg, 2)} kg (${t('pdf.estimate')}, ${t('pdf.depth')} ${f1(settings.groutDepthMm)} mm)`],
   ];
@@ -1092,7 +1117,10 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       t('pdf.materials'),
     ).y;
     setText('#555555');
-    y = para(t('pdf.shopHint'), M, y - 1, AW, 7) + 3;
+    // „Summe der Kosten = Materialkosten oben“ nur, wenn es Kosten gibt; ohne Material keine Packungen/Kosten
+    const anyMaterial = stats.perMaterial.some((ms) => !!ms.material);
+    const anyCost = stats.perMaterial.some((ms) => ms.cost !== undefined);
+    y = para(t(anyCost ? 'pdf.shopHint' : anyMaterial ? 'w5fp.pdf.shopHintNoCost' : 'w5fp.pdf.shopHintNoMaterial'), M, y - 1, AW, 7) + 3;
     setText('#000000');
   }
   y = table(
@@ -1122,9 +1150,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   const plan = planSheets(layout, input.sections, opts);
   const locate = makeSheetLocator(plan, input.sections, layout);
   const tpl = collectTemplates(layout, data, palette, materials, cache, locate);
-  facts.templateGroups = tpl.groups.length;
-  /** Vorlage im PDF gedruckt? (Vorlagen eingeschaltet und innerhalb des Limits) */
-  const tplPrinted = (no: number) => opts.includeTemplates && no <= opts.templateLimit;
+  /** Vorlage im PDF gedruckt? (Vorlagen eingeschaltet, kommt in den exportierten Abschnitten vor, innerhalb des Limits) */
+  const tplPrinted = (no: number) => shownTplNos.has(no);
   const codeMode: CodePlanMode = opts.codePlan ?? 'auto';
   const coordMode = coordModeOf(opts);
   const fullMemo: FullMemo = new Map();
@@ -1158,6 +1185,31 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   const selectedSheets = new Set<string>();
   for (const ss of plan.sections) if (ss.selected) for (const sh of ss.sheets) selectedSheets.add(sh.key);
   const nSelected = plan.sections.filter((ss) => ss.selected).length;
+  // ---------- Schnittvorlagen der exportierten Abschnitte (Nummern T1 … bleiben global – dieselben in jedem Teil);
+  // Stückzahlen und Farben je Vorlage gelten für die exportierten Abschnitte
+  const sheetSection = new Map<string, string>();
+  for (const ss of plan.sections) for (const sh of ss.sheets) sheetSection.set(sh.key, ss.section.id);
+  const partial = !!opts.sectionIds;
+  const inSel = (gr: TemplateGroup) => !partial || [...gr.sheets.keys()].some((k) => selectedSheets.has(k));
+  const tplSel = tpl.groups.filter(inSel);
+  /** Vorkommen einer Vorlage in den exportierten Abschnitten */
+  const selCount = (gr: TemplateGroup) => {
+    if (!partial) return gr.count;
+    let n = 0;
+    for (const [k, v] of gr.sheets) if (selectedSheets.has(k)) n += v;
+    return n;
+  };
+  const selColors = (gr: TemplateGroup): number[] => {
+    if (!partial) return [...gr.colors];
+    const out = new Set<number>();
+    for (const [k, cs] of gr.sheetColors) if (selectedSheets.has(k)) cs.forEach((c) => out.add(c));
+    return [...gr.colors].filter((c) => out.has(c));
+  };
+  const shownTpl = opts.includeTemplates ? tplSel.slice(0, Math.max(0, opts.templateLimit)) : [];
+  const shownTplNos = new Set(shownTpl.map((gr) => gr.no));
+  facts.templateGroups = tplSel.length;
+  facts.templateSections = tpl.groups.map((gr) => [...new Set([...gr.sheets.keys()].map((k) => sheetSection.get(k) ?? ''))].filter(Boolean));
+  facts.templateBoxNos = shownTpl.map((gr) => gr.no);
   let secDone = 0;
   const sectionDone = () => {
     secDone++;
@@ -1227,7 +1279,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     const { cx, ry } = ss;
     const nT = ss.sheets.length;
     const secStats = secStatsOf(sec);
-    facts.stones[sec.id] = secStats.pieces;
+    facts.stones[sec.id] = { pieces: secStats.pieces, cutPieces: secStats.cutPieces };
     facts.colorsPerSection[sec.id] = secStats.perColor.filter((c) => c.pieces > 0).length;
     newPage(`${t('pdf.section')} ${sec.id}`);
     if (!chapterPage.has('sheets')) chapterPage.set('sheets', pg());
@@ -1372,7 +1424,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   function summaryBlock(ss: SectionSheets): SummaryBlock {
     const sec = ss.section;
     const st = secStatsOf(sec);
-    facts.stones[sec.id] = st.pieces;
+    facts.stones[sec.id] = { pieces: st.pieces, cutPieces: st.cutPieces };
     const colors = st.perColor.filter((c) => c.pieces > 0).length;
     facts.colorsPerSection[sec.id] = colors;
     const nb = (dr: number, dc: number) => neighborSec(sec, dr, dc)?.id ?? '–';
@@ -2157,7 +2209,6 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     }
   }
   // ---------- Schnittvorlagen: Layout je gedruckter Vorlage (Kastenhöhe folgt dem Inhalt) – auch für den Seitenplan
-  const shownTpl = opts.includeTemplates ? tpl.groups.slice(0, Math.max(0, opts.templateLimit)) : [];
   const tplPerRow = Math.max(1, Math.floor(AW / TEMPLATE_BOX.w));
   const tplLayouts = shownTpl.map((gr) => layoutTemplate(gr.info, templateTexts(gr), measure, { maxSpan: tplPerRow }));
   const tplSpecs: TemplateBoxSpec[] = tplLayouts.map((l) => ({ h: l.h + TPL.gap, span: l.span }));
@@ -2170,9 +2221,9 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
 
   // ================= 8. Schnittvorlagen
   const p8 = pg();
-  if (opts.includeTemplates && tpl.groups.length) {
+  if (opts.includeTemplates && tplSel.length) {
     onProgress?.(0.78, 'templates');
-    const lay = layoutTemplateBoxes(tplSpecs, tpl.groups.length > shownTpl.length, PW, PH);
+    const lay = layoutTemplateBoxes(tplSpecs, tplSel.length > shownTpl.length, PW, PH);
     newPage(t('pdf.templates'));
     chapterPage.set('templates', pg());
     const first = pg();
@@ -2197,7 +2248,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     if (lay.notice) {
       while (pg() < first + lay.notice.page) newPage(t('pdf.templates'));
       setText('#7A2E10');
-      para(t('pdf.templatesTruncated', { n: tpl.groups.length - shownTpl.length }), M, lay.notice.y, AW, 8);
+      para(t('pdf.templatesTruncated', { n: tplSel.length - shownTpl.length }), M, lay.notice.y, AW, 8);
       setText('#000000');
     }
   }
@@ -2241,7 +2292,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     };
     return {
       title: `${t('pdf.template')} T${gr.no}`,
-      subtitle: `${shapeName(ci.shape)} · ${gr.count}×`,
+      // Teilexport: Stückzahl in den exportierten Abschnitten, das ganze Mosaik ausdrücklich daneben
+      subtitle: `${shapeName(ci.shape)} · ${selCount(gr)}×${partial && selCount(gr) !== gr.count ? ` · ${t('w5fp.pdf.tplWhole', { n: gr.count })}` : ''}`,
       warnings,
       head: (zoom) => [
         `${t('pdf.raw')}: ${f1(ci.rawW)} × ${f1(ci.rawH)} mm · ${t('pdf.scale')} ${fmtScale(zoom, loc)}`,
@@ -2249,7 +2301,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
         `${t('pdf.angles')}: ${ci.angles.map((a) => `${f1(a, 1)}°`).join(', ')}`,
       ],
       cuts,
-      tail: [`${t('pdf.colorsUsed')}: ${[...gr.colors].map((c) => String(palette[c]?.code ?? '?').padStart(2, '0')).join(', ')}`],
+      tail: [`${t('pdf.colorsUsed')}: ${selColors(gr).map((c) => String(palette[c]?.code ?? '?').padStart(2, '0')).join(', ')}`],
       occ: occLines,
       edgeLabel: (i) => f1(ci.edges[i]),
     };
@@ -2383,7 +2435,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
             const tg = ci.needsCut ? tpl.bySig.get(ci.signature) : undefined;
             // Vorlagennummer nur „nackt“, wenn die Vorlage in diesem PDF gedruckt ist
             const cutCell = !ci.needsCut ? t('pdf.no') : !tg ? t('pdf.yes') : tplPrinted(tg.no) ? `${t('pdf.yes')} (T${tg.no})` : t('pdf.w4.coordCutMissing', { yes: t('pdf.yes'), no: tg.no });
-            rows.push([pieceId(layout, row, col, i, ps.length), f1(b.minX, 2), f1(b.minY, 2), code2(p.color), shapeName(ci.shape), `${f1(ci.w, 2)} × ${f1(ci.h, 2)}`, cutCell]);
+            rows.push([pieceId(layout, row, col, i, ps.length), f1(b.minX, 2), f1(b.minY, 2), code2(p.color), shapeName(ci.shape), `${f1(ci.w)} × ${f1(ci.h)}`, cutCell]);
             written++;
           }
         }
@@ -2459,7 +2511,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
       specialHead: tc('pdf.cc.special', cc.specials.length, { n: num(cc.specials.length) }),
       specialHeader: [t('pdf.position'), t('pdf.code'), t('pdf.shape'), t('pdf.sizeMm'), t('pdf.cc.colX'), t('pdf.cc.colY'), t('pdf.cutQ')],
       specialAlign: ['left', 'left', 'left', 'left', 'left', 'left', 'left'],
-      specialRows: cc.specials.map((sp) => [sp.id, code2(sp.color), shapeName(sp.shape), `${f2(sp.w)} × ${f2(sp.h)}`, `${f2(sp.minX)}–${f2(sp.maxX)}`, `${f2(sp.minY)}–${f2(sp.maxY)}`, cutCellOf(sp.needsCut, sp.signature)]),
+      specialRows: cc.specials.map((sp) => [sp.id, code2(sp.color), shapeName(sp.shape), `${f1(sp.w)} × ${f1(sp.h)}`, `${f2(sp.minX)}–${f2(sp.maxX)}`, `${f2(sp.minY)}–${f2(sp.maxY)}`, cutCellOf(sp.needsCut, sp.signature)]),
       cont: t('pdf.cc.cont'),
       control: ok ? t('pdf.cc.control', { whole: num(cc.whole), special: num(cc.specials.length), total: num(total) }) : t('pdf.cc.controlFail', { sum: num(cc.total), total: num(total) }),
       controlOk: ok,
@@ -2541,7 +2593,8 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     // Grundlinie 7 mm über dem Rand: auch die Unterlänge bleibt ≥ 6 mm vom Rand, außerhalb des nicht
     // bedruckbaren Randes üblicher Drucker (4–5 mm)
     const sl = footLabel.get(i);
-    text(`${sl ? `${sl} · ` : ''}${t('pdf.page')} ${i} / ${total}`, PW - M, PH - 7, { align: 'right' });
+    const partFoot = partInfo ? `${t('w5fp.pdf.partShort', { k: partInfo.index + 1, n: partInfo.total })} · ` : '';
+    text(`${partFoot}${sl ? `${sl} · ` : ''}${t('pdf.page')} ${i} / ${total}`, PW - M, PH - 7, { align: 'right' });
   }
   setText('#000000');
   // Lesezeichen in Dokumentreihenfolge: Kapitel → Abschnitte → Blätter → Codeplan/Zuschnittliste

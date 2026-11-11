@@ -9,10 +9,25 @@
  * beim normalen Verlassen der Seite). Steht der Vermerk beim nächsten Öffnen noch da, ist der Export nicht fertig
  * geworden – z. B. weil der Speicher nicht reichte und die Anzeige neu gestartet wurde.
  *
+ * Mehrere Tabs teilen sich den Gerätespeicher: Der Vermerk nennt die Seite, die exportiert (owner), und trägt alle
+ * PDF_INFLIGHT_BEAT_MS ein Lebenszeichen (beat). Solange es jünger als 30 s ist – oder die Seite die Web-Sperre
+ * PDF_LOCK_NAME hält (Browser geben sie erst frei, wenn die Seite wirklich weg ist) –, gilt der Export als laufend:
+ * Kein anderer Tab löscht den Vermerk oder senkt deswegen die Speichergrenze.
+ *
  * Fertige Dateien: im Browser bleibt je Datei eine Adresse zum erneuten Herunterladen bzw. Öffnen, bis sie ersetzt
  * oder verworfen wird (dann wird die Adresse freigegeben); im APK steht das echte Speicherergebnis (SaveResult).
  */
-import { clearInFlight, loweredBudgetAfterCrash, markInFlight, readInFlight, writeBudgetOverride, type InFlightInfo, type KeyStore } from '../../core/pdfExportPlan';
+import {
+  clearInFlight,
+  inFlightLive,
+  loweredBudgetAfterCrash,
+  markInFlight,
+  PDF_INFLIGHT_BEAT_MS,
+  readInFlight,
+  writeBudgetOverride,
+  type InFlightInfo,
+  type KeyStore,
+} from '../../core/pdfExportPlan';
 import { isNative, type SaveResult } from '../../platform';
 import { cancelChannel } from '../../workers/client';
 import { downloadBlob } from '../components';
@@ -98,6 +113,37 @@ function revoke(f: PdfFile) {
   if (f.url) URL.revokeObjectURL(f.url);
 }
 
+/** Alles, wovon der Inhalt eines PDFs abhängt (Schritt 10, siehe pdfFileSig). */
+export interface PdfSigInput {
+  /** Optionen inkl. Abschnittsauswahl (JSON) */
+  optsKey: string;
+  /** Bearbeitungsstand und Kennung des Rasters (neues Raster = neue Kennung) */
+  version: number;
+  mosaicRev: string;
+  gridIds: number[];
+  lang: string;
+  photoReplaced: boolean;
+  /** Maße des Originalfotos im PDF ('' = keins) und Zuschnitt/Drehung/Korrekturen des Fotos */
+  original: string;
+  adjust: unknown;
+  palette: unknown;
+  /** den Farben zugeordnete Materialien */
+  materials: unknown;
+  settings: unknown;
+  projectName: string;
+  /** Aufteilung in Teile (Abschnitte je Teil) bzw. 0 */
+  parts: number[] | 0;
+}
+
+/**
+ * Kennung „zu welchem Stand gehört eine fertige Datei“: dieselben Angaben, mit denen Schritt 10 die Seiten misst –
+ * Optionen, Raster, Palette, zugeordnete Materialien, Einstellungen, Projektname, Sprache, Foto und Aufteilung. Ändert
+ * sich eine davon, verwirft pruneFiles die Datei – nie wird ein veraltetes PDF als fertig angeboten.
+ */
+export function pdfFileSig(i: PdfSigInput): string {
+  return JSON.stringify([i.optsKey, i.version, i.mosaicRev, i.gridIds, i.lang, i.photoReplaced, i.original, i.adjust ?? null, i.palette ?? null, i.materials ?? null, i.settings ?? null, i.projectName, i.parts]);
+}
+
 /** Verwirft fertige Dateien, die nicht (mehr) zu den aktuellen Optionen gehören, und gibt ihre Adressen frei. */
 export function pruneFiles(projectId: string, sig: string): void {
   const st = states.get(projectId);
@@ -128,7 +174,25 @@ export function cancelPdfJob(): void {
   cancelChannel('pdf');
 }
 
-const onPageHide = () => clearInFlight(localStore());
+/** Kennung dieser Seite (Tab) – neu bei jedem Laden; steht im Vermerk „Export läuft“ */
+export const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+/** Web-Sperre, die die exportierende Seite hält (navigator.locks; wird mit der Seite freigegeben) */
+export const PDF_LOCK_NAME = 'mp.pdfExport';
+
+interface LockLike {
+  request(name: string, opts: { ifAvailable: boolean }, cb: (lock: unknown) => Promise<void> | void): Promise<unknown>;
+  query(): Promise<{ held?: { name?: string }[] }>;
+}
+function webLocks(): LockLike | null {
+  try {
+    const l = typeof navigator !== 'undefined' ? (navigator as unknown as { locks?: LockLike }).locks : undefined;
+    return l && typeof l.request === 'function' && typeof l.query === 'function' ? l : null;
+  } catch {
+    return null;
+  }
+}
+
+const onPageHide = () => clearInFlight(localStore(), TAB_ID);
 
 /**
  * Führt EINEN Export aus: `produce` liefert das PDF (im Worker erzeugt), danach wird gespeichert bzw. heruntergeladen
@@ -149,7 +213,28 @@ export async function runPdfJob(o: {
   running = o.projectId;
   cancelRequested = false;
   const store = localStore();
-  markInFlight(store, o.inFlight);
+  const mark: InFlightInfo = { ...o.inFlight, owner: TAB_ID, beat: Date.now() };
+  markInFlight(store, mark);
+  // Lebenszeichen: andere Tabs halten den Vermerk dann nicht für einen Absturz
+  let lastBeat = mark.beat ?? 0;
+  const beat = () => {
+    lastBeat = Date.now();
+    const cur = readInFlight(store);
+    if (cur && cur.owner === TAB_ID) markInFlight(store, { ...cur, beat: lastBeat });
+  };
+  const beatTimer = setInterval(beat, PDF_INFLIGHT_BEAT_MS);
+  // Web-Sperre (falls vorhanden): gilt auch, wenn ein Hintergrund-Tab seine Zeitgeber drosselt
+  let releaseLock: (() => void) | null = null;
+  let ended = false;
+  webLocks()
+    ?.request(PDF_LOCK_NAME, { ifAvailable: true }, (lock) =>
+      !lock || ended
+        ? undefined
+        : new Promise<void>((res) => {
+            releaseLock = res;
+          }),
+    )
+    .catch(() => {});
   // normales Verlassen der Seite ist kein Absturz: Vermerk dabei löschen
   if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide);
   patch(o.projectId, { busy: { key: o.key, f: 0, label: 'images' }, error: null, cancelled: false });
@@ -157,6 +242,7 @@ export async function runPdfJob(o: {
     const buf = await o.produce(
       (f, label) => {
         if (running === o.projectId) patch(o.projectId, { busy: { key: o.key, f, label } });
+        if (Date.now() - lastBeat >= PDF_INFLIGHT_BEAT_MS) beat();
       },
       () => cancelRequested,
     );
@@ -174,7 +260,10 @@ export async function runPdfJob(o: {
     if (msg === CANCELLED) patch(o.projectId, { cancelled: true });
     else patch(o.projectId, { error: msg });
   } finally {
-    clearInFlight(store);
+    clearInterval(beatTimer);
+    ended = true;
+    (releaseLock as (() => void) | null)?.();
+    clearInFlight(store, TAB_ID);
     if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
     running = null;
     patch(o.projectId, { busy: null });
@@ -192,22 +281,67 @@ export interface CrashNotice {
 
 let crash: CrashNotice | null = null;
 let crashChecked = false;
+/** Abfrage der Web-Sperre läuft (asynchron) */
+let lockQuery = false;
+/** so lange nach dem letzten Lebenszeichen kann die Web-Sperre eines eben gestarteten Exports noch fehlen (ms) */
+const LOCK_GRACE_MS = 3_000;
 
-/**
- * Prüft einmal je Sitzung, ob der Vermerk „Export läuft“ eines früheren Exports stehen geblieben ist (der Export
- * wurde also nicht fertig). Dann wird der Vermerk gelöscht und – falls der Export unter der damaligen Grenze lag –
- * die Speichergrenze dieses Geräts gesenkt und gemerkt. Der Hinweis bleibt, bis er geschlossen wird.
- */
-export function detectCrashedExport(currentBudgetBytes: number): CrashNotice | null {
-  if (running || crashChecked) return crash;
-  crashChecked = true;
+/** Derselbe Vermerk? (zwischen Lesen und Löschen kann ein anderer Tab einen neuen gesetzt haben) */
+const sameMark = (a: InFlightInfo, b: InFlightInfo | null) => !!b && a.at === b.at && a.owner === b.owner && a.projectId === b.projectId;
+
+function declareCrash(info: InFlightInfo, currentBudgetBytes: number): void {
   const store = localStore();
-  const info = readInFlight(store);
-  if (!info) return crash;
+  if (!sameMark(info, readInFlight(store))) {
+    // inzwischen gelöscht oder durch einen neuen Export ersetzt: kein Absturz dieses Vermerks
+    return;
+  }
+  crashChecked = true;
   clearInFlight(store);
   const lowered = loweredBudgetAfterCrash(info.bytes, Math.min(info.budgetBytes, currentBudgetBytes));
   if (lowered !== null) writeBudgetOverride(store, lowered / (1024 * 1024));
   crash = { info, loweredToBytes: lowered };
+}
+
+/**
+ * Prüft, ob der Vermerk „Export läuft“ eines früheren Exports stehen geblieben ist (der Export wurde also nicht
+ * fertig). Dann wird der Vermerk gelöscht und – falls der Export unter der damaligen Grenze lag – die Speichergrenze
+ * dieses Geräts gesenkt und gemerkt. Der Hinweis bleibt, bis er geschlossen wird. Einmal je Sitzung entschieden –
+ * außer der Vermerk gehört zu einem Export, der in einem anderen Tab noch läuft (frisches Lebenszeichen oder gehaltene
+ * Web-Sperre): Dann bleibt alles unverändert und die Oberfläche fragt später erneut. Mit Web-Sperren fällt die
+ * Entscheidung asynchron; ihr Ergebnis wird über subscribePdfJobs gemeldet.
+ */
+export function detectCrashedExport(currentBudgetBytes: number, now: number = Date.now()): CrashNotice | null {
+  if (running || crashChecked) return crash;
+  const store = localStore();
+  const info = readInFlight(store);
+  if (!info) {
+    crashChecked = true;
+    return crash;
+  }
+  const locks = webLocks();
+  if (locks) {
+    // Web-Sperre gehalten = der Export läuft in einer anderen Seite. Nicht gehalten = die Seite ist weg (Browser geben
+    // die Sperre erst mit der Seite frei) – außer der Vermerk ist ganz frisch (die Sperre wird gerade angefordert).
+    if (!lockQuery) {
+      lockQuery = true;
+      const fresh = info.owner !== TAB_ID && now - Math.max(info.at, info.beat ?? 0) < LOCK_GRACE_MS;
+      const decide = (held: boolean) => {
+        lockQuery = false;
+        if (held || fresh || crashChecked || running) return;
+        declareCrash(info, currentBudgetBytes);
+        emit();
+      };
+      locks.query().then(
+        (st) => decide((st.held ?? []).some((l) => l.name === PDF_LOCK_NAME)),
+        // Abfrage gescheitert: nach dem Lebenszeichen entscheiden
+        () => decide(inFlightLive(info, TAB_ID, now)),
+      );
+    }
+    return crash;
+  }
+  // ohne Web-Sperren: frisches Lebenszeichen einer anderen Seite = dieser Export läuft noch – nichts löschen, nichts senken
+  if (inFlightLive(info, TAB_ID, now)) return crash;
+  declareCrash(info, currentBudgetBytes);
   return crash;
 }
 
@@ -230,4 +364,5 @@ export function resetPdfJobsForTest(): void {
   cancelRequested = false;
   crash = null;
   crashChecked = false;
+  lockQuery = false;
 }

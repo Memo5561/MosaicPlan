@@ -311,7 +311,7 @@ describe('Seitenplan: planPdfPages().total = Seiten des PDFs', () => {
             p.layout,
             p.sections,
             opts,
-            Object.fromEntries(Object.entries(facts.stones).map(([id, n]) => [id, { pieces: n }])),
+            Object.fromEntries(Object.entries(facts.stones).map(([id, c]) => [id, { pieces: c.pieces }])),
             facts.templateGroups,
           );
           expect(est.sheets, where).toBe(plan.sheets);

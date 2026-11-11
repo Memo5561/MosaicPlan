@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { paletteDisplayName } from '../../core/colorNames';
+import { SPREADSHEET_MAX_ROWS } from '../../core/csv';
 import { setRangePlaced, togglePiecePlaced } from '../../core/edits';
 import { bbox } from '../../core/geometry';
 import {
@@ -21,15 +22,17 @@ import {
   type LayingOrderKind,
   type ProgressSnapshot,
 } from '../../core/laying';
-import { cellId, pieceId, rowLabel, type Layout, type Section } from '../../core/layout';
+import { cellId, pieceId, rowLabel, sectionsFor, type Layout, type Section } from '../../core/layout';
+import { DEFAULT_PDF_OPTIONS, fmtScale } from '../../core/pdfOptions';
 import { analyzeCut, cellPieceCount, cellPieces } from '../../core/pieces';
 import { rulerInsets } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
+import { paperPresets, sheetFit, type SectionPreset } from '../../core/sectionPresets';
 import { makeRawSizeFn, type Range } from '../../core/stats';
 import type { Material, MosaicData, PaletteColor } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
-import { runWorker } from '../../workers/client';
-import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, Segmented, Swatch, Toggle } from '../components';
+import { cancelChannel, runCsvExport, type WorkerError } from '../../workers/client';
+import { Badge, downloadBlob, Field, NumberInput, ProgressBar, safeFileName, SaveResultNote, Segmented, Swatch, Toggle, type SaveResult } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
 import { COARSE_QUERY, deviceKey } from './deviceKind';
 import { FindStone } from './FindStone';
@@ -47,6 +50,7 @@ import '../css/w4-laying-workbench.css';
 import '../css/w4-review-fixes.css';
 import '../css/w5-undo-editing.css';
 import '../css/w5-fix-ui.css';
+import '../css/w6-plan-exports.css';
 
 export { MaterialCalc } from './MaterialCalc';
 
@@ -91,8 +95,12 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   const [outsideAsk, setOutsideAsk] = useState<{ id: string; sec: string; atBottom?: boolean } | null>(null);
   /** atBottom: Rechteck liegt in der oberen Hälfte des Viewers – Rückfrage unten anzeigen, damit sie es nicht verdeckt */
   const [pendingRect, setPendingRect] = useState<{ range: Range; placed: number; total: number; atBottom: boolean } | null>(null);
-  const [csvBusy, setCsvBusy] = useState(false);
-  const [csvError, setCsvError] = useState<string | null>(null);
+  /**
+   * CSV-Export (Worker 'csv'): Zustand außerhalb von React-State – Start, Fortschritt und Ergebnis zeichnen nur die
+   * kleinen CSV-Bausteine neu, nie den ganzen Schritt 9 (bei Millionen Steinen sonst lange Aufgaben auf der Hauptseite)
+   */
+  const csvUi = useMemo(() => new ValueStore<CsvUiState>(CSV_IDLE), []);
+  const csvCancelled = useRef(false);
   const [, setTick] = useState(0);
   const undoSize = api.history.undoCount;
   const redoSize = api.history.redoCount;
@@ -130,6 +138,16 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
     if (G && selected && !G.sections.some((x) => x.id === selected)) setSelected(null);
   }, [G, selected]);
   useHistoryShortcuts(api);
+  // ---- Abschnitte passend zum Papier (Optionen des PDF-Schritts; exakt der Seitenplan des PDFs)
+  const pdfO = useMemo(() => ({ ...DEFAULT_PDF_OPTIONS, ...(rec.pdfOptions ?? {}) }), [rec.pdfOptions]);
+  const paper = useMemo(() => paperPresets(pdfO), [pdfO]);
+  const fitInfo = useMemo(() => {
+    if (!c || !G) return null;
+    const L0 = c.layout;
+    const presetFit = (p: SectionPreset) => sheetFit(L0, sectionsFor(L0, { ...s, sectionMode: 'size', sectionWmm: p.wMm, sectionHmm: p.hMm }), pdfO, paper.scale);
+    return { cur: sheetFit(L0, G, pdfO, paper.scale), one: presetFit(paper.one), two: presetFit(paper.two) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c, G, pdfO, paper, s.sectionMode, s.sectionWmm, s.sectionHmm, s.sectionCols, s.sectionRows]);
   // Statusmeldung nach einigen Sekunden ausblenden
   useEffect(() => {
     if (!status) return;
@@ -489,27 +507,59 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
 
   // ---------------------------------------------------------------- Exporte
   const exportCsv = async (ids: string[] | null) => {
-    setCsvBusy(true);
-    setCsvError(null);
+    if (csvUi.get().job) return;
+    const patch = (p: Partial<CsvUiState>) => csvUi.set({ ...csvUi.get(), ...p });
+    patch({ job: { ids }, progress: { phase: 'prepare', fraction: 0, done: 0, total: 0 }, done: null, error: null });
+    csvCancelled.current = false;
     try {
-      const r = await runWorker<'csv'>('pdf', {
-        type: 'csv',
-        layoutParams: c.layoutParams,
-        // ohne Fotofarben der Steine: die CSV braucht sie nicht (spart die Kopie in den Worker)
-        mosaic: packMosaic(c.data, { targets: false }),
-        palette: rec.palette,
-        materials,
-        sections: s,
-        sectionIds: ids,
-        decimalComma: lang !== 'en',
-        lang,
-      });
-      await downloadBlob(new Blob(['﻿', r.csv], { type: 'text/csv;charset=utf-8' }), `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_koordinaten.csv`);
+      // gestreamt im eigenen Worker: zurück kommt ein Blob (nie ein Text auf der Hauptseite)
+      const r = await runCsvExport(
+        {
+          type: 'csv',
+          layoutParams: c.layoutParams,
+          // ohne Fotofarben der Steine: die CSV braucht sie nicht (spart die Kopie in den Worker)
+          mosaic: packMosaic(c.data, { targets: false }),
+          palette: rec.palette,
+          materials,
+          sections: s,
+          sectionIds: ids,
+          decimalComma: lang !== 'en',
+          lang,
+        },
+        (phase, fraction, info) => patch({ progress: { phase: phase === 'rows' ? 'rows' : 'prepare', fraction, done: info?.done ?? 0, total: info?.total ?? 0 } }),
+      );
+      const blob = new Blob(['\uFEFF', r.blob], { type: 'text/csv;charset=utf-8' });
+      const save = await downloadBlob(blob, `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_koordinaten.csv`, { announce: false });
+      patch({ job: null, done: { save, rows: r.rows, bytes: blob.size } });
     } catch (e) {
-      setCsvError(t('w4lw.csvError', { msg: e instanceof Error ? e.message : String(e) }));
+      if (csvCancelled.current) patch({ job: null, done: 'cancelled' });
+      else {
+        const we = e as WorkerError;
+        patch({
+          job: null,
+          error:
+            we?.code === 'csv-palette-index'
+              ? t('w6pe.csv.paletteError', { max: we.maxIndex ?? '?', n: we.paletteSize ?? rec.palette.length })
+              : t('w4lw.csvError', { msg: e instanceof Error ? e.message : String(e) }),
+        });
+      }
     } finally {
-      setCsvBusy(false);
+      if (csvUi.get().job) patch({ job: null });
     }
+  };
+  const cancelCsv = () => {
+    csvCancelled.current = true;
+    cancelChannel('csv');
+  };
+  /** Abschnittsgröße aus einer Papiervorgabe; mit Verlegefortschritt erst nach Rückfrage (Abschnitts-IDs ändern sich) */
+  const applyPreset = (p: SectionPreset) => {
+    const placed = api.progress?.total.placed ?? 0;
+    const w = n(p.wMm / 10, 2);
+    const h = n(p.hMm / 10, 2);
+    if (placed > 0 && !confirm(t('w6pe.sec.confirm', { w, h, n: n(placed) }))) return;
+    api.setSettings({ sectionMode: 'size', sectionWmm: p.wMm, sectionHmm: p.hMm });
+    const fit = sheetFit(L, sectionsFor(L, { ...s, sectionMode: 'size', sectionWmm: p.wMm, sectionHmm: p.hMm }), pdfO, paper.scale);
+    setStatus(t('w6pe.sec.applied', { w, h, sections: n(fit.sections), sheets: n(fit.sheets) }));
   };
   const pdfForSection = (id: string) => {
     api.update((r) => ({ ...r, pdfOptions: { ...(r.pdfOptions ?? {}), sectionIds: [id] } }));
@@ -889,9 +939,9 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                   <button className="btn small" disabled={locked} title={locked ? t('w2ws.lockedComputing') : undefined} onClick={sectionReset} data-testid="section-reset">
                     {t('plan.reset')}
                   </button>
-                  <button className="btn small" disabled={csvBusy} onClick={() => exportCsv([sec.id])} data-testid="section-csv">
+                  <CsvButton ui={csvUi} onClick={() => exportCsv([sec.id])} testId="section-csv">
                     CSV {sec.id}
-                  </button>
+                  </CsvButton>
                   <button className="btn small" onClick={() => pdfForSection(sec.id)} title={t('w4lw.sec.pdfTitle', { sec: sec.id })} data-testid="section-pdf">
                     {t('w4lw.sec.pdf', { sec: sec.id })}
                   </button>
@@ -900,14 +950,20 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
             )}
             {counter && <ColorChips counter={counter} palette={rec.palette} focus={focusColor} onFocus={setFocusColor} scopeText={scopeText} layActive={layActive} />}
             <div className="btn-row wrap" style={{ marginTop: 10 }}>
-              <button className="btn small" disabled={csvBusy} onClick={() => exportCsv(null)} data-testid="csv-all">
-                {csvBusy ? t('common.loading') : t('plan.csvAll')}
-              </button>
+              <CsvButton ui={csvUi} onClick={() => exportCsv(null)} title={t('w6pe.csv.title')} testId="csv-all" busyText={t('common.loading')}>
+                {t('plan.csvAll')}
+              </CsvButton>
             </div>
-            {csvError && (
-              <p className="error small" role="alert" data-testid="csv-error">
-                {csvError}
-              </p>
+            <CsvStatus ui={csvUi} rowsBefore={api.stats?.pieces ?? 0} onCancel={cancelCsv} />
+            {fitInfo && !paper.fitMode && fitInfo.cur.fill < 0.7 && fitInfo.one.sheets < fitInfo.cur.sheets && (
+              <div className="w6pe-fit" data-testid="sec-fit-hint">
+                <p className="small">
+                  {t('w6pe.sec.poorFit', { sheets: n(fitInfo.cur.sheets), fill: n(Math.round(fitInfo.cur.fill * 100)), thin: n(fitInfo.cur.thin), one: n(fitInfo.one.sheets) })}
+                </p>
+                <button type="button" className="btn small" disabled={locked} onClick={() => applyPreset(paper.one)} data-testid="sec-fit-apply">
+                  {t('w6pe.sec.oneSheet')} ({n(paper.one.wMm / 10, 2)} × {n(paper.one.hMm / 10, 2)} cm)
+                </button>
+              </div>
             )}
             <details className="w4lw-secset">
               <summary>{t('w4lw.sec.settings')}</summary>
@@ -938,6 +994,49 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                   </div>
                 </Field>
               )}
+              {fitInfo && (
+                <Field
+                  label={t('w6pe.sec.presets')}
+                  hint={t(paper.fitMode ? 'w6pe.sec.paperFit' : 'w6pe.sec.paper', {
+                    format: pdfO.format === 'custom' ? t('w6pe.sec.custom') : pdfO.format.toUpperCase(),
+                    orient: t(pdfO.orientation === 'landscape' ? 'w6pe.sec.landscape' : 'w6pe.sec.portrait'),
+                    scale: fmtScale(paper.scale, lang),
+                    w: n(paper.printW / 10, 2),
+                    h: n(paper.printH / 10, 2),
+                  })}
+                >
+                  <div className="btn-row wrap w6pe-presets" data-testid="sec-presets">
+                    {(
+                      [
+                        ['one', paper.one, fitInfo.one],
+                        ['two', paper.two, fitInfo.two],
+                      ] as const
+                    ).map(([k, p, fit]) => {
+                      const active = (s.sectionMode ?? 'size') === 'size' && Math.abs(s.sectionWmm - p.wMm) < 1e-6 && Math.abs(s.sectionHmm - p.hMm) < 1e-6;
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          className={`btn small ${active ? 'primary' : ''}`}
+                          aria-pressed={active}
+                          disabled={locked}
+                          title={t('w6pe.sec.presetTitle', { w: n(p.wMm / 10, 2), h: n(p.hMm / 10, 2), sections: n(fit.sections), sheets: n(fit.sheets) })}
+                          onClick={() => applyPreset(p)}
+                          data-testid={`sec-preset-${k}`}
+                          data-w={p.wMm}
+                          data-h={p.hMm}
+                          data-sheets={fit.sheets}
+                        >
+                          <b>{t(k === 'one' ? 'w6pe.sec.oneSheet' : 'w6pe.sec.twoSheets')}</b>
+                          <small>
+                            {n(p.wMm / 10, 2)} × {n(p.hMm / 10, 2)} cm · {t('w6pe.sec.presetSheets', { sheets: n(fit.sheets) })}
+                          </small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Field>
+              )}
             </details>
           </aside>
           )}
@@ -946,6 +1045,105 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
       {(!wide || view === 'material') && stone}
     </div>
   );
+}
+
+interface CsvProgressState {
+  phase: 'prepare' | 'rows';
+  fraction: number;
+  done: number;
+  total: number;
+}
+
+interface CsvUiState {
+  /** laufender Export (ids: Abschnitte, null = ganzes Mosaik) */
+  job: { ids: string[] | null } | null;
+  progress: CsvProgressState;
+  /** Ergebnis des letzten Exports (Speicherort, Zeilen, Größe) bzw. „abgebrochen“ */
+  done: { save: SaveResult; rows: number; bytes: number } | 'cancelled' | null;
+  error: string | null;
+}
+const CSV_IDLE: CsvUiState = { job: null, progress: { phase: 'prepare', fraction: 0, done: 0, total: 0 }, done: null, error: null };
+
+/** Kleiner Wertspeicher mit Abo (useSyncExternalStore) – Meldungen ohne Neuzeichnen der ganzen Seite */
+class ValueStore<T> {
+  private subs = new Set<() => void>();
+  constructor(private value: T) {}
+  get = (): T => this.value;
+  set(v: T) {
+    this.value = v;
+    for (const f of this.subs) f();
+  }
+  subscribe = (f: () => void) => {
+    this.subs.add(f);
+    return () => {
+      this.subs.delete(f);
+    };
+  };
+}
+
+/** CSV-Schaltfläche: gesperrt, solange ein CSV-Export läuft */
+function CsvButton(p: { ui: ValueStore<CsvUiState>; onClick: () => void; testId: string; title?: string; busyText?: string; children: ReactNode }) {
+  const st = useSyncExternalStore(p.ui.subscribe, p.ui.get);
+  const busy = !!st.job;
+  return (
+    <button className="btn small" disabled={busy} onClick={p.onClick} title={p.title} data-testid={p.testId}>
+      {busy && p.busyText && !st.job?.ids ? p.busyText : p.children}
+    </button>
+  );
+}
+
+/** Zeilengrenze vor dem Export, Fortschritt mit „Abbrechen“, Ergebnis (Speicherort, Zeilen, Größe) oder Fehler */
+function CsvStatus({ ui, rowsBefore, onCancel }: { ui: ValueStore<CsvUiState>; rowsBefore: number; onCancel: () => void }) {
+  const { t, n } = useI18n();
+  const st = useSyncExternalStore(ui.subscribe, ui.get);
+  const p = st.progress;
+  const done = st.done;
+  return (
+    <>
+      {!st.job && rowsBefore + 1 > SPREADSHEET_MAX_ROWS && (
+        <p className="muted small w6pe-note" data-testid="csv-excel-before">
+          {t('w6pe.csv.excelLimitBefore')}
+        </p>
+      )}
+      {st.job && (
+        <div className="w6pe-csvjob" role="status" aria-live="polite" data-testid="csv-progress" data-phase={p.phase}>
+          <ProgressBar
+            value={p.phase === 'rows' ? 0.15 + 0.85 * p.fraction : p.fraction * 0.15}
+            label={p.phase === 'rows' ? t('w6pe.csv.rows', { done: n(p.done), total: n(p.total) }) : t('w6pe.csv.prepare', { pct: n(Math.floor(p.fraction * 100)) })}
+          />
+          <button type="button" className="btn small" onClick={onCancel} data-testid="csv-cancel">
+            {t('w6pe.csv.cancel')}
+          </button>
+        </div>
+      )}
+      {done === 'cancelled' && (
+        <p className="muted small w6pe-note" role="status" data-testid="csv-cancelled">
+          {t('w6pe.csv.cancelled')}
+        </p>
+      )}
+      {done && done !== 'cancelled' && (
+        <div className="w6pe-csvdone" data-testid="csv-done" data-rows={done.rows} data-bytes={done.bytes}>
+          <SaveResultNote result={done.save} onDismiss={() => ui.set({ ...ui.get(), done: null })} testId="csv-save-note" />
+          <p className="muted small w6pe-note">{t('w6pe.csv.done', { rows: n(done.rows), size: fmtBytes(done.bytes, n) })}</p>
+          {done.rows + 1 > SPREADSHEET_MAX_ROWS && (
+            <p className="warn small w6pe-note" data-testid="csv-excel-limit">
+              {t('w6pe.csv.excelLimit', { rows: n(done.rows + 1) })}
+            </p>
+          )}
+        </div>
+      )}
+      {st.error && (
+        <p className="error small" role="alert" data-testid="csv-error">
+          {st.error}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** Dateigröße lesbar: kB unter 1 MB, sonst MB mit einer Nachkommastelle (1 MB = 1.048.576 Byte) */
+function fmtBytes(b: number, n: (v: number, d?: number) => string): string {
+  return b < 1048576 ? `${n(Math.max(1, Math.round(b / 1024)))} kB` : `${n(b / 1048576, 1)} MB`;
 }
 
 /**

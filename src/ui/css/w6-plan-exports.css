@@ -1,0 +1,59 @@
+/* Paket w6-plan-exports: CSV-Fortschritt in Schritt 9, Abschnitte passend zum Papier */
+.w6pe-note {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+.w6pe-csvjob {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.w6pe-csvjob .progress {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.w6pe-csvjob .progress-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.w6pe-csvdone {
+  margin-top: 8px;
+}
+.w6pe-fit {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn);
+  background: var(--accent-soft);
+  border-radius: 6px;
+}
+.w6pe-fit p {
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+.w6pe-presets .btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.2;
+  text-align: left;
+}
+.w6pe-presets .btn small {
+  font-weight: 400;
+  opacity: 0.9;
+}
+@media (pointer: coarse) {
+  .w6pe-csvjob .btn,
+  .w6pe-fit .btn,
+  .w6pe-presets .btn {
+    min-height: 44px;
+  }
+}
+/* lange Dateinamen im Speicherergebnis umbrechen statt über den Rand zu laufen */
+.w6pe-csvdone .w2ap-note {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}

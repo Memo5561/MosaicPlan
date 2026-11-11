@@ -307,3 +307,50 @@
     position: static;
   }
 }
+
+/* ---------- Handy (Paket w6-fix-ui): kleines Vorschaubild statt eines Bildes über ~40 % der Höhe. Es klebt weiter unter
+   der Kopfzeile, nimmt aber nur einen schmalen Streifen ein; Umschalter Mosaik/Foto daneben. */
+@media (max-width: 600px) {
+  .w3lp-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 6px 10px;
+  }
+  .w3lp-body > .w3lp-stage {
+    flex: 0 0 auto;
+    width: auto;
+    height: min(15vh, 128px);
+    max-height: none;
+    max-width: 58%;
+  }
+  .w3lp-body > .w3lp-tools {
+    flex: 1 1 110px;
+    margin-top: 0;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .w3lp-body > :not(.w3lp-stage):not(.w3lp-tools) {
+    flex: 1 1 100%;
+  }
+  .w3lp-busy {
+    font-size: 0.74rem;
+    gap: 6px;
+    padding: 4px;
+  }
+  .w3lp-spinner {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+  }
+  .w3lp-outdated {
+    left: 4px;
+    right: 4px;
+    bottom: 4px;
+    font-size: 0.7rem;
+    padding: 2px 4px;
+  }
+  .w3lp-auto-note {
+    flex: 1 1 100%;
+  }
+}

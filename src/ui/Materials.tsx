@@ -360,6 +360,7 @@ export function Materials({ materials, reload }: { materials: Material[]; reload
       {edit && (
         <MaterialForm
           value={edit}
+          isNew={!materials.some((x) => x.id === edit.id)}
           onClose={() => setEdit(null)}
           onSave={async (m) => {
             try {
@@ -584,7 +585,7 @@ function ImportPreview({ data, busy, onApply, onCancel }: { data: ImportPreviewD
   );
 }
 
-function MaterialForm({ value, onClose, onSave }: { value: Material; onClose: () => void; onSave: (m: Material) => void }) {
+function MaterialForm({ value, isNew = false, onClose, onSave }: { value: Material; isNew?: boolean; onClose: () => void; onSave: (m: Material) => void }) {
   const { t } = useI18n();
   const [m, setM] = useState<Material>(value);
   const set = (p: Partial<Material>) => setM((x) => ({ ...x, ...p }));
@@ -685,7 +686,8 @@ function MaterialForm({ value, onClose, onSave }: { value: Material; onClose: ()
       </Modal>
       {measure && (
         <MeasureColorDialog
-          currentHex={m.hex}
+          // neues Material mit unverändertem Platzhalter (#808080): noch keine echte Farbe – kein „Bisher“/keine Abweichung
+          currentHex={isNew && !m.colorSource && m.hex.toUpperCase() === EMPTY.hex ? '' : m.hex}
           onClose={() => setMeasure(false)}
           onApply={(hex, colorSource) => {
             set({ hex, colorSource });

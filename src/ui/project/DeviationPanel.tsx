@@ -3,6 +3,9 @@
  * „Größte Abweichungen“ (Sprung zum Stein, Steindetail öffnet sich) und die Abweichung des gewählten Steins mit der
  * nächsten Palettenfarbe als Vorschlag.
  *
+ * Die Abweichung des gewählten Steins steht im Steindetail (StoneDeviation) – am Handy liegt das Steindetail als Blatt
+ * über der Seite, ein Block hier wäre verdeckt (Paket w6-fix-ui).
+ *
  * Alle Werte kommen aus src/core/deviation.ts: ΔE zwischen der bei der Berechnung gemessenen Fotofarbe und der
  * AKTUELLEN Farbe des Steins, mit der ΔE-Formel der Berechnung. Steine ohne Fotoreferenz (Freiform, Form geändert,
  * vor dieser Funktion berechnet) bekommen nie einen geschätzten Wert.
@@ -10,22 +13,83 @@
 import { useMemo } from 'react';
 import { labToHex, type DeltaEFormula } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
-import { deviationForPiece, deviationSummary, hasPhotoTargets, nearestColorForPiece, pieceTarget, targetState, topDeviations, type DeviationSummary } from '../../core/deviation';
+import { deviationBin, deviationForPiece, deviationSummary, hasPhotoTargets, nearestColorForPiece, pieceTarget, targetState, topDeviations, type DeviationSummary } from '../../core/deviation';
 import { forEachPieceColor } from '../../core/batch';
-import { setPieceColor } from '../../core/edits';
-import { pieceId, type Layout } from '../../core/layout';
-import { cellPieceCount } from '../../core/pieces';
+import { type Layout } from '../../core/layout';
 import type { MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
+import { deText } from '../deWords';
 import { Badge, Swatch, Toggle } from '../components';
 import { DEVIATION_COLORS, NO_REFERENCE_COLOR, rgbaCss } from './PreviewOverlay';
 import type { ProjectApi } from './useProject';
 import '../css/w6-compare-batch.css';
+import '../css/w6-fix-ui.css';
 
 /** Einträge der Liste „Größte Abweichungen“ */
 export const TOP_DEVIATIONS = 50;
 
 const code2 = (p: PaletteColor | undefined) => (p ? String(p.code).padStart(2, '0') : '?');
+
+/**
+ * Abweichung des gewählten Steins im Steindetail (Paket w6-fix-ui): Fotofarbe ↔ Steinfarbe, ΔE in Worten und die nächste
+ * Palettenfarbe zum Übernehmen. Nur, wenn das Raster Fotofarben hat; ohne Fotoreferenz des Steins steht der Grund da.
+ * `formula` ist die ΔE-Formel der BERECHNUNG.
+ */
+export function StoneDeviation(p: { data: MosaicData; palette: PaletteColor[]; formula: DeltaEFormula; idx: number; piece: number; id: string; readOnly: boolean; onApply: (color: number) => void }) {
+  const { t, n, lang } = useI18n();
+  const { data, palette, formula, idx, piece } = p;
+  if (!hasPhotoTargets(data)) return null;
+  const target = pieceTarget(data, idx, piece);
+  const d = deviationForPiece(data, palette, idx, piece, formula);
+  const near = nearestColorForPiece(data, palette, idx, piece, formula);
+  const state = targetState(data, idx);
+  const color = currentColorOf(data, idx, piece);
+  return (
+    <section className="w5ue-sec w6fx-stone-dev" data-testid="deviation-stone" data-id={p.id} data-de={d ?? ''}>
+      <h4>{t('w6fx.stone.title')}</h4>
+      {target && d !== null ? (
+        <>
+          <div className="w6fx-pair">
+            <span className="w6fx-pair-item">
+              <Swatch hex={labToHex(target[0], target[1], target[2])} size={28} title={t('w6cb.photoColor')} />
+              <small>{t('w6fx.stone.photo')}</small>
+            </span>
+            <span aria-hidden="true" className="w6fx-pair-arrow">
+              ↔
+            </span>
+            <span className="w6fx-pair-item">
+              <Swatch hex={palette[color]?.hex ?? '#ff00ff'} size={28} />
+              <small>
+                {t('w6fx.stone.tile')} {code2(palette[color])}
+              </small>
+            </span>
+            <b className="w6fx-de-word" style={{ borderBottomColor: rgbaCss(DEVIATION_COLORS[deviationBin(d)]) }} data-testid="deviation-stone-de">
+              {t('w6fx.stone.de', { word: deText(t, n, d) })}
+            </b>
+          </div>
+          {near &&
+            (near.better ? (
+              <div className="w6fx-near">
+                <span className="small">
+                  <Swatch hex={palette[near.index]?.hex ?? '#ff00ff'} size={16} />{' '}
+                  {t('w6fx.stone.nearest', { code: code2(palette[near.index]), name: paletteDisplayName(palette[near.index], lang), word: deText(t, n, near.deltaE) })}
+                </span>
+                <button type="button" className="btn small primary" disabled={p.readOnly} onClick={() => p.onApply(near.index)} data-testid="deviation-stone-apply">
+                  → {t('w6fx.stone.apply', { code: code2(palette[near.index]) })}
+                </button>
+              </div>
+            ) : (
+              <small className="muted block">{t('w6cb.alreadyNearest')}</small>
+            ))}
+        </>
+      ) : (
+        <small className="muted block" data-testid="deviation-stone-none">
+          {t(`w6cb.noRef.${state === 'ok' ? 'color' : state}`)}
+        </small>
+      )}
+    </section>
+  );
+}
 
 /** Legende der Karte (unter dem Viewer, solange die Karte an ist) */
 export function DeviationLegend({ summary, dither, stale, formula }: { summary: DeviationSummary | null; dither: boolean; stale: boolean; formula: DeltaEFormula }) {
@@ -74,61 +138,17 @@ export interface DeviationPanelProps {
   dither: boolean;
   overlayOn: boolean;
   setOverlayOn: (on: boolean) => void;
-  /** gewählter Stein (Steindetail offen) */
-  pick: { row: number; col: number; piece: number } | null;
   onJump: (row: number, col: number, piece: number) => void;
-  readOnly: boolean;
 }
 
 export function DeviationPanel(p: DeviationPanelProps) {
-  const { t, n, lang } = useI18n();
+  const { t, n } = useI18n();
   const { api, layout, data, palette, formula } = p;
   const version = api.version;
   const has = hasPhotoTargets(data);
   // Zusammenfassung und Liste: neu bei jeder Bearbeitung (version) und jeder Palettenänderung
   const summary = useMemo(() => (has ? deviationSummary(data, palette, formula) : null), [has, data, palette, formula, version]); // eslint-disable-line react-hooks/exhaustive-deps
   const top = useMemo(() => (has ? topDeviations(layout, data, palette, formula, TOP_DEVIATIONS) : []), [has, layout, data, palette, formula, version]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const apply = (row: number, col: number, piece: number, to: number) => {
-    if (p.readOnly) return;
-    const idx = row * layout.cols + col;
-    const pieces = cellPieceCount(data, idx);
-    const id = pieceId(layout, row, col, piece, pieces);
-    const fromIdx = currentColorOf(data, idx, piece);
-    p.api.editCell(
-      idx,
-      () => setPieceColor(data, idx, piece, to),
-      {
-        key: 'w5ue.h.color',
-        params: { id, from: code2(palette[fromIdx]), to: code2(palette[to]) },
-      },
-      { idx, piece },
-    );
-  };
-
-  // gewählter Stein: Fotofarbe ↔ Steinfarbe und nächste Palettenfarbe
-  const sel = p.pick;
-  const selInfo = useMemo(() => {
-    if (!sel) return null;
-    const idx = sel.row * layout.cols + sel.col;
-    if (sel.row >= layout.rows || sel.col >= layout.cols) return null;
-    const pieces = cellPieceCount(data, idx);
-    const piece = sel.piece < pieces ? sel.piece : 0;
-    const id = pieceId(layout, sel.row, sel.col, piece, pieces);
-    const target = pieceTarget(data, idx, piece);
-    const d = deviationForPiece(data, palette, idx, piece, formula);
-    const near = nearestColorForPiece(data, palette, idx, piece, formula);
-    return {
-      idx,
-      piece,
-      id,
-      target,
-      d,
-      near,
-      state: targetState(data, idx),
-      color: currentColorOf(data, idx, piece),
-    };
-  }, [sel, layout, data, palette, formula, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="w6cb-panel" data-testid="deviation-panel">
@@ -166,56 +186,20 @@ export function DeviationPanel(p: DeviationPanelProps) {
           {formula === '76' && <small className="muted block">{t('w6cb.note76')}</small>}
           {p.dither && !p.overlayOn && <small className="muted block">{t('w6cb.ditherNote')}</small>}
 
-          {/* gewählter Stein */}
-          {selInfo && (
-            <div className="w6cb-stone" data-testid="deviation-stone" data-id={selInfo.id} data-de={selInfo.d ?? ''}>
-              <b>{selInfo.id}</b>{' '}
-              {selInfo.target && selInfo.d !== null ? (
-                <>
-                  <span className="w6cb-pair">
-                    <Swatch hex={labToHex(selInfo.target[0], selInfo.target[1], selInfo.target[2])} title={t('w6cb.photoColor')} />
-                    <span className="muted">{t('w6cb.photoColor')}</span>
-                    <span aria-hidden="true">↔</span>
-                    <Swatch hex={palette[selInfo.color]?.hex ?? '#ff00ff'} />
-                    <span>{code2(palette[selInfo.color])}</span>
-                  </span>{' '}
-                  <span data-testid="deviation-stone-de">{t('w6cb.de', { v: n(selInfo.d, 1) })}</span>
-                  {selInfo.near && (
-                    <span className="block w6cb-near">
-                      {selInfo.near.better ? (
-                        <>
-                          {t('w6cb.nearest')} <Swatch hex={palette[selInfo.near.index]?.hex ?? '#ff00ff'} /> <b>{code2(palette[selInfo.near.index])}</b>{' '}
-                          {paletteDisplayName(palette[selInfo.near.index], lang)} · {t('w6cb.de', { v: n(selInfo.near.deltaE, 1) })}{' '}
-                          <button
-                            type="button"
-                            className="btn small"
-                            disabled={p.readOnly}
-                            onClick={() => apply(Math.floor(selInfo.idx / layout.cols), selInfo.idx % layout.cols, selInfo.piece, selInfo.near!.index)}
-                            data-testid="deviation-stone-apply"
-                          >
-                            {t('w6cb.applyNearest', {
-                              code: code2(palette[selInfo.near.index]),
-                            })}
-                          </button>
-                        </>
-                      ) : (
-                        <span className="muted">{t('w6cb.alreadyNearest')}</span>
-                      )}
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span className="muted" data-testid="deviation-stone-none">
-                  {t(`w6cb.noRef.${selInfo.state === 'ok' ? 'color' : selInfo.state}`)}
-                </span>
-              )}
-            </div>
-          )}
-
           <h4 className="w6cb-h">{t('w6cb.topTitle', { n: n(top.length) })}</h4>
           {top.length === 0 ? (
             <p className="muted small">{t('w6cb.topEmpty')}</p>
           ) : (
+            <div className="w6fx-top-head small muted" aria-hidden="true">
+              <span className="w6cb-rank">{t('w6fx.col.rank')}</span>
+              <span className="w6cb-id">{t('w6fx.col.id')}</span>
+              <span className="w6fx-head-pair">
+                {t('w6fx.col.photo')} ↔ {t('w6fx.col.tile')}
+              </span>
+              <span className="w6cb-de">{t('w6fx.col.de')}</span>
+            </div>
+          )}
+          {top.length > 0 && (
             <ol className="w6cb-top" data-testid="deviation-top">
               {top.map((d, i) => {
                 const pc = palette[d.color];
@@ -236,7 +220,7 @@ export function DeviationPanel(p: DeviationPanelProps) {
                           borderColor: rgbaCss(DEVIATION_COLORS[d.deltaE < 2 ? 0 : d.deltaE <= 5 ? 1 : d.deltaE <= 10 ? 2 : 3]),
                         }}
                       >
-                        {n(d.deltaE, 1)}
+                        {deText(t, n, d.deltaE, true)}
                       </span>
                     </button>
                   </li>

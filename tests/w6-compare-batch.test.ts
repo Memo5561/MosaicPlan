@@ -11,6 +11,7 @@ import { captureCellSide, cellsEntryFrom, EditJournal, paletteIndexSig, uniqueCe
 import { computeLayout, type Layout, type LayoutParams } from '../src/core/layout';
 import { computeMosaic } from '../src/core/mosaic';
 import { cellPieceCount, cellPieces } from '../src/core/pieces';
+import { area } from '../src/core/geometry';
 import { addPngText, isPng, pngDimensions, pngSize, readPngText, PNG_MAX_MP, PNG_MAX_MP_NATIVE, PNG_SIZES } from '../src/core/previewPng';
 import { cloneMosaic, packMosaic, unpackMosaic, type StoredMosaic } from '../src/core/serialize';
 import { computeStats } from '../src/core/stats';
@@ -208,10 +209,12 @@ describe('Heller/Dunkler für einen Bereich', () => {
 });
 
 describe('Form zurücksetzen', () => {
-  it('Plan zählt Zellen, Steine und verlegte Steine; danach nur ganze Steine in der Farbe des ersten Teils', () => {
+  // w6-fix-ui: ohne Fotofarben (dieses Testraster) nimmt der ganze Stein die Farbe mit der größten Fläche der Zelle –
+  // früher die des ersten Teils (willkürlich). Mit Fotofarben: tests/w6-fix-ui.test.ts.
+  it('Plan zählt Zellen, Steine und verlegte Steine; danach nur ganze Steine in der Farbe mit der größten Fläche', () => {
     const { layout, data } = mixedGrid({}, 9);
     const rg = { r0: 0, r1: 6, c0: 0, c1: 13 };
-    const plan = planShapeReset(data, rg);
+    const plan = planShapeReset(layout, data, PAL, '2000', rg);
     let cells = 0;
     let pieces = 0;
     let laid = 0;
@@ -224,21 +227,29 @@ describe('Form zurücksetzen', () => {
         const ps = cellPieces(layout, data, row, col);
         pieces += ps.length;
         for (let q = 0; q < ps.length; q++) if ((data.progress[idx] >> q) & 1) laid++;
-        first.push(ps[0]?.color ?? data.c1[idx]);
+        // größte Fläche je Farbe (Gleichstand: die zuerst vorkommende)
+        const sum = new Map<number, number>();
+        for (const q of ps) sum.set(q.color, (sum.get(q.color) ?? 0) + area(q.poly));
+        let best = ps[0]?.color ?? data.c1[idx];
+        for (const [c, a] of sum) if (a > sum.get(best)! + 1e-9) best = c;
+        first.push(best);
       }
     expect(plan.cells.length).toBe(cells);
     expect(plan.piecesBefore).toBe(pieces);
     expect(plan.laid).toBe(laid);
     expect(laid).toBeGreaterThan(0);
+    expect(plan.photoCells).toBe(0);
+    expect(plan.areaCells).toBe(cells);
+    expect([...plan.colors]).toEqual(first);
     const totalBefore = stats(layout, data).pieces;
-    expect(applyShapeReset(layout, data, plan.cells, MIN)).toBe(cells);
+    expect(applyShapeReset(layout, data, plan.cells, MIN, plan.colors)).toBe(cells);
     plan.cells.forEach((idx, k) => {
       expect(data.kind[idx]).toBe(CellKind.FULL);
       expect(data.c1[idx]).toBe(first[k]);
       expect(data.progress[idx]).toBe(0);
     });
     expect(stats(layout, data).pieces).toBe(totalBefore - pieces + cells);
-    expect(planShapeReset(data, rg).cells.length).toBe(0);
+    expect(planShapeReset(layout, data, PAL, '2000', rg).cells.length).toBe(0);
   });
 });
 
@@ -260,8 +271,8 @@ describe('Ein Verlaufseintrag je Aktion, Rückgängig exakt', () => {
         return { cells: p.cells, run: () => applyColorMap(data, p.cells, p.map), colour: true };
       },
       () => {
-        const p = planShapeReset(data, { r0: 0, r1: 4, c0: 0, c1: 13 });
-        return { cells: p.cells, run: () => applyShapeReset(layout, data, p.cells, MIN), colour: false };
+        const p = planShapeReset(layout, data, PAL, '2000', { r0: 0, r1: 4, c0: 0, c1: 13 });
+        return { cells: p.cells, run: () => applyShapeReset(layout, data, p.cells, MIN, p.colors), colour: false };
       },
     ].entries()) {
       const st = mk();

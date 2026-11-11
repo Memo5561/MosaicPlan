@@ -6,6 +6,7 @@ import type { MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
 import type { RawImage } from '../../workers/protocol';
 import { Segmented } from '../components';
+import { useMedia } from './deviceKind';
 import { renderCropped } from './imagePrep';
 import type { Step } from './stepNav';
 import type { ProjectApi } from './useProject';
@@ -89,6 +90,23 @@ interface Shown {
  */
 export function PreviewLayout({ api, step, children }: { api: ProjectApi; step: Step; children: ReactNode }) {
   const group = step === 'shapes' ? 'shapes' : 'default';
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** Handy: Vorschau als kleines Vorschaubild; eingeklappt, solange im Bereichs-Editor gezeichnet wird (Paket w6-fix-ui) */
+  const phone = useMedia(PHONE_QUERY);
+  const [drawing, setDrawing] = useState(false);
+  const [forceShow, setForceShow] = useState(false);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof MutationObserver !== 'function') return;
+    const check = () => setDrawing(!!el.querySelector('[data-drawing="1"]'));
+    check();
+    const mo = new MutationObserver(check);
+    mo.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-drawing'] });
+    return () => mo.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!drawing) setForceShow(false);
+  }, [drawing]);
   const [collapsedBy, setCollapsedBy] = useState<Record<string, boolean>>(() => ({ shapes: readCollapsed('shapes'), default: readCollapsed('default') }));
   const collapsed = collapsedBy[group] === true;
   const toggle = useCallback(() => {
@@ -99,15 +117,19 @@ export function PreviewLayout({ api, step, children }: { api: ProjectApi; step: 
     });
   }, [group]);
   const empty = !api.bitmap;
+  const autoHidden = phone && drawing && !collapsed && !forceShow;
   return (
-    <div className={`w3lp-layout${collapsed ? ' w3lp-is-collapsed' : ''}${empty ? ' w3lp-is-empty' : ''}`} data-testid="live-preview-layout">
+    <div className={`w3lp-layout${collapsed ? ' w3lp-is-collapsed' : ''}${empty ? ' w3lp-is-empty' : ''}`} data-testid="live-preview-layout" ref={rootRef}>
       <div className="w3lp-main">{children}</div>
-      <LivePreview api={api} step={step} collapsed={collapsed} onToggle={toggle} />
+      <LivePreview api={api} step={step} collapsed={collapsed || autoHidden} autoHidden={autoHidden} onToggle={autoHidden ? () => setForceShow(true) : toggle} />
     </div>
   );
 }
 
-export function LivePreview({ api, step, collapsed = false, onToggle }: { api: ProjectApi; step?: Step; collapsed?: boolean; onToggle?: () => void }) {
+/** Handy-Breite: Vorschau als kleines Vorschaubild neben dem Umschalter Mosaik/Foto */
+const PHONE_QUERY = '(max-width: 600px)';
+
+export function LivePreview({ api, step, collapsed = false, autoHidden = false, onToggle }: { api: ProjectApi; step?: Step; collapsed?: boolean; autoHidden?: boolean; onToggle?: () => void }) {
   const { t, n, lang } = useI18n();
   const { watchPreview } = api;
   // Nur solange die Vorschau angezeigt wird, rechnet sie
@@ -284,6 +306,7 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
       data-kind={shown?.kind ?? 'none'}
       data-current={shown && !outdated ? '1' : '0'}
       data-key={shown?.key ?? ''}
+      data-auto-hidden={autoHidden ? '1' : '0'}
     >
       <div className="w3lp-head">
         {/* Mit Bild sagt das Kennzeichen, was gezeigt wird („Vorschau – noch nicht übernommen“ / „Übernommenes Mosaik“) */}
@@ -301,6 +324,11 @@ export function LivePreview({ api, step, collapsed = false, onToggle }: { api: P
             <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
             <span className="w3lp-toggle-text">{collapsed ? t('w3lp.showShort') : t('w3lp.hideShort')}</span>
           </button>
+        )}
+        {autoHidden && (
+          <small className="muted w3lp-auto-note" data-testid="live-preview-auto-hidden">
+            {t('w6fx.lp.drawing')}
+          </small>
         )}
       </div>
       {!collapsed && (

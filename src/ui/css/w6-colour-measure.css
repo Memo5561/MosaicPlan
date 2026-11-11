@@ -197,3 +197,30 @@ td .w6cm-tag {
 .w6cm-foot .btn-row {
   margin-left: auto;
 }
+
+/* Handy (Paket w6-fix-ui): Zoom-Knöpfe UNTER dem Foto – über dem Foto verdeckten sie den Stein und fingen Antippen ab */
+@media (max-width: 600px) {
+  .w6cm-zoom {
+    position: static;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .w6cm-zoom .icon-btn {
+    box-shadow: none;
+    border: 1px solid var(--line);
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+.w6fx-explain summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+.w6fx-explain p {
+  margin: 4px 0 0;
+}

@@ -1,0 +1,229 @@
+/* w6-fix-ui: Nachbesserungen der UX-Prüfung von Welle 6 (Vorschau-Werkzeuge, Steindetail, Bereichsbearbeitung) */
+
+/* ---------- Legende + Mosaik: beim Ins-Bild-Holen nicht unter Kopfzeile und Schrittleiste */
+.w6fx-map-area {
+  scroll-margin-top: calc(var(--w3lp-top, 0px) + 8px);
+}
+
+/* ---------- Schnellschalter „Abweichungskarte“: am Handy kurz („Karte“), damit die Leiste einzeilig bleibt */
+.w6cb-quick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.w6fx-q-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #1e8c50 0 25%, #f2be1e 25% 50%, #ec6816 50% 75%, #c4123a 75%);
+  box-shadow: inset 0 0 0 1px rgba(29, 42, 58, 0.25);
+  flex: none;
+}
+.w6fx-q-short {
+  display: none;
+}
+@media (max-width: 600px) {
+  .w6fx-q-long {
+    display: none;
+  }
+  .w6fx-q-short {
+    display: inline;
+  }
+  /* Rückgängig, Wiederholen und „Karte“ in einer Zeile: Knöpfe etwas schmaler (weiter ≥ 44 px hoch) */
+  .w5ue-toolbar > .w5ue-history {
+    flex: none;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .w5ue-toolbar:has(> .w6cb-quick) {
+    column-gap: 6px;
+  }
+  .w5ue-toolbar > .w5ue-history .btn.small.w5ue-hbtn,
+  .w5ue-toolbar > .btn.small.w6cb-quick {
+    flex: none;
+    padding-left: 6px;
+    padding-right: 6px;
+    min-height: 44px;
+    font-size: 0.8rem;
+    gap: 4px;
+  }
+}
+
+/* ---------- Werkzeugkarte: Überschrift und echte Reiter */
+.w6fx-tools-h {
+  margin: 0;
+  padding: 10px 12px 0;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+.w6cb-tools .w6cb-tabs {
+  gap: 0;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.w6cb-tools .w6cb-tab {
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  margin-bottom: -1px;
+  padding: 9px 14px;
+  min-height: 44px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.w6cb-tools .w6cb-tab:hover {
+  background: #f4f1ec;
+}
+.w6cb-tools .w6cb-tab.active {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+.w6cb-tools #w6cb-tool-body .w6cb-panel {
+  border-top: 0;
+}
+@media (max-width: 600px) {
+  .w6cb-tools .w6cb-tabs {
+    padding: 6px 4px 0;
+  }
+  .w6cb-tools .w6cb-tab {
+    padding: 8px 4px;
+  }
+}
+
+/* ---------- Hinweisleiste über dem Mosaik (Rechteck aufziehen, gewählter Bereich) */
+.w6fx-banner {
+  position: absolute;
+  z-index: 3;
+  left: 8px;
+  right: 60px;
+  top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 12px;
+  background: rgba(29, 42, 58, 0.92);
+  color: #fff;
+  font-size: 0.86rem;
+  line-height: 1.3;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.w6fx-banner > span {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.w6fx-banner .btn {
+  min-height: 40px;
+}
+
+/* ---------- Abweichung im Steindetail */
+.w6fx-stone-dev .w6fx-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.w6fx-pair-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+.w6fx-pair-arrow {
+  font-size: 1.1rem;
+  color: var(--muted);
+}
+.w6fx-de-word {
+  font-size: 0.95rem;
+  border-bottom: 3px solid transparent;
+}
+.w6fx-near {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.w6fx-near .btn {
+  min-height: 40px;
+}
+
+/* ---------- Liste „Größte Abweichungen“: sichtbare Spaltenköpfe (Titel helfen am Touchgerät nicht) */
+.w6fx-top-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 2px;
+  font-weight: 600;
+}
+.w6fx-head-pair {
+  white-space: nowrap;
+}
+.w6cb-top .w6cb-de {
+  text-align: right;
+}
+
+/* ---------- Heller/Dunkler: großer Sprung, abwählbare Zeilen */
+.w6cb-map td.w6fx-use {
+  width: 1px;
+  padding-right: 0;
+}
+.w6cb-map td.w6fx-use input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  vertical-align: middle;
+}
+.w6cb-map tr.w6fx-big td {
+  background: #fff8e6;
+}
+.w6cb-map tr.w6fx-skipped td:not(.w6fx-use) {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.w6fx-big-badge {
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.w6fx-big-hint {
+  color: var(--warn);
+}
+.w6fx-shape-rule {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* ---------- Ergebnis nach „Anwenden“ */
+.w6fx-done {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+}
+.w6fx-done > span {
+  flex: 1 1 220px;
+}
+
+/* ---------- Steindetail aus der Vorschau auf schmalen Bildschirmen: niedrigeres Blatt, Stein bleibt darüber sichtbar */
+@media (max-width: 980px) {
+  .modal-backdrop:has(.w5ue-stone-modal.w6fx-short) {
+    align-items: flex-end;
+    padding: 0;
+    background: rgba(15, 20, 30, 0.2);
+  }
+  .modal:has(.w5ue-stone-modal.w6fx-short) {
+    width: 100%;
+    max-width: 720px;
+    max-height: 58vh;
+    max-height: 58dvh;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

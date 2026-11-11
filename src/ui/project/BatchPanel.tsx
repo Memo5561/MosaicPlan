@@ -5,21 +5,27 @@
  *  - Jede Aktion zeigt vorher, was sie tun wird (Probelauf mit exakter Steinzahl, Zuordnung der Farben) und ist EIN
  *    Verlaufseintrag (api.editCells): Strg+Z bzw. ↶ macht sie als Ganzes rückgängig.
  *  - Heller/Dunkler nimmt nur vorhandene Palettenfarben gleichen Farbtons; Steine ohne passende Farbe bleiben
- *    unverändert und werden gezählt.
+ *    unverändert und werden gezählt. Große Sprünge (ΔE über SHADE_BIG_JUMP_DE) sind gekennzeichnet, jede Zeile lässt
+ *    sich abwählen; der Probelauf zählt nur die angehakten Zeilen (Paket w6-fix-ui).
+ *  - Form zurücksetzen: Farbe nach der Fotofarbe der Zelle (nächste Palettenfarbe), sonst nach der größten Farbfläche.
+ *  - Nach dem Anwenden zeigt „Im Mosaik ansehen“ den geänderten Bereich.
  *  - Stückzahlen und Statistik ändern sich nur über die normale Neuberechnung nach der Bearbeitung.
  */
 import { useEffect, useMemo, useState } from 'react';
 import type { DeltaEFormula } from '../../core/color';
 import { paletteDisplayName } from '../../core/colorNames';
-import { applyColorMap, applyReplace, applyShapeReset, colorCensus, fitsJournal, planReplace, planShade, planShapeReset, rangeCells } from '../../core/batch';
+import { applyColorMap, applyReplace, applyShapeReset, colorCensus, fitsJournal, planReplace, planShade, planShapeReset, rangeCells, SHADE_BIG_JUMP_DE } from '../../core/batch';
 import { cellId, type Layout, type SectionGrid } from '../../core/layout';
 import type { Range } from '../../core/stats';
 import type { MosaicData, PaletteColor } from '../../core/types';
 import { useI18n } from '../../i18n';
 import { Badge, Segmented, Swatch } from '../components';
 import type { HistoryLabel } from '../../core/journal';
+import { deText } from '../deWords';
+import { deviceKey } from './deviceKind';
 import type { ProjectApi } from './useProject';
 import '../css/w6-compare-batch.css';
+import '../css/w6-fix-ui.css';
 
 export type BatchScope = 'rect' | 'section' | 'all';
 export type BatchAction = 'replace' | 'shade' | 'shape';
@@ -48,11 +54,20 @@ export interface BatchPanelProps {
   setRectMode: (on: boolean) => void;
   sectionId: string | null;
   setSectionId: (id: string | null) => void;
+  /** Finger statt Maus (Hinweise ohne Strg+Z bzw. Leertaste) */
+  coarse: boolean;
+  /**
+   * Geänderten Bereich im Viewer hervorheben ('all' = ganzes Mosaik); `go`: außerdem dorthin zoomen und das Mosaik ins
+   * Bild holen („Im Mosaik ansehen“).
+   */
+  onShow: (where: Range | 'all', go: boolean) => void;
 }
 
 interface Done {
   text: string;
   count: number;
+  /** geänderter Bereich (für „Im Mosaik ansehen“) */
+  where: Range | 'all';
 }
 
 export function BatchPanel(p: BatchPanelProps) {
@@ -65,6 +80,8 @@ export function BatchPanel(p: BatchPanelProps) {
   const [dir, setDir] = useState<'lighter' | 'darker'>('lighter');
   const [laidOk, setLaidOk] = useState(false);
   const [done, setDone] = useState<Done | null>(null);
+  /** Heller/Dunkler: abgewählte Ausgangsfarben (Palettenindex) – bleiben unverändert */
+  const [skip, setSkip] = useState<ReadonlySet<number>>(() => new Set());
 
   const section = p.scope === 'section' && p.sections ? (p.sections.sections.find((s) => s.id === p.sectionId) ?? null) : null;
   /** Wirkungsbereich: null = nichts gewählt; 'all' = ganzes Mosaik */
@@ -79,7 +96,8 @@ export function BatchPanel(p: BatchPanelProps) {
   useEffect(() => {
     setDone(null);
     setLaidOk(false);
-  }, [rangeKey, action]);
+    setSkip(new Set());
+  }, [rangeKey, action, dir]);
 
   const census = useMemo(() => (range ? colorCensus(data, palette.length, rg) : null), [rangeKey, data, palette, version]); // eslint-disable-line react-hooks/exhaustive-deps
   // Farben im Bereich – dazu die gewählte Ausgangsfarbe, auch wenn sie (nach dem Anwenden) nicht mehr vorkommt
@@ -93,8 +111,15 @@ export function BatchPanel(p: BatchPanelProps) {
     () => (action === 'replace' && range && fromEff !== null && toEff >= 0 ? planReplace(data, rg, fromEff, toEff) : null),
     [action, rangeKey, fromEff, toEff, data, version], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const shadePlan = useMemo(() => (action === 'shade' && range ? planShade(palette, data, rg, dir, formula) : null), [action, rangeKey, dir, data, palette, formula, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shapePlan = useMemo(() => (action === 'shape' && range ? planShapeReset(data, rg) : null), [action, rangeKey, data, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shadePlan = useMemo(() => (action === 'shade' && range ? planShade(palette, data, rg, dir, formula, skip) : null), [action, rangeKey, dir, data, palette, formula, version, skip]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shapePlan = useMemo(() => (action === 'shape' && range ? planShapeReset(layout, data, palette, formula, rg) : null), [action, rangeKey, layout, data, palette, formula, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggleSkip = (c: number, use: boolean) =>
+    setSkip((cur) => {
+      const next = new Set(cur);
+      if (use) next.delete(c);
+      else next.add(c);
+      return next;
+    });
 
   const cells = action === 'replace' ? replacePlan?.cells : action === 'shade' ? shadePlan?.cells : shapePlan?.cells;
   const fits = cells ? fitsJournal(data, cells) : true;
@@ -146,10 +171,13 @@ export function BatchPanel(p: BatchPanelProps) {
       });
     } else if (action === 'shape' && shapePlan) {
       if (shapePlan.laid > 0 && !laidOk) return;
-      api.editCells(cells, () => (count = applyShapeReset(layout, data, cells, p.minPieceMm)), label('w6cb.h.shape', { n: shapePlan.cells.length }), firstFlash(cells));
+      const colors = shapePlan.colors;
+      api.editCells(cells, () => (count = applyShapeReset(layout, data, cells, p.minPieceMm, colors)), label('w6cb.h.shape', { n: shapePlan.cells.length }), firstFlash(cells));
       text = t('w6cb.done.shape', { n: n(count) });
     }
-    setDone({ text, count });
+    const at: Range | 'all' = range === 'all' ? 'all' : rg!;
+    setDone({ text, count, where: at });
+    if (count > 0) p.onShow(at, false);
     setLaidOk(false);
   };
 
@@ -204,7 +232,7 @@ export function BatchPanel(p: BatchPanelProps) {
           ) : (
             <span className="muted small">{t('w6cb.noSel')}</span>
           )}
-          {p.rectMode && <small className="muted block w6cb-full">{t('w6cb.rectHint')}</small>}
+          {p.rectMode && <small className="muted block w6cb-full">{t(deviceKey('w6fx.rectHint', p.coarse))}</small>}
         </div>
       )}
       {p.scope === 'section' && (
@@ -316,7 +344,25 @@ export function BatchPanel(p: BatchPanelProps) {
               <table className="w6cb-map" data-testid="batch-map">
                 <tbody>
                   {shadePlan.rows.map((r) => (
-                    <tr key={r.from} data-from={palette[r.from].code} data-to={r.to ? palette[r.to.index].code : ''}>
+                    <tr
+                      key={r.from}
+                      className={`${r.big ? 'w6fx-big' : ''} ${r.skipped ? 'w6fx-skipped' : ''}`}
+                      data-from={palette[r.from].code}
+                      data-to={r.to ? palette[r.to.index].code : ''}
+                      data-big={r.big ? '1' : '0'}
+                      data-skipped={r.skipped ? '1' : '0'}
+                    >
+                      <td className="w6fx-use">
+                        {r.to && (
+                          <input
+                            type="checkbox"
+                            checked={!r.skipped}
+                            onChange={(e) => toggleSkip(r.from, e.target.checked)}
+                            aria-label={t('w6fx.shade.use', { code: code2(palette[r.from]) })}
+                            data-testid="batch-shade-use"
+                          />
+                        )}
+                      </td>
                       <td>
                         <Swatch hex={palette[r.from].hex} size={14} /> {code2(palette[r.from])}
                       </td>
@@ -326,11 +372,16 @@ export function BatchPanel(p: BatchPanelProps) {
                           <>
                             <Swatch hex={palette[r.to.index].hex} size={14} /> {code2(palette[r.to.index])}{' '}
                             <span className="muted">
-                              {t('w6cb.shadeStep', {
-                                dl: n(r.to.dL, 1),
-                                de: n(r.to.dE, 1),
+                              {t(dir === 'lighter' ? 'w6fx.shade.lighter' : 'w6fx.shade.darker', {
+                                dl: n(Math.abs(r.to.dL), 1),
+                                de: deText(t, n, r.to.dE),
                               })}
                             </span>
+                            {r.big && (
+                              <span className="w6fx-big-badge" data-testid="batch-shade-big">
+                                <Badge kind="warn">{t('w6fx.shade.big')}</Badge>
+                              </span>
+                            )}
                           </>
                         ) : (
                           <span className="muted">{t(dir === 'lighter' ? 'w6cb.noLighter' : 'w6cb.noDarker')}</span>
@@ -341,11 +392,14 @@ export function BatchPanel(p: BatchPanelProps) {
                   ))}
                 </tbody>
               </table>
-              <p className="small w6cb-dry" data-testid="batch-dryrun" data-count={shadePlan.matched} data-kept={shadePlan.unmatched}>
+              <small className="muted block">{t('w6fx.shade.scale')}</small>
+              {shadePlan.rows.some((r) => r.big) && <small className="block w6fx-big-hint">{t('w6fx.shade.bigHint', { max: n(SHADE_BIG_JUMP_DE) })}</small>}
+              <p className="small w6cb-dry" data-testid="batch-dryrun" data-count={shadePlan.matched} data-kept={shadePlan.unmatched} data-skipped={shadePlan.skipped}>
                 {t('w6cb.dry.shade', {
                   n: n(shadePlan.matched),
                   kept: n(shadePlan.unmatched),
                 })}
+                {shadePlan.skipped > 0 && <> {t('w6fx.dry.shadeSkipped', { n: n(shadePlan.skipped) })}</>}
               </p>
               {shadePlan.unmatched > 0 && <small className="muted block">{t('w6cb.shadeAdd')}</small>}
             </div>
@@ -362,6 +416,12 @@ export function BatchPanel(p: BatchPanelProps) {
                   : t('w6cb.dry.shapeNone')}
                 {shapePlan.freeCells > 0 && <> {t('w6cb.dry.shapeFree', { n: n(shapePlan.freeCells) })}</>}
               </p>
+              {shapePlan.cells.length > 0 && (
+                <ul className="small w6fx-shape-rule" data-testid="batch-shape-rule" data-photo={shapePlan.photoCells} data-area={shapePlan.areaCells}>
+                  {shapePlan.photoCells > 0 && <li>{t('w6fx.dry.shapePhoto', { n: n(shapePlan.photoCells) })}</li>}
+                  {shapePlan.areaCells > 0 && <li>{t('w6fx.dry.shapeArea', { n: n(shapePlan.areaCells) })}</li>}
+                </ul>
+              )}
               {shapePlan.laid > 0 && (
                 <div className="w6cb-warn" role="alert" data-testid="batch-laid-warn">
                   <Badge kind="warn">{t('w6cb.laidTitle')}</Badge> {t('w6cb.laidWarn', { n: n(shapePlan.laid) })}
@@ -394,9 +454,16 @@ export function BatchPanel(p: BatchPanelProps) {
         </>
       )}
       {done && (
-        <p className="small ok" role="status" data-testid="batch-status" data-count={done.count}>
-          {done.text} {t('w6cb.undoHint')}
-        </p>
+        <div className="small ok w6fx-done" role="status" data-testid="batch-status" data-count={done.count}>
+          <span>
+            {done.text} {t(deviceKey('w6fx.undoHint', p.coarse))}
+          </span>
+          {done.count > 0 && (
+            <button type="button" className="btn small" onClick={() => p.onShow(done.where, true)} data-testid="batch-show">
+              {t('w6fx.done.show')}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

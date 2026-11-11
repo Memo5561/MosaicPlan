@@ -30,12 +30,14 @@ import { CellKind, Rec, type Material, type MosaicData, type PaletteColor, type 
 import { useI18n, type TFunc } from '../../i18n';
 import { Badge, Modal, NumberInput, Swatch } from '../components';
 import { CutTemplateSvg } from './CutTemplateSvg';
+import { StoneDeviation } from './DeviationPanel';
 import { FreeformEditor, freeIssueText } from './FreeformEditor';
 import type { EditResult } from './useProject';
 import '../css/w1-cut-correctness.css';
 import '../css/w3-freeform-editor.css';
 import '../css/w5-undo-editing.css';
 import '../css/w5-fix-ui.css';
+import '../css/w6-fix-ui.css';
 
 export interface CutInstructionItem {
   text: string;
@@ -138,6 +140,13 @@ interface Props {
   paletteMode?: PaletteMode;
   /** ΔE-Formel des Projekts (Ähnlichkeit, Heller/Dunkler) */
   deltaE?: DeltaEFormula;
+  /**
+   * ΔE-Formel der letzten BERECHNUNG: gesetzt (und Fotofarben vorhanden), zeigt das Steindetail die Abweichung zum Foto
+   * mit „Nächste Farbe übernehmen“ (Paket w6-fix-ui).
+   */
+  photoFormula?: DeltaEFormula;
+  /** 'modal' auf schmalen Bildschirmen: niedrigeres Blatt von unten, damit der Stein darüber sichtbar bleibt */
+  shortSheet?: boolean;
 }
 
 /**
@@ -645,13 +654,14 @@ export function StoneDialog(p: Props) {
 
   const content = (
     // „stone-grid“: bisherige Klasse des Inhalts (Tests anderer Pakete lesen darüber den Text); hier einspaltig, siehe CSS
-    <div className={`w5ue-stone stone-grid ${variant === 'panel' ? 'w5ue-stone-panel' : 'w5ue-stone-modal'}`} data-w5ue-history="">
+    <div className={`w5ue-stone stone-grid ${variant === 'panel' ? 'w5ue-stone-panel' : 'w5ue-stone-modal'}${p.shortSheet ? ' w6fx-short' : ''}`} data-w5ue-history="">
       {ro && (
         <p className="w1mc-notice w1fx-locked small" role="status" data-testid="stone-locked">
           {t('w2ws.lockedComputing')}
         </p>
       )}
       {summary}
+      {p.photoFormula && <StoneDeviation data={data} palette={palette} formula={p.photoFormula} idx={idx} piece={pi} id={id} readOnly={ro} onApply={setColor} />}
       {colorSection}
       {cutSection}
       {shapeSection}

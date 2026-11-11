@@ -116,9 +116,13 @@ export interface ViewerProps {
 export interface ViewerHandle {
   fit: () => void;
   zoomTo: (s: Section | { x: number; y: number; w: number; h: number }) => void;
-  center: (xMm: number, yMm: number, minScale?: number) => void;
+  /** Punkt (mm) mittig zeigen; `atY`: stattdessen in dieser Höhe (CSS-Pixel ab Oberkante des Viewers), z. B. über einem Blatt */
+  center: (xMm: number, yMm: number, minScale?: number, atY?: number) => void;
   /** Ansicht des zuletzt gezeichneten Bildes (Ursprung auf ganze Gerätepixel gerundet) – für Tests und Vergleiche */
   drawnView: () => View | null;
+  /** Maßstab und Ursprung jetzt (ungerundet) – zum späteren Wiederherstellen mit setView */
+  getView: () => { scale: number; ox: number; oy: number };
+  setView: (v: { scale: number; ox: number; oy: number }) => void;
 }
 
 /** Laufende Zeiger-Geste */
@@ -651,20 +655,36 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer(prop
   );
 
   const center = useCallback(
-    (x: number, y: number, minScale = 0) => {
+    (x: number, y: number, minScale = 0, atY?: number) => {
       stopAnim();
       const v = view.current;
       const ins = rulerInsets(propsRef.current.layout, propsRef.current.rulers);
       if (v.scale < minScale) v.scale = minScale;
       v.ox = ins.left + (v.width - ins.left) / 2 - x * v.scale;
-      v.oy = ins.top + (v.height - ins.top) / 2 - y * v.scale;
+      v.oy = (atY !== undefined && Number.isFinite(atY) ? Math.max(ins.top, Math.min(v.height, atY)) : ins.top + (v.height - ins.top) / 2) - y * v.scale;
       draw();
     },
     [draw, stopAnim],
   );
 
   const getDrawnView = useCallback(() => (drawnView.current ? { ...drawnView.current } : null), []);
-  useImperativeHandle(ref, () => ({ fit, zoomTo, center, drawnView: getDrawnView }), [fit, zoomTo, center, getDrawnView]);
+  const getView = useCallback(() => ({ scale: view.current.scale, ox: view.current.ox, oy: view.current.oy }), []);
+  const setView = useCallback(
+    (nv: { scale: number; ox: number; oy: number }) => {
+      if (!(nv.scale > 0) || !Number.isFinite(nv.ox) || !Number.isFinite(nv.oy)) return;
+      stopAnim();
+      const v = view.current;
+      v.scale = nv.scale;
+      v.ox = nv.ox;
+      v.oy = nv.oy;
+      // Eingaben (Antippen) gelten sofort für die neue Ansicht – nicht erst nach dem nächsten Bild
+      const dpr = window.devicePixelRatio || 1;
+      if (drawnView.current) drawnView.current = { ...drawnView.current, scale: v.scale, ox: Math.round(v.ox * dpr) / dpr, oy: Math.round(v.oy * dpr) / dpr };
+      draw();
+    },
+    [draw, stopAnim],
+  );
+  useImperativeHandle(ref, () => ({ fit, zoomTo, center, drawnView: getDrawnView, getView, setView }), [fit, zoomTo, center, getDrawnView, getView, setView]);
 
   // Größe (Haupt-Canvas und Overlay gleich)
   useEffect(() => {

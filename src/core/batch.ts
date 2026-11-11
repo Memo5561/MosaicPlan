@@ -11,15 +11,21 @@
  *    cellPieces (pieces.ts) – ohne die Geometrie zu bauen. tests/w6-compare-batch.test.ts vergleicht das mit
  *    cellPieces und replaceColor (edits.ts).
  *  - Heller/Dunkler nimmt nur vorhandene Palettenfarben (shadeStep, gleicher Farbton wie im Steindetail ▲/▼, Welle 5).
- *    Gibt es keine, bleiben die Steine unverändert und werden gezählt – nie wird eine Farbe erfunden.
+ *    Gibt es keine, bleiben die Steine unverändert und werden gezählt – nie wird eine Farbe erfunden. Stufen über
+ *    SHADE_BIG_JUMP_DE sind als „großer Sprung“ gekennzeichnet; einzelne Farben lassen sich abwählen (`skip`).
+ *  - Form zurücksetzen: Farbe des ganzen Steins = Palettenfarbe, die der flächengewichteten Fotofarbe der Zelle am
+ *    nächsten liegt (mit Fotoreferenz), sonst die Farbe mit der größten Fläche in der Zelle.
  *  - Alle Farben werden gleichzeitig umgesetzt (09 → 05 und 05 → 02 macht aus einem 09 nie ein 02).
  *  - Stückzahlen, Flächen und Statistik werden hier nie geändert oder geschätzt: nach dem Anwenden rechnet die
  *    Statistik wie nach jeder Bearbeitung neu.
  */
 import type { DeltaEFormula } from './color';
+import { cellPhotoTarget, hasPhotoTargets, nearestPaletteColor } from './deviation';
 import { setCellKind, setPieceColor, shadeStep, type ShadeCandidate } from './edits';
+import { area } from './geometry';
 import { JOURNAL_MAX_BYTES } from './journal';
 import type { Layout } from './layout';
+import { cellPieces } from './pieces';
 import type { Range } from './stats';
 import { CellKind, type MosaicData, type PaletteColor } from './types';
 
@@ -176,7 +182,14 @@ export interface ShadeRow {
   pieces: number;
   /** null: keine hellere/dunklere Palettenfarbe gleichen Farbtons – diese Steine bleiben unverändert */
   to: ShadeCandidate | null;
+  /** die Stufe ist ein großer Sprung (ΔE über SHADE_BIG_JUMP_DE) */
+  big: boolean;
+  /** vom Benutzer abgewählt – diese Steine bleiben unverändert */
+  skipped: boolean;
 }
+
+/** Ab diesem ΔE (Formel der Berechnung) gilt eine Stufe Heller/Dunkler als „großer Sprung“ (deutlich sichtbar). */
+export const SHADE_BIG_JUMP_DE = 8;
 
 export interface ShadePlan extends ColorPlan {
   dir: 'lighter' | 'darker';
@@ -184,9 +197,10 @@ export interface ShadePlan extends ColorPlan {
   rows: ShadeRow[];
   /** map[farbe] = Zielfarbe oder −1 */
   map: Int32Array;
-  /** Steine, die sich ändern bzw. mangels passender Farbe unverändert bleiben (Summe = Steine im Bereich) */
+  /** Steine, die sich ändern, mangels passender Farbe unverändert bleiben bzw. abgewählt sind (Summe = Steine im Bereich) */
   matched: number;
   unmatched: number;
+  skipped: number;
 }
 
 /**
@@ -194,30 +208,47 @@ export interface ShadePlan extends ColorPlan {
  * gleichen Farbtons (shadeStep – dieselbe Regel wie im Steindetail). Farben ohne passende Palettenfarbe (und
  * Farbindizes außerhalb der Palette) werden gezählt und nicht geändert.
  */
-export function planShade(palette: readonly PaletteColor[], data: MosaicData, rg: Range | null | undefined, dir: 'lighter' | 'darker', formula: DeltaEFormula): ShadePlan {
+export function planShade(
+  palette: readonly PaletteColor[],
+  data: MosaicData,
+  rg: Range | null | undefined,
+  dir: 'lighter' | 'darker',
+  formula: DeltaEFormula,
+  skip?: ReadonlySet<number>,
+): ShadePlan {
   const census = colorCensus(data, palette.length, rg);
   const map = new Int32Array(palette.length).fill(-1);
   const rows: ShadeRow[] = [];
   let matched = 0;
   let unmatched = census.outside;
+  let skipped = 0;
   for (let c = 0; c < palette.length; c++) {
     const pieces = census.perColor[c];
     if (!pieces) continue;
     const to = shadeStep(palette, c, dir, formula);
-    rows.push({ from: c, pieces, to });
-    if (to) {
+    const off = !!to && !!skip?.has(c);
+    rows.push({ from: c, pieces, to, big: !!to && to.dE > SHADE_BIG_JUMP_DE, skipped: off });
+    if (to && !off) {
       map[c] = to.index;
       matched += pieces;
-    } else unmatched += pieces;
+    } else if (off) skipped += pieces;
+    else unmatched += pieces;
   }
   const plan = matched ? planByColors(data, rg, (c) => c < map.length && map[c] >= 0) : { cells: new Uint32Array(0), pieces: 0 };
-  return { ...plan, dir, rows, map, matched, unmatched };
+  return { ...plan, dir, rows, map, matched, unmatched, skipped };
 }
 
 /** Plan „Form zurücksetzen (ganzer Stein)“ */
 export interface ShapeResetPlan {
   /** Zellen, die nicht schon ganze Steine sind (aufsteigend) */
   cells: Uint32Array;
+  /** Farbe (Palettenindex) des ganzen Steins je Zelle, gleiche Reihenfolge wie `cells` */
+  colors: Uint16Array;
+  /** Herkunft der Farbe je Zelle: 1 = nächste Palettenfarbe zur Fotofarbe, 0 = größte Farbfläche */
+  byPhoto: Uint8Array;
+  /** Zellen mit Farbe nach der Fotofarbe bzw. nach der größten Farbfläche (Summe = cells.length) */
+  photoCells: number;
+  areaCells: number;
   /** Steine in diesen Zellen vorher (nachher ist es je Zelle genau einer) */
   piecesBefore: number;
   /** davon als verlegt markiert – ihr Verlegestatus wird beim Zurücksetzen gelöscht (Rückgängig stellt ihn her) */
@@ -232,14 +263,50 @@ const popcount16 = (v: number) => {
   return n;
 };
 
-export function planShapeReset(data: MosaicData, rg?: Range | null): ShapeResetPlan {
+/**
+ * Farbe einer Zelle als ganzer Stein:
+ *  1. mit Fotoreferenz für ALLE Teilstücke (Form wie bei der Berechnung): die Palettenfarbe, die der flächengewichteten
+ *     Fotofarbe der Zelle am nächsten liegt (Formel der Berechnung) – so wird z. B. eine Augenzelle nicht weiß, nur weil
+ *     ihr erstes Teil weiß war;
+ *  2. sonst die Farbe mit der größten Gesamtfläche in der Zelle (bei Gleichstand die zuerst vorkommende).
+ */
+export function shapeResetColor(
+  layout: Layout,
+  data: MosaicData,
+  palette: readonly PaletteColor[],
+  formula: DeltaEFormula,
+  idx: number,
+  photo = hasPhotoTargets(data),
+): { color: number; byPhoto: boolean } {
+  const row = Math.floor(idx / layout.cols);
+  const col = idx - row * layout.cols;
+  const ps = cellPieces(layout, data, row, col);
+  if (!ps.length) return { color: data.c1[idx], byPhoto: false };
+  const areas = ps.map((q) => area(q.poly));
+  if (photo) {
+    const tg = cellPhotoTarget(data, idx, areas);
+    const near = tg ? nearestPaletteColor(palette, tg, formula) : null;
+    if (near) return { color: near.index, byPhoto: true };
+  }
+  const sum = new Map<number, number>();
+  for (let q = 0; q < ps.length; q++) sum.set(ps[q].color, (sum.get(ps[q].color) ?? 0) + areas[q]);
+  let best = ps[0].color;
+  for (const [c, a] of sum) if (a > sum.get(best)! + 1e-9) best = c;
+  return { color: best, byPhoto: false };
+}
+
+export function planShapeReset(layout: Layout, data: MosaicData, palette: readonly PaletteColor[], formula: DeltaEFormula, rg?: Range | null): ShapeResetPlan {
   const r = clampRange(data, rg);
   const cells: number[] = [];
+  const colors: number[] = [];
+  const byPhoto: number[] = [];
+  let photoCells = 0;
   let piecesBefore = 0;
   let laid = 0;
   let freeCells = 0;
   const cols = data.cols;
   const none = () => {};
+  const photo = hasPhotoTargets(data);
   for (let row = r.r0; row < r.r1; row++)
     for (let col = r.c0; col < r.c1; col++) {
       const idx = row * cols + col;
@@ -250,19 +317,38 @@ export function planShapeReset(data: MosaicData, rg?: Range | null): ShapeResetP
       // nur Bits vorhandener Teilstücke zählen (wie der Verlegefortschritt)
       laid += popcount16(data.progress[idx] & ((1 << Math.min(16, n)) - 1));
       if (data.kind[idx] === CellKind.FREE) freeCells++;
+      const c = shapeResetColor(layout, data, palette, formula, idx, photo);
+      colors.push(c.color);
+      byPhoto.push(c.byPhoto ? 1 : 0);
+      if (c.byPhoto) photoCells++;
     }
-  return { cells: Uint32Array.from(cells), piecesBefore, laid, freeCells };
+  return {
+    cells: Uint32Array.from(cells),
+    colors: Uint16Array.from(colors),
+    byPhoto: Uint8Array.from(byPhoto),
+    photoCells,
+    areaCells: cells.length - photoCells,
+    piecesBefore,
+    laid,
+    freeCells,
+  };
 }
 
-/** Setzt die Zellen auf ganze Steine (setCellKind FULL: Farbe des ersten Teils, Verlegestatus gelöscht). */
-export function applyShapeReset(layout: Layout, data: MosaicData, cells: ArrayLike<number>, minPieceMm: number): number {
+/**
+ * Setzt die Zellen auf ganze Steine (setCellKind FULL, Verlegestatus gelöscht) in der Farbe `colors[k]` (aus
+ * planShapeReset, gleiche Reihenfolge wie `cells`). Liefert die Anzahl zurückgesetzter Zellen.
+ */
+export function applyShapeReset(layout: Layout, data: MosaicData, cells: ArrayLike<number>, minPieceMm: number, colors: ArrayLike<number>): number {
   let n = 0;
   for (let k = 0; k < cells.length; k++) {
     const idx = cells[k];
     if (data.kind[idx] === CellKind.FULL) continue;
     const row = Math.floor(idx / layout.cols);
     const col = idx - row * layout.cols;
-    if (setCellKind(layout, data, row, col, { kind: CellKind.FULL }, minPieceMm) === null && data.kind[idx] === CellKind.FULL) n++;
+    if (setCellKind(layout, data, row, col, { kind: CellKind.FULL }, minPieceMm) === null && data.kind[idx] === CellKind.FULL) {
+      if (k < colors.length) data.c1[idx] = colors[k];
+      n++;
+    }
   }
   return n;
 }

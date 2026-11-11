@@ -1,6 +1,6 @@
 # MosaicPlan – Stand der Verbesserungsarbeit und Fortsetzung
 
-Stand 11.11.2026: Wellen 1–6 fertig; Welle 7 (Dokumentation, Gesamt-E2E) und die neue APK folgen.
+Stand 11.11.2026: alle 7 Wellen fertig, APK 2.0 (versionCode 2) gebaut und ausgeliefert.
 Alles, was nötig ist, um weiterzumachen, liegt in diesem Ordner und im Branch `ccr-e3c91906-ceq1vn`.
 
 ## Was bisher passiert ist
@@ -23,7 +23,7 @@ Alles, was nötig ist, um weiterzumachen, liegt in diesem Ordner und im Branch `
 | 4 | Schnitte gezielt, Akzent-/Pflichtfarben, Konturen, Verlege-Arbeitsplatz, Fortschritts-Engine, PDF-Blattaufteilung, Offline-Gesichtserkennung | ✅ fertig |
 | 5 | Rückgängig/Wiederholen, Statistik-Engine, Viewer-Performance, PDF-Inhalt, Einkaufsliste, Zielfarben, PDF-Export-Schritt | ✅ fertig (gegengeprüft, 16 Befunde behoben; `plan/wave5c-report.json`) |
 | 6 | Abweichungskarte & Sammelbearbeitung, feine Steine in Kaufgrößen, Farbmessung, Streaming-CSV, PDF-Abschluss | ✅ fertig (gegengeprüft, 16 Befunde behoben; `plan/wave6-report.json`) |
-| 7 | README/Grenzen, Gesamt-E2E | ⏳ offen |
+| 7 | README/Grenzen, Gesamt-E2E | ✅ fertig (README mit allen Grenzen, `node e2e/run-e2e.cjs` startet alle E2E-Skripte) |
 
 ## So geht es weiter
 
@@ -60,5 +60,5 @@ for f in e2e/w*.e2e.cjs; do node "$f" http://localhost:4173/ /tmp/e2e; done
   (`./gradlew -I mirror.gradle …`).
 - Signieren mit dem Schlüssel aus `MosaicPlan-Signierschluessel.zip` (beim Nutzer, **nicht** im öffentlichen Repository):
   `./gradlew assembleRelease -Pandroid.injected.signing.store.file=… -Pandroid.injected.signing.store.password=… -Pandroid.injected.signing.key.alias=mosaicplan -Pandroid.injected.signing.key.password=…`
-- Die zuletzt ausgelieferte APK (1.0) enthält noch **keine** der Verbesserungen aus den Wellen 1–5.
+- Die zuletzt ausgelieferte APK ist 2.0 (versionCode 2) mit allen Verbesserungen; nächstes Update: versionCode erhöhen.
   Updates müssen mit demselben Schlüssel signiert werden, sonst geht beim Neuinstallieren der lokale Speicher verloren.

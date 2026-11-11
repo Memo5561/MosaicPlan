@@ -1,0 +1,328 @@
+/* w6-compare-batch: Abweichungskarte über dem Viewer, Werkzeuge der Vorschau (Abweichung, Bereich bearbeiten, PNG) */
+
+/* Viewer samt Zusatzebene: Die Ebene liegt über den Steinen, Zoom-Knöpfe, Hinweise und das Viewer-Overlay
+   (Rechteck beim Aufziehen, Mausumriss, Hervorhebung) liegen darüber. */
+.w6cb-stage {
+  position: relative;
+  /* beim Ins-Bild-Holen nicht unter Kopfzeile und Schrittleiste */
+  scroll-margin-top: calc(var(--w3lp-top, 0px) + 8px);
+}
+.w6cb-ovbox {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+  border-radius: 11px;
+  pointer-events: none;
+  z-index: 1;
+}
+.w6cb-ov {
+  display: block;
+  pointer-events: none;
+}
+.w6cb-stage .viewer-tools,
+.w6cb-stage .viewer-hint,
+.w6cb-stage canvas.w3vf-overlay {
+  z-index: 2;
+}
+
+/* Legende unter dem Viewer (solange die Karte an ist) */
+.w6cb-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+}
+.w6cb-legend-title {
+  font-weight: 600;
+}
+.w6cb-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.w6cb-legend-note {
+  flex-basis: 100%;
+}
+.w6cb-sw {
+  display: inline-block;
+  width: 16px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(29, 42, 58, 0.25);
+  background-clip: padding-box;
+}
+.w6cb-sw-hatch {
+  background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0 1.5px, transparent 1.5px 4px);
+}
+
+/* Schnellschalter in der Werkzeugleiste (am Handy im Reiter „Abweichung zum Foto“ – die Leiste bleibt einzeilig) */
+.btn.w6cb-quick.active,
+.btn.w6cb-quick.active:hover {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+@media (max-width: 600px) {
+  .btn.w6cb-quick {
+    display: none;
+  }
+}
+
+/* Werkzeuge */
+.w6cb-tools {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.w6cb-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+}
+.w6cb-tab {
+  position: relative;
+  border: 1px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 8px 12px;
+  min-height: 40px;
+  border-radius: 9px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.w6cb-tab:hover {
+  background: #f4f1ec;
+}
+.w6cb-tab.active {
+  background: var(--accent-soft);
+  border-color: #efc9bd;
+  color: var(--ink);
+  font-weight: 600;
+}
+.w6cb-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+#w6cb-tool-body:empty {
+  display: none;
+}
+.w6cb-panel {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.w6cb-panel p {
+  margin: 0;
+}
+.w6cb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.w6cb-wrap {
+  flex-wrap: wrap;
+}
+.w6cb-full {
+  flex-basis: 100%;
+}
+.w6cb-lbl {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  min-width: 4.5em;
+}
+.w6cb-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.w6cb-panel select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 4px 6px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: #fff;
+}
+.w6cb-row > select {
+  flex: 0 1 auto;
+  width: 360px;
+}
+.w6cb-grid > .segmented,
+.w6cb-grid > .w6cb-map {
+  align-self: flex-start;
+}
+.w6cb-map {
+  width: auto;
+  min-width: min(100%, 460px);
+}
+.w6cb-dry {
+  background: #f8f6f1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+.w6cb-warn {
+  border: 1px solid #e8c27a;
+  background: #fff8e6;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.86rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.w6cb-map {
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+.w6cb-map td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.w6cb-map td:nth-child(3) {
+  white-space: normal;
+  width: 100%;
+}
+.w6cb-map .swatch {
+  vertical-align: middle;
+}
+
+/* gewählter Stein */
+.w6cb-stone {
+  font-size: 0.88rem;
+  border-left: 3px solid var(--accent);
+  padding: 4px 8px;
+  background: #faf8f4;
+  border-radius: 0 8px 8px 0;
+}
+.w6cb-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
+.w6cb-near {
+  margin-top: 4px;
+}
+.w6cb-near .btn {
+  margin-left: 4px;
+}
+
+/* Liste „Größte Abweichungen“ */
+.w6cb-h {
+  margin: 4px 0 0;
+}
+.w6cb-summary {
+  line-height: 1.45;
+}
+.w6cb-top {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.w6cb-top li + li {
+  border-top: 1px solid var(--line);
+}
+.w6cb-top-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 10px;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+}
+.w6cb-top-btn:hover,
+.w6cb-top-btn:focus-visible {
+  background: #f4f1ec;
+}
+.w6cb-rank {
+  width: 2.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.w6cb-id {
+  min-width: 5.5em;
+}
+.w6cb-de {
+  margin-left: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 3px solid transparent;
+  padding: 0 2px;
+}
+
+@media (max-width: 600px) {
+  .w6cb-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .w6cb-tab {
+    padding: 8px 6px;
+    font-size: 0.84rem;
+    line-height: 1.2;
+  }
+  .w6cb-panel {
+    padding: 10px;
+  }
+  .w6cb-lbl {
+    min-width: 0;
+  }
+  /* Beschriftung über der Auswahl, Auswahl in gleich breiten Spalten über die ganze Breite */
+  .w6cb-row:has(> .segmented) {
+    flex-wrap: wrap;
+  }
+  .w6cb-row:has(> .segmented) > .w6cb-lbl {
+    flex-basis: 100%;
+  }
+  .w6cb-panel .segmented {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+  .w6cb-panel .segmented button {
+    padding: 8px 6px;
+    min-height: 40px;
+    line-height: 1.2;
+  }
+  .w6cb-row > select {
+    flex: 1 1 auto;
+    width: auto;
+  }
+  .w6cb-map {
+    min-width: 100%;
+  }
+  .w6cb-top {
+    max-height: 300px;
+  }
+}

@@ -59,6 +59,8 @@ export type WorkerRequest =
       locale: 'de' | 'en' | 'tr';
       fontsBase: string;
       options: PdfOptions;
+      /** Export in Teilen: Teil index+1 von total (steht im PDF) */
+      part?: { index: number; total: number };
     }
   | {
       /**
@@ -80,6 +82,8 @@ export type WorkerRequest =
       locale: 'de' | 'en' | 'tr';
       fontsBase: string;
       options: PdfOptions;
+      /** Export in Teilen: Teil index+1 von total (steht im PDF) */
+      part?: { index: number; total: number };
     }
   | {
       type: 'csv';

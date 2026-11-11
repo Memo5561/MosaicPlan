@@ -89,6 +89,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
             t,
             locale: msg.locale,
             fonts,
+            part: msg.part,
           },
           msg.options,
           (f, label) => post({ type: 'progress', id: msg.id, phase: label, fraction: f }),
@@ -122,6 +123,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
             t,
             locale: msg.locale,
             fonts,
+            part: msg.part,
           },
           msg.options,
         );

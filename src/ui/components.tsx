@@ -245,6 +245,16 @@ export async function downloadBlob(blob: Blob, name: string, opts: { announce?: 
   return { kind: 'download', name };
 }
 
+/**
+ * Dateinamensicherer Teil eines Downloads: nur ASCII-Buchstaben, Ziffern, „-“ und „_“ (Leerzeichen → „_“). Umlaute und
+ * türkische Buchstaben werden umschrieben (ä → ae, ö → oe, ü → ue, ß → ss, ç → c, ğ → g, ı → i, İ → I, ş → s), andere
+ * Akzente entfallen (é → e) – so kommen Namen auf jedem Gerät, in Mails und Archiven unverändert an.
+ */
 export function safeFileName(s: string) {
-  return s.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim().replace(/\s+/g, '_') || 'mosaicplan';
+  const map: Record<string, string> = { ä: 'ae', ö: 'oe', ü: 'ue', Ä: 'Ae', Ö: 'Oe', Ü: 'Ue', ß: 'ss', ẞ: 'SS', ç: 'c', Ç: 'C', ğ: 'g', Ğ: 'G', ı: 'i', İ: 'I', ş: 's', Ş: 'S', æ: 'ae', Æ: 'Ae', ø: 'o', Ø: 'O', œ: 'oe', Œ: 'Oe', ł: 'l', Ł: 'L', đ: 'd', Đ: 'D', þ: 'th', Þ: 'Th' };
+  const ascii = s
+    .replace(/[äöüÄÖÜßẞçÇğĞıİşŞæÆøØœŒłŁđĐþÞ]/g, (ch) => map[ch] ?? ch)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+  return ascii.replace(/[^A-Za-z0-9\-_ ]+/g, '').trim().replace(/\s+/g, '_') || 'mosaicplan';
 }

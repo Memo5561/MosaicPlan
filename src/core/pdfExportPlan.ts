@@ -16,7 +16,7 @@
  */
 import { rowIndexFromLabel, rowLabel, type Layout, type SectionGrid } from './layout';
 import { coordModeOf, type PdfOptions } from './pdfOptions';
-import { CODE_MIN_CELL, codePlanZoom, planPdfPages, planSheets, type PdfLayoutFacts, type PdfPagePlan, type PiecesInput, type PlanHints } from './pdfPlan';
+import { CODE_MIN_CELL, codePlanZoom, planPdfPages, planSheets, type PdfLayoutFacts, type PdfPagePlan, type PiecesInput, type PlanHints, type TemplateBoxSpec } from './pdfPlan';
 
 // ---------------------------------------------------------------- Abschnittsauswahl als Text
 
@@ -394,11 +394,35 @@ export function planForSelection(
   if (!facts) return planPdfPages(layout, grid, o, stones);
   if (sameSelection(ids, measuredIds ?? null, grid)) return planPdfPages(layout, grid, o, facts.stones ?? stones, facts.templateGroups, facts);
   // Teilmenge: Vorspann und Schnittvorlagen der Messung gelten nur ungefähr, Koordinatenseiten werden geschätzt
-  const plan = planPdfPages(layout, grid, o, facts.stones ?? stones, facts.templateGroups, { ...facts, coordPages: undefined });
+  const tplFacts = subsetTemplates(facts, o, ids);
+  const plan = planPdfPages(layout, grid, o, facts.stones ?? stones, tplFacts.templateGroups, { ...facts, ...tplFacts, coordPages: undefined });
   const estimated = new Set(plan.estimated);
   estimated.add('front');
   if (o.includeTemplates) estimated.add('templates');
   return { ...plan, estimated: [...estimated] };
+}
+
+/**
+ * Schnittvorlagen einer Teilmenge aus der Messung einer größeren Auswahl: Im PDF stehen nur Vorlagen, die in den
+ * exportierten Abschnitten vorkommen (höchstens templateLimit, in globaler Reihenfolge). Kastenmaße, soweit gemessen;
+ * fehlt eines, zählt die feste Kastenhöhe (Schätzung). Ohne Vorlagenzuordnung bleibt die gemessene Zahl stehen.
+ */
+function subsetTemplates(facts: Partial<PdfLayoutFacts>, o: PdfOptions, ids: readonly string[] | null): Pick<PdfLayoutFacts, 'templateGroups' | 'templateBoxes'> {
+  const secs = facts.templateSections;
+  if (!secs) return { templateGroups: facts.templateGroups ?? 0, templateBoxes: facts.templateBoxes };
+  const want = ids ? new Set(ids) : null;
+  const nos: number[] = [];
+  secs.forEach((list, i) => {
+    if (!want || list.some((id) => want.has(id))) nos.push(i + 1);
+  });
+  const shown = nos.slice(0, Math.max(0, o.templateLimit));
+  const boxByNo = new Map<number, TemplateBoxSpec>();
+  (facts.templateBoxNos ?? []).forEach((no, i) => {
+    const b = facts.templateBoxes?.[i];
+    if (b) boxByNo.set(no, b);
+  });
+  const boxes = shown.map((no) => boxByNo.get(no));
+  return { templateGroups: nos.length, templateBoxes: boxes.every((b): b is TemplateBoxSpec => !!b) ? boxes : undefined };
 }
 
 /** Gleiche Auswahl? (null = alle Abschnitte) */
@@ -412,11 +436,16 @@ export function sameSelection(a: readonly string[] | null, b: readonly string[] 
 // ---------------------------------------------------------------- Dateinamen
 
 /**
- * Dateiname eines Exports: `<Projekt>_verlegeplan.pdf`; bei einer Abschnittsauswahl mit den Abschnitten
- * (`…_verlegeplan_A1-B2_D7.pdf`, lange Auswahlen als Anzahl „12x“) und bei Teilen mit „Teil 02 von 12“.
+ * Dateiname eines Exports: `<Projekt>_<stem>.pdf` (stem in der Sprache der Oberfläche, z. B. „verlegeplan“,
+ * „laying-plan“; Vorgabe „verlegeplan“); bei einer Abschnittsauswahl mit den Abschnitten (`…_verlegeplan_A1-B2_D7.pdf`,
+ * lange Auswahlen als Anzahl „12x“) und bei Teilen mit „Teil 02 von 12“. Die Teile (Projektname, stem, Wörter) müssen
+ * schon dateinamensicher sein (ui/components.tsx safeFileName: nur ASCII).
  */
-export function exportFileName(base: string, o: { range?: string | null; count?: number; part?: { index: number; total: number; word: string; ofWord: string } } = {}): string {
-  let name = `${base}_verlegeplan`;
+export function exportFileName(
+  base: string,
+  o: { stem?: string; range?: string | null; count?: number; part?: { index: number; total: number; word: string; ofWord: string } } = {},
+): string {
+  let name = `${base}_${o.stem || 'verlegeplan'}`;
   if (o.part) {
     const w = String(o.part.total).length;
     name += `_${o.part.word}-${String(o.part.index + 1).padStart(w, '0')}-${o.part.ofWord}-${o.part.total}`;
@@ -452,6 +481,25 @@ export interface InFlightInfo {
   part?: { index: number; total: number };
   /** Startzeit (ms) */
   at: number;
+  /** Kennung der Browser-Seite (Tab), die exportiert – nur sie löscht den Vermerk */
+  owner?: string;
+  /** letztes Lebenszeichen dieser Seite (ms); älter als PDF_INFLIGHT_STALE_MS = Export nicht mehr am Laufen */
+  beat?: number;
+}
+
+/** Ein Vermerk, dessen letztes Lebenszeichen älter ist, gehört zu keinem laufenden Export mehr (ms). */
+export const PDF_INFLIGHT_STALE_MS = 30_000;
+/** Abstand der Lebenszeichen eines laufenden Exports (ms) */
+export const PDF_INFLIGHT_BEAT_MS = 5_000;
+
+/**
+ * Gehört der Vermerk zu einem Export, der vermutlich in einer ANDEREN Seite (Tab) noch läuft? Ja, wenn er nicht von
+ * `self` stammt und sein letztes Lebenszeichen (sonst die Startzeit) jünger als PDF_INFLIGHT_STALE_MS ist.
+ */
+export function inFlightLive(info: InFlightInfo, self: string, now: number): boolean {
+  if (info.owner !== undefined && info.owner === self) return false;
+  const last = Math.max(info.at, info.beat ?? 0);
+  return now - last < PDF_INFLIGHT_STALE_MS;
 }
 
 /** Vor jedem PDF-Auftrag setzen. Speicher gesperrt oder voll: ohne Auswirkung (nur Komfort). */
@@ -464,10 +512,17 @@ export function markInFlight(store: KeyStore | null | undefined, info: InFlightI
   }
 }
 
-/** Nach jedem PDF-Auftrag (Erfolg, Fehler, Abbruch) löschen. */
-export function clearInFlight(store: KeyStore | null | undefined): void {
+/**
+ * Nach jedem PDF-Auftrag (Erfolg, Fehler, Abbruch) löschen. Mit `owner`: nur einen eigenen Vermerk – nie den einer
+ * anderen Seite (Tab), deren Export noch läuft.
+ */
+export function clearInFlight(store: KeyStore | null | undefined, owner?: string): void {
   if (!store) return;
   try {
+    if (owner !== undefined) {
+      const cur = readInFlight(store);
+      if (cur && cur.owner !== undefined && cur.owner !== owner) return;
+    }
     store.removeItem(PDF_INFLIGHT_KEY);
   } catch {
     /* nur Komfort */
@@ -496,6 +551,8 @@ export function readInFlight(store: KeyStore | null | undefined): InFlightInfo |
       budgetBytes: v.budgetBytes as number,
       part,
       at: v.at as number,
+      owner: typeof v.owner === 'string' ? v.owner : undefined,
+      beat: num(v.beat) ? (v.beat as number) : undefined,
     };
   } catch {
     return null;

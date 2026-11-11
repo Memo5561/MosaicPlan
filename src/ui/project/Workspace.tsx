@@ -18,6 +18,7 @@ import { StepCompute } from './StepCompute';
 import { StepJoint, StepSize, StepTiles } from './StepGeometry';
 import { centeredScrollLeft, lastStepOf, rememberStep, RESULT_STEPS, resumeStep, STEPS, stepFromHash, stepHash, stepStates, isStep, type Step } from './stepNav';
 import { StepPdf } from './StepPdf';
+import { useStepAction } from './stepAction';
 import { StepPhoto } from './StepPhoto';
 import { StepPlan } from './StepPlan';
 import { StepPreview } from './StepPreview';
@@ -282,6 +283,9 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
   const reasons = useMemo(() => (api.rec && api.computed && api.stale ? staleReasons(api.rec.computedWith, computeKey(api.rec)) : []), [api.rec, api.computed, api.stale]);
   const reasonText = staleReasonLabels(reasons, t, n).join(', ');
 
+  // Hauptaktion von Schritt 10 für die Leiste unten (nur solange Schritt 10 offen ist)
+  const stepAction = useStepAction('pdf');
+  const pdfAction = step === 'pdf' ? stepAction : null;
   if (!api.loaded) return <div className="page">{t('common.loading')}</div>;
   if (!api.rec) {
     return (
@@ -521,9 +525,12 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
           ← {t('common.back')}
         </button>
         <div className="w2ws-nav-mid">
-          <span className="w2ws-counter" data-testid="step-counter">
-            {t('w2ws.counter', { n: idx + 1, total: STEPS.length })}
-          </span>
+          {/* Schritt 10 mit Hauptaktion: Platz für die (längere) Schaltfläche – der aktive Schritt steht in der Leiste oben */}
+          {!pdfAction && (
+            <span className="w2ws-counter" data-testid="step-counter">
+              {t('w2ws.counter', { n: idx + 1, total: STEPS.length })}
+            </span>
+          )}
           {step === 'photo' && photoMissing && (
             <small className="muted w2ws-nav-hint" data-testid="photo-later">
               {t('w2ws.photoLater')}
@@ -541,6 +548,11 @@ export function Workspace({ id, materials, initialStep, onBack }: { id: string; 
             title={blockedByOther && api.otherJob ? t('w3lp.otherJob', { name: api.otherJob.projectName, pct: Math.round(computeOverall(api.otherJob.progress) * 100) }) : undefined}
           >
             {committing ? t('w3lp.committing') : api.computing ? t('w2ws.nav.computing') : api.previewCommittable ? t('w3lp.nav.commit') : api.computed ? t('w2ws.nav.recompute') : t('w2ws.nav.compute')}
+          </button>
+        ) : pdfAction ? (
+          // Schritt 10 hat kein „Weiter“: hier steht seine Hauptaktion („PDF erzeugen · ca. N S.“, StepPdf.tsx)
+          <button className="btn primary" disabled={pdfAction.disabled} onClick={pdfAction.run} title={pdfAction.title} data-testid="pdf-nav-action" data-kind={pdfAction.kind}>
+            {pdfAction.label}
           </button>
         ) : (
           <button className="btn primary" disabled={idx === STEPS.length - 1} onClick={() => goStep(STEPS[idx + 1])} data-testid="next-step">

@@ -358,9 +358,10 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
   const nParts = Number(await page.getAttribute('[data-testid="pdf-parts"]', 'data-parts'));
   const partDefs = await page.$$eval('[data-testid="pdf-part"]', (els) => els.map((e) => ({ no: Number(e.dataset.part), ids: e.dataset.sections.split(','), text: e.textContent })));
   const partsText = (await page.textContent('[data-testid="pdf-parts"]')) || '';
+  // w5-fix-pdf: „Teil k von n“ steht jetzt im PDF selbst – der frühere Hinweis „unvollständig“ ist entfallen
   check(
     'Kleine Speichergrenze: Export in Teilen statt „PDF erzeugen“ – aufeinanderfolgende Abschnitte, jeder genau einmal',
-    nParts >= 2 && !(await page.isVisible('[data-testid="pdf-btn"]')) && partDefs.flatMap((x) => x.ids).join(',') === 'A1,A2,A3,B1,B2,B3' && /Richtwerte/.test(partsText) && /unvollständig/.test(partsText),
+    nParts >= 2 && !(await page.isVisible('[data-testid="pdf-btn"]')) && partDefs.flatMap((x) => x.ids).join(',') === 'A1,A2,A3,B1,B2,B3' && /Richtwerte/.test(partsText) && !/unvollständig/.test(partsText),
     `${nParts} Teile: ${partDefs.map((x) => x.ids.join('+')).join(' | ')}; Grenze ${budgetMb} MB`,
   );
   const partsTotal = Number(await page.getAttribute('[data-testid="pdf-parts-total"]', 'data-total'));

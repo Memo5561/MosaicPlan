@@ -49,6 +49,7 @@ import {
   dismissCrashNotice,
   dropOtherProjects,
   localStore,
+  pdfFileSig,
   pdfJobRunning,
   pdfJobState,
   pruneFiles,
@@ -57,9 +58,10 @@ import {
   watchPdfJobs,
   type PdfFile,
 } from './pdfExportStore';
-import { usePdfFacts, type PdfPlanRequest } from './pdfPlanFacts';
+import { usePartFacts, usePdfFacts, type PdfPlanRequest } from './pdfPlanFacts';
 import { SectionPicker } from './SectionPicker';
 import { photoChangedSince, staleReasonLabels, staleReasons } from './staleReasons';
+import { clearStepAction, setStepAction } from './stepAction';
 import { stepHash } from './stepNav';
 import { computeKey, type ProjectApi } from './useProject';
 
@@ -85,6 +87,18 @@ function originalSizeOf(bitmap: { width: number; height: number }, adjust: Image
   const r = rotatedSize(bitmap.width, bitmap.height, adjust);
   const scale = Math.min(1, ORIGINAL_PX / Math.max(r.w, r.h));
   return { w: Math.max(1, Math.round(r.w * scale)), h: Math.max(1, Math.round(r.h * scale)) };
+}
+
+/** so oft wird ein fremder Vermerk „Export läuft“ (anderer Tab) erneut geprüft (ms) */
+const CRASH_RECHECK_MS = 10_000;
+
+/** fortlaufende Nummer je Objekt (für die Kennung fertiger Dateien: neues Raster = neue Nummer) */
+const objIds = new WeakMap<object, number>();
+let nextObjId = 1;
+function objId(o: object): number {
+  let v = objIds.get(o);
+  if (v === undefined) objIds.set(o, (v = nextObjId++));
+  return v;
 }
 
 /** Speichergrenze dieses Geräts: gespeicherter Wert, sonst aus der Heap-Grenze des Browsers, sonst feste Annahme */
@@ -166,11 +180,18 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   // ---------------------------------------------------------------- Speichergrenze; nicht beendeter Export
   const [budgetRev, setBudgetRev] = useState(0);
   useEffect(() => {
-    // stehen gebliebener Vermerk „Export läuft“: Hinweis zeigen und ggf. die Grenze dieses Geräts senken
-    if (detectCrashedExport(deviceBudget().bytes)) setBudgetRev((v) => v + 1);
+    // stehen gebliebener Vermerk „Export läuft“: Hinweis zeigen und ggf. die Grenze dieses Geräts senken. Gehört er
+    // zu einem Export, der in einem anderen Tab noch läuft, wird später erneut geprüft (pdfExportStore.ts).
+    const check = () => {
+      if (detectCrashedExport(deviceBudget().bytes)) setBudgetRev((v) => v + 1);
+    };
+    check();
+    const timer = window.setInterval(check, CRASH_RECHECK_MS);
+    return () => window.clearInterval(timer);
   }, []);
+  // auch eine asynchron erkannte (Web-Sperre) gesenkte Grenze gilt sofort
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const budget = useMemo(() => deviceBudget(), [budgetRev]);
+  const budget = useMemo(() => deviceBudget(), [budgetRev, crash]);
 
   // ---------------------------------------------------------------- Seitenplan vorab messen
   const perSection = api.progress?.perSection ?? null;
@@ -216,18 +237,53 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   const totalStones = useMemo(() => costs.reduce((a, x) => a + x.stones, 0), [costs]);
   const inParts = !partsPlan.fitsSingle;
   const tooBig = useMemo(() => new Set(partsPlan.tooBig), [partsPlan.tooBig]);
+  // jeder Teil wird mit genau seinen Abschnitten gemessen – wie eine Einzeldatei derselben Abschnitte (gleiche Zahl);
+  // bis dahin gilt die Schätzung aus der Messung des Ganzen
+  const partIds = useMemo(() => (inParts && partsPlan.parts.length > 1 ? partsPlan.parts.map((p) => p.ids) : []), [inParts, partsPlan]);
+  const partFacts = usePartFacts(
+    token,
+    partIds,
+    (ids, index, total): PdfPlanRequest => ({ type: 'pdfPlan', ...baseRequest(), originalSize: origSize ?? undefined, previewSize: prevSize, options: { ...opts, sectionIds: ids }, part: { index, total } }),
+    !!busy || otherBusy || !facts,
+  );
   const partPlans = useMemo(
-    () => (inParts && partsPlan.parts.length > 1 ? partsPlan.parts.map((p) => planForSelection(c.layout, G, opts, p.ids, (id) => stonesOf(id), facts, sel)) : []),
+    () =>
+      partIds.map((ids, i) => {
+        const pf = partFacts[i];
+        return pf ? planForSelection(c.layout, G, opts, ids, (id) => stonesOf(id), pf, ids) : planForSelection(c.layout, G, opts, ids, (id) => stonesOf(id), facts, sel);
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [inParts, partsPlan, facts, c.layout, G, optsKey, stonesOf],
+    [partIds, partFacts, facts, c.layout, G, optsKey, stonesOf],
   );
   const partsPages = partPlans.reduce((a, p) => a + p.total, 0);
   const [singleAnyway, setSingleAnyway] = useState(false);
 
-  // fertige Dateien gehören zu Optionen, Auswahl, Raster und Aufteilung; andere werden verworfen (Adresse freigegeben)
+  // fertige Dateien gehören zu allem, was im PDF steht – denselben Angaben wie die Seitenmessung (`token`): Optionen,
+  // Auswahl, Raster, Palette, zugeordnete Materialien, Einstellungen, Projektname, Sprache, Foto (ersetzt, Zuschnitt/
+  // Drehung) und Aufteilung. Ändert sich etwas davon, wird die Datei verworfen (Adresse freigegeben) – nie wird ein
+  // veraltetes PDF als fertig angeboten.
+  const matKey = useMemo(() => {
+    const used = new Set(rec.palette.map((p) => p.materialId).filter(Boolean));
+    return materials.filter((m) => used.has(m.id));
+  }, [materials, rec.palette]);
   const sig = useMemo(
-    () => JSON.stringify([optsKey, api.version, rec.mosaicRev ?? '', lang, photoReplaced, inParts ? partsPlan.parts.map((p) => p.ids.length) : 0]),
-    [optsKey, api.version, rec.mosaicRev, lang, photoReplaced, inParts, partsPlan],
+    () =>
+      pdfFileSig({
+        optsKey,
+        version: api.version,
+        mosaicRev: rec.mosaicRev ?? '',
+        gridIds: [objId(c.data), objId(c.layout)],
+        lang,
+        photoReplaced,
+        original: origKey,
+        adjust: rec.adjust,
+        palette: rec.palette,
+        materials: matKey,
+        settings: rec.settings,
+        projectName: rec.meta.name,
+        parts: inParts ? partsPlan.parts.map((p) => p.ids.length) : 0,
+      }),
+    [optsKey, api.version, rec.mosaicRev, c.data, c.layout, lang, photoReplaced, origKey, rec.adjust, rec.palette, matKey, rec.settings, rec.meta.name, inParts, partsPlan],
   );
   useEffect(() => pruneFiles(projectId, sig), [projectId, sig, job.files]);
   const files = job.files.filter((f) => f.sig === sig);
@@ -250,10 +306,12 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   };
 
   const start = (key: string, ids: string[] | null, part: { index: number; total: number } | null, bytes: number, stones: number) => {
+    // Dateiname in der Sprache der Oberfläche, nur ASCII (ä → ae, ş → s …)
     const name = exportFileName(safeFileName(rec.meta.name), {
+      stem: safeFileName(t('w5fp.file.stem')),
       range: ids ? formatSectionRange(ids, G) : null,
       count: ids?.length,
-      part: part ? { ...part, word: t('w5pe.file.part'), ofWord: t('w5pe.file.of') } : undefined,
+      part: part ? { ...part, word: safeFileName(t('w5pe.file.part')), ofWord: safeFileName(t('w5pe.file.of')) } : undefined,
     });
     const tk = token;
     // Worker der Seitenmessung beenden: sein Speicher (Schriften, Kopie des Rasters) wird für den Export frei
@@ -283,7 +341,7 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
         if (cancelled()) throw new Error(CANCELLED);
         const res = await runWorker<'pdf'>(
           'pdf',
-          { type: 'pdf', ...baseRequest(), original: img.original, preview: img.preview, options: { ...opts, sectionIds: ids } },
+          { type: 'pdf', ...baseRequest(), original: img.original, preview: img.preview, options: { ...opts, sectionIds: ids }, part: part ?? undefined },
           [],
           (phase, f) => progress(f, phase),
         );
@@ -349,22 +407,41 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   const busyPart = busy && busy.key.startsWith('part-') ? Number(busy.key.slice(5)) : null;
   const single = fileOf('single');
 
+  // ---------------------------------------------------------------- Hauptaktion oben und in der Leiste unten (statt „Weiter“)
+  const actionRef = useRef<() => void>(() => {});
+  const runAction = useCallback(() => actionRef.current(), []);
+  const action = ((): { label: string; disabled: boolean; kind: string; title?: string; run: () => void } => {
+    const none = () => {};
+    if (busy) return { label: t('w5fp.action.busy', { pct: Math.round(busy.f * 100) }), disabled: true, kind: 'busy', run: none };
+    if (otherBusy) return { label: t('w5fp.action.otherBusy'), disabled: true, kind: 'other', run: none };
+    const title = blocked ? t('w5fp.action.blocked') : undefined;
+    if (!inParts || singleAnyway) return { label: plan ? t('w5fp.action.generate', { n: n(plan.total) }) : t('pdfui.generate'), disabled: blocked, kind: 'single', title, run: startSingle };
+    if (nextPart) {
+      const pp = partPlans[nextPart.index];
+      const k = nextPart.index + 1;
+      return { label: pp ? t('w5fp.action.part', { k, n: parts.length, p: n(pp.total) }) : t('w5pe.parts.next', { k, n: parts.length }), disabled: blocked, kind: 'part', title, run: () => startPart(nextPart) };
+    }
+    return { label: t('w5fp.action.allDone'), disabled: true, kind: 'done', run: none };
+  })();
+  actionRef.current = action.run;
+  useEffect(() => {
+    setStepAction({ step: 'pdf', label: action.label, disabled: action.disabled, title: action.title, kind: action.kind, run: runAction });
+  });
+  useEffect(() => () => clearStepAction('pdf'), []);
+
   const fileLine = (f: PdfFile, testId?: string) => (
     <div className="w5pe-file" data-testid={testId} data-name={f.name}>
-      <p>
-        ✓ {t('w5pe.done', { size: fmtBytes(f.size) })}{' '}
-        {f.url && (
-          <>
-            <a href={f.url} target="_blank" rel="noreferrer" data-testid="pdf-open">
-              {t('pdfui.open')}
-            </a>{' '}
-            ·{' '}
-            <a href={f.url} download={f.name} data-testid="pdf-download">
-              {t('w5pe.download')}
-            </a>
-          </>
-        )}
-      </p>
+      <p>✓ {t('w5pe.done', { size: fmtBytes(f.size) })}</p>
+      {f.url && (
+        <div className="btn-row wrap">
+          <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} target="_blank" rel="noreferrer" data-testid="pdf-open">
+            {t('pdfui.open')}
+          </a>
+          <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} download={f.name} data-testid="pdf-download">
+            {t('w5pe.download')}
+          </a>
+        </div>
+      )}
       <SaveResultNote result={f.save} testId="pdf-save-note" />
     </div>
   );
@@ -373,6 +450,13 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
     <div className="two-col w5pe" data-testid="pdf-step">
       {/* während ein Export läuft, bleiben die Optionen stehen – die fertige Datei gehört zu genau diesen Angaben */}
       <fieldset className="w5pe-options" disabled={locked}>
+        {/* Hauptaktion gleich oben (auf schmalen Bildschirmen zusätzlich in der Leiste unten, siehe Workspace.tsx) */}
+        <div className="btn-row wrap w5pe-top" data-testid="pdf-top" style={{ marginBottom: 14, alignItems: 'center' }}>
+          <button type="button" className="btn primary" disabled={action.disabled} onClick={runAction} title={action.title} data-testid="pdf-top-action" data-kind={action.kind}>
+            {action.label}
+          </button>
+          {action.title && <small className="muted">{action.title}</small>}
+        </div>
         <Field label={t('pdfui.format')}>
           <Segmented
             value={opts.format}
@@ -557,7 +641,7 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
           </p>
           {inParts && !singleAnyway && partPlans.length > 1 && (
             <p className="small" data-testid="pdf-parts-total" data-total={partsPages}>
-              {t('w5pe.parts.total', { n: partPlans.length, pages: n(partsPages) })}
+              {t('w5fp.parts.total', { n: partPlans.length, pages: n(partsPages) })}
             </p>
           )}
         </div>
@@ -594,11 +678,6 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
             <p className="small">
               {t('w5pe.parts.why', { need: fmtBytes(partsPlan.totalBytes), limit: fmtBytes(budget.bytes) })} {parts.length > 1 ? t('w5pe.parts.what', { n: parts.length }) : ''}
             </p>
-            {parts.length > 1 && (
-              <p className="small">
-                <Badge kind="incomplete">{t('common.incomplete')}</Badge> {t('w5pe.parts.incomplete')}
-              </p>
-            )}
             {partsPlan.tooBig.length > 0 && (
               <div className="w5pe-box warn small" data-testid="pdf-too-big">
                 <p>{t('w5pe.parts.tooBig', { ids: rangeOf(partsPlan.tooBig) })}</p>
@@ -613,7 +692,16 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
                 const big = p.ids.some((id) => tooBig.has(id));
                 const pp = partPlans[i];
                 return (
-                  <li key={p.index} className={f ? 'done' : ''} data-testid="pdf-part" data-part={p.index + 1} data-sections={p.ids.join(',')} data-done={f ? 'yes' : 'no'}>
+                  <li
+                    key={p.index}
+                    className={f ? 'done' : ''}
+                    data-testid="pdf-part"
+                    data-part={p.index + 1}
+                    data-sections={p.ids.join(',')}
+                    data-done={f ? 'yes' : 'no'}
+                    data-pages={pp ? pp.total : ''}
+                    data-measured={partFacts[i] ? 'yes' : 'no'}
+                  >
                     <div className="w5pe-part-head">
                       <span className="w5pe-part-name">
                         <b>{t('w5pe.parts.part', { k: p.index + 1, n: parts.length })}</b> · {tCount(t, 'w5pe.parts.sections', p.ids.length, { range: rangeOf(p.ids), count: n(p.ids.length) })}

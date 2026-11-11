@@ -25,7 +25,7 @@ import {
   type KindChange,
   type ShadeSuggestion,
 } from '../../core/edits';
-import { makeRawSizeFn } from '../../core/stats';
+import { makeRawSizeFn, pieceRawSize } from '../../core/stats';
 import { CellKind, Rec, type Material, type MosaicData, type PaletteColor, type PaletteMode } from '../../core/types';
 import { useI18n, type TFunc } from '../../i18n';
 import { Badge, Modal, NumberInput, Swatch } from '../components';
@@ -190,7 +190,9 @@ export function StoneDialog(p: Props) {
 
   if (!piece) return null;
   const raw = makeRawSizeFn(layout, palette, p.materials);
-  const info = analyzeCut(piece.poly, raw(piece.color).w, raw(piece.color).h);
+  // Grundstein oder – bei Teilsteinen in Feinsteingröße – Feinstein-Material (w6-fine-tiles), wie in Statistik/PDF/CSV
+  const rawUsed = pieceRawSize(layout, data, p.row, p.col, piece.poly, raw(piece.color));
+  const info = analyzeCut(piece.poly, rawUsed.w, rawUsed.h);
   const cid = cellId(layout, p.row, p.col);
   const id = cid + (pieces.length > 1 ? `-${pi + 1}` : '');
   const sec = p.sections ? sectionOfCell(p.sections, p.row, p.col) : null;
@@ -215,7 +217,7 @@ export function StoneDialog(p: Props) {
   const shapeKind = data.kind[idx];
   const cell = cellRect(layout, p.row, p.col);
   // verknüpftes Material: null = keine Verknüpfung, undefined = Verknüpfung zeigt ins Leere
-  const material = pc?.materialId ? p.materials.find((x) => x.id === pc.materialId) : null;
+  const material = rawUsed !== raw(piece.color) && rawUsed.material ? rawUsed.material : pc?.materialId ? p.materials.find((x) => x.id === pc.materialId) : null;
   // gespeicherte Freiformzelle prüfen (ältere Projekte konnten überlappende Teile ohne Fuge speichern)
   const freeCheck = shapeKind === CellKind.FREE ? validateFreePieces(cell.w, cell.h, data.free.get(idx) ?? [], p.minPieceMm, layout.joint) : null;
   const freeGapWarnings = freeCheck ? freeCheck.warnings.filter((w) => w.code === 'gap') : [];

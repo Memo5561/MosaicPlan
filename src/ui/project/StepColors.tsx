@@ -133,7 +133,8 @@ function useFineMaterialCarry(api: ProjectApi): void {
     const next = carryFineMaterials(cur.prev, palette);
     if (next) {
       st.current.prev = next;
-      api.setPalette(next);
+      // automatische Übernahme nach der Neuberechnung – keine Bearbeitung, kein Verlaufseintrag
+      api.setPalette(next, { record: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, projectId, api.loaded, api.paletteLocked, palette]);
@@ -596,7 +597,10 @@ export function PaletteEditor({ api, materials, onGo }: { api: ProjectApi; mater
           )}
           {fineMats.length === 0 ? (
             <p className="small warn" data-testid="fine-no-materials">
-              {t('w6ft.fine.noMats', fineDims)}
+              {t('w6ft.fine.noMats', fineDims)}{' '}
+              <a href="#/materials" data-testid="fine-add-materials">
+                {t('w6ft.fine.addMats', fineDims)}
+              </a>
             </p>
           ) : (
             <div className="btn-row wrap">

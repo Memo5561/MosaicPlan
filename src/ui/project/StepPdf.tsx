@@ -35,6 +35,7 @@ import {
 } from '../../core/pdfExportPlan';
 import { coordModeOf, DEFAULT_PDF_OPTIONS, effectiveSheetScale, fitSheetScale, fmtScale, printableArea, type CodePlanMode, type CoordMode, type PdfOptions } from '../../core/pdfOptions';
 import { CODE_MIN_CELL, CODE_PLAN_WHOLE_MAX_K, codePlanZoom, planPdfPages, type PlanPart } from '../../core/pdfPlan';
+import { paletteMaterials } from '../../core/materialImport';
 import { renderFull } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
 import type { ImageAdjust, Material } from '../../core/types';
@@ -274,10 +275,8 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   // Auswahl, Raster, Palette, zugeordnete Materialien, Einstellungen, Projektname, Sprache, Foto (ersetzt, Zuschnitt/
   // Drehung) und Aufteilung. Ändert sich etwas davon, wird die Datei verworfen (Adresse freigegeben) – nie wird ein
   // veraltetes PDF als fertig angeboten.
-  const matKey = useMemo(() => {
-    const used = new Set(rec.palette.map((p) => p.materialId).filter(Boolean));
-    return materials.filter((m) => used.has(m.id));
-  }, [materials, rec.palette]);
+  // Grundstein- und Feinstein-Materialien (w6-fine-tiles): beide stehen im PDF (Einkaufsliste, Legende)
+  const matKey = useMemo(() => paletteMaterials(rec.palette, materials), [materials, rec.palette]);
   const sig = useMemo(
     () =>
       pdfFileSig({

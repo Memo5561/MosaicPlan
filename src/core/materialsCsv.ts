@@ -393,10 +393,12 @@ export type WarnReason =
   | 'size-unknown'
   | 'type-unknown'
   | 'id-invalid'
-  | 'source-unknown';
+  | 'source-unknown'
+  /** neuer HEX-Wert, Herkunftsspalten unverändert (z. B. Fotomessung) – die alte Herkunft gehört nicht zum neuen Wert */
+  | 'source-stale';
 
 export const SKIP_REASONS: SkipReason[] = ['hex-missing', 'hex-invalid', 'too-many-columns', 'unterminated-quote', 'duplicate-in-file', 'ambiguous-match'];
-export const WARN_REASONS: WarnReason[] = ['number-invalid', 'number-negative', 'thousands-separator', 'ambiguous-number', 'fraction', 'size-unknown', 'type-unknown', 'id-invalid', 'source-unknown'];
+export const WARN_REASONS: WarnReason[] = ['number-invalid', 'number-negative', 'thousands-separator', 'ambiguous-number', 'fraction', 'size-unknown', 'type-unknown', 'id-invalid', 'source-unknown', 'source-stale'];
 
 export interface CsvSkip {
   /** Zeilennummer in der Datei (1-basiert, Beginn des Datensatzes) */
@@ -988,6 +990,8 @@ export function planMaterialImport(parsed: MaterialsCsvOk, existing: Material[],
   const claimed = new Map<string, number>();
   const newKeys = new Map<string, number>();
   const usedIds = new Set(existing.map((m) => m.id));
+  /** Hinweise aus dem Abgleich (nicht aus dem Zerlegen), z. B. veraltete Herkunft bei neuem HEX-Wert */
+  const rowWarnings: CsvWarning[] = [];
 
   for (const row of parsed.rows) {
     const v = row.values;
@@ -1033,8 +1037,17 @@ export function planMaterialImport(parsed: MaterialsCsvOk, existing: Material[],
         claimed.set(target.id, row.line);
         const after: Material = { ...target, ...v, id: target.id };
         if (v.colorSource !== undefined) {
-          // gleiche Herkunft in Exportgenauigkeit → gespeicherte Angabe unverändert lassen
-          if (sameColorSource(target.colorSource, v.colorSource)) after.colorSource = target.colorSource;
+          if (sameColorSource(target.colorSource, v.colorSource)) {
+            if (!sameValue('hex', target.hex, after.hex) && target.colorSource && target.colorSource.kind !== 'manual') {
+              // neuer HEX-Wert, Herkunftsspalten aber unverändert (z. B. HEX in der Tabellenkalkulation von Hand
+              // geändert): die gemessene Herkunft gehört zum alten Wert – der neue gilt als von Hand eingetragen
+              after.colorSource = { kind: 'manual' };
+              rowWarnings.push({ line: row.line, field: 'srcKind', reason: 'source-stale', value: normalizeHex(String(after.hex ?? '')) ?? String(after.hex ?? '') });
+            } else {
+              // gleiche Herkunft in Exportgenauigkeit → gespeicherte Angabe unverändert lassen
+              after.colorSource = target.colorSource;
+            }
+          }
         } else if (!sameValue('hex', target.hex, after.hex)) {
           // neuer HEX-Wert ohne Herkunftsangabe: die alte Herkunft (z. B. Fotomessung) gehört nicht zu ihm
           delete after.colorSource;
@@ -1069,7 +1082,7 @@ export function planMaterialImport(parsed: MaterialsCsvOk, existing: Material[],
     updates,
     identical,
     skipped: skipped.sort((a, b) => a.line - b.line),
-    warnings: parsed.warnings.filter((w) => written.has(w.line)),
+    warnings: [...parsed.warnings, ...rowWarnings].filter((w) => written.has(w.line)).sort((a, b) => a.line - b.line),
   };
 }
 

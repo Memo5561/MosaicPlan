@@ -10,9 +10,9 @@ import { nameKeyFor, uniqueAutoNames, type NameSuffix } from './colorNames';
 import { regionMask, detailMap, type RGBAImage } from './imageOps';
 import { kmeansLab, kmeansLabFixed } from './kmeans';
 import { pieceId, type Layout } from './layout';
-import type { Pt } from './geometry';
+import { DIM_TOL, type Pt } from './geometry';
 import { cellRect, diagA, diagB, lineSplit, pieceCuttable, subRects } from './pieces';
-import { bgCutFactorOf, CellKind, createEmptyMosaic, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type PhotoTargets, type Region, type ShapeOptions } from './types';
+import { bgCutFactorOf, CellKind, createEmptyMosaic, fineTileSize, Rec, type MatchDeltaE, type MosaicData, type PaletteColor, type PaletteMode, type PhotoTargets, type Region, type ShapeOptions } from './types';
 
 export interface FixedColor {
   lab: Lab;
@@ -197,10 +197,12 @@ export interface ComputeDiagnostics {
   /**
    * Nur mit Feinbereichen (Region.type 'fine', w6-fine-tiles), exakt gezählt: Zellen, deren Mitte in einem Feinbereich
    * liegt (`cells`), davon als k×k-Feinsteine berechnet (`sub`), und davon nicht möglich, weil ein Teilstein die
-   * Mindestbreite nicht erfüllt (`tooSmall`, z. B. gekürzte Randsteine). `subdivideOff`: „Feinere Steine“ war aus –
-   * dann wurde nichts erzwungen. `k`: verwendete Teilung.
+   * Mindestbreite nicht erfüllt (`tooSmall`). `notFineSize`: Zellen, deren k×k-Teilsteine nicht das Feinsteinmaß hätten
+   * (gekürzte Randsteine) – dort wird nichts erzwungen; ist eine solche Zelle trotzdem k×k geteilt (normale Wahl an
+   * einer Bildkante), zählt sie hier und nicht in `sub` (ihre Teile sind keine Feinsteine). Fehlt bei älteren
+   * Ergebnissen. `subdivideOff`: „Feinere Steine“ war aus – dann wurde nichts erzwungen. `k`: verwendete Teilung.
    */
-  fineRegions?: { cells: number; sub: number; tooSmall: number; k: number; subdivideOff?: boolean };
+  fineRegions?: { cells: number; sub: number; tooSmall: number; notFineSize?: number; k: number; subdivideOff?: boolean };
   /**
    * Kantenschnitte benachbarter Steine, die beide zur gemeinsamen Fuge zeigen (`facing`), und davon die, deren Linien sich
    * auf der Fugenmitte bis auf CONTOUR_ALIGN_MM treffen (`aligned`) – exakt aus der Geometrie (contourAlignment).
@@ -374,7 +376,17 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
   // Feinbereiche: Zellen darin und davon nicht als Feinsteine möglich (Mindestbreite) – exakt gezählt
   let fineCells = 0;
   let fineTooSmall = 0;
+  // Feinbereich-Zellen, deren Teilsteine NICHT das Feinsteinmaß hätten (gekürzte Randsteine): nie erzwungen, eigens gezählt
+  let fineNotFineSize = 0;
   const fineK = shapes.subdivK;
+  /** Maß eines Feinsteins (k×k-Teil eines GANZEN Rastersteins, fineTileSize) */
+  const fineSize = fineTileSize(layout.tileW, layout.tileH, layout.joint, fineK);
+  /** Hätten die k×k-Teilsteine dieser Zelle genau das Feinsteinmaß (± DIM_TOL)? Gekürzte Randzellen: nein. */
+  const fineSized = (row: number, col: number): boolean => {
+    const sw = (layout.colW[col] - (fineK - 1) * layout.joint) / fineK;
+    const sh = (layout.rowH[row] - (fineK - 1) * layout.joint) / fineK;
+    return Math.abs(sw - fineSize.w) < DIM_TOL && Math.abs(sh - fineSize.h) < DIM_TOL;
+  };
   // „Feinere Steine in Bereichen bevorzugen“: k×k kostet in Gesichts-/Detailbereichen höchstens so viel wie ein Kantenschnitt
   const preferSub = shapes.preferSubInRegions === true && shapes.subdivide;
 
@@ -639,10 +651,12 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
           }
 
           // ---- Feinbereich: k×k-Feinsteine erzwingen (auch ohne Kante in der Zelle), mit den Mittelwerten der Teilflächen –
-          // aber nur, wenn jeder Teilstein die Mindestbreite erfüllt (sonst bleibt die normale Wahl, gezählt in tooSmall)
+          // aber nur, wenn jeder Teilstein genau das Feinsteinmaß hat (sonst – gekürzte Randsteine – bleibt die normale
+          // Wahl, gezählt in notFineSize) und die Mindestbreite erfüllt (sonst normale Wahl, gezählt in tooSmall)
           if (inFine) {
             fineCells++;
-            if (shapes.subdivide && bestKind !== CellKind.SUB && S % fineK === 0) {
+            if (shapes.subdivide && !fineSized(row, col)) fineNotFineSize++;
+            else if (shapes.subdivide && bestKind !== CellKind.SUB && S % fineK === 0) {
               const r = cellRect(layout, row, col);
               if (subRects(r, fineK, g).every((p) => pieceCuttable(p, shapes.minPieceMm))) {
                 const per = S / fineK;
@@ -1210,19 +1224,22 @@ export function computeMosaic(img: RGBAImage, params: ComputeParams, onProgress?
     }
     regionDiag = { splitCellsInRegions: splitIn, subCellsInRegions: subIn, regionCells: inside, ...(bgFactor > 1 ? { bgCutFactor: bgFactor } : {}) };
   }
-  // Feinbereiche: wie viele Zellen wirklich Feinsteine sind (exakt aus data.kind, dieselbe Zellmitten-Regel)
+  // Feinbereiche: wie viele Zellen wirklich Feinsteine sind (exakt aus data.kind, dieselbe Zellmitten-Regel; nur Zellen,
+  // deren Teilsteine das Feinsteinmaß haben – k×k-Teilung einer gekürzten Randzelle ergibt keine Feinsteine)
   let fineDiag: Pick<ComputeDiagnostics, 'fineRegions'> = {};
   if (fineMask) {
     let fineSub = 0;
     for (let row = 0; row < rows; row++)
       for (let col = 0; col < cols; col++) {
         const i = row * cols + col;
-        if (data.kind[i] !== CellKind.SUB) continue;
+        if (data.kind[i] !== CellKind.SUB || !fineSized(row, col)) continue;
         const cxp = Math.min(W - 1, Math.max(0, Math.floor((layout.colX[col] + layout.colW[col] / 2) * sx)));
         const cyp = Math.min(H - 1, Math.max(0, Math.floor((layout.rowY[row] + layout.rowH[row] / 2) * sy)));
         if (fineMask[cyp * W + cxp] > 0) fineSub++;
       }
-    fineDiag = { fineRegions: { cells: fineCells, sub: fineSub, tooSmall: fineTooSmall, k: fineK, ...(shapes.subdivide ? {} : { subdivideOff: true }) } };
+    fineDiag = {
+      fineRegions: { cells: fineCells, sub: fineSub, tooSmall: fineTooSmall, notFineSize: fineNotFineSize, k: fineK, ...(shapes.subdivide ? {} : { subdivideOff: true }) },
+    };
   }
 
   // ---------------- Pflichtfarben: was aus jeder geworden ist (Steine exakt aus der Zuordnung)

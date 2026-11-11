@@ -303,44 +303,50 @@ async function bigExport(browser, label, cols, rows, diagEvery, { cancel = false
       check('Abschnitts-CSV: nur Zeilen dieses Abschnitts, identisch zur Gesamtliste', dl2.suggestedFilename().includes(`_${secId}_`) && rows2.length > 0 && rows2.every((l) => l.split(';')[1] === secId) && rows2.join('\n') === inAll.join('\n'), `${secId}: ${rows2.length} Zeilen`);
       await page.click('[data-testid="section-clear"]');
 
-      // ---- Vorgaben „1 Blatt“ / „2×2 Blätter“
+      // ---- Vorgaben „1 Blatt“ / „2×2 Blätter“ (Korrekturen Welle 6: „2×2“ aus dem Raster – nie mehr als 2 × 2 Blätter
+      // je Abschnitt; nur angeboten, wenn besser als „1 Blatt“; beste Vorgabe „empfohlen“; aktuelle nicht anwendbar)
       await page.click('.w4lw-secset > summary');
       await page.waitForSelector('[data-testid="sec-presets"]');
       const one = await txt(page, '[data-testid="sec-preset-one"]');
-      const two = await txt(page, '[data-testid="sec-preset-two"]');
-      check('Vorgaben aus der bedruckbaren Fläche (A4 hoch, 1:1): 17,8 × 24,7 cm und 35,6 × 49,4 cm', /17,8 × 24,7 cm · \d+ Blätter/.test(one) && /35,6 × 49,4 cm · \d+ Blätter/.test(two), `${one} | ${two}`);
+      const twoEl = await page.$('[data-testid="sec-preset-two"]');
+      const two = twoEl ? await txt(page, '[data-testid="sec-preset-two"]') : '';
+      const twoW = twoEl ? Number(await twoEl.getAttribute('data-w')) : 0;
+      const twoH = twoEl ? Number(await twoEl.getAttribute('data-h')) : 0;
+      check(
+        'Vorgaben aus der bedruckbaren Fläche (A4 hoch, 1:1): „1 Blatt“ 17,8 × 24,7 cm empfohlen; „2×2“ höchstens 35,6 × 49,4 cm oder (nicht besser) ausgeblendet',
+        /1 Blatt · empfohlen/.test(one) && /17,8 × 24,7 cm · \d+ Abschnitte · \d+ Blätter/.test(one) && (!twoEl || (twoW <= 356 && twoH <= 494 && /cm · \d+ Abschnitte · \d+ Blätter/.test(two))),
+        `${one} | ${two || '„2×2“ nicht angeboten'}`,
+      );
       const sheetsOne = Number(await page.getAttribute('[data-testid="sec-preset-one"]', 'data-sheets'));
-      const nDialogs = { n: 0 };
-      page.on('dialog', (d) => {
-        nDialogs.n++;
-        d.dismiss();
-      });
-      await page.click('[data-testid="sec-preset-one"]');
-      await wait(600);
-      const pressed = await page.getAttribute('[data-testid="sec-preset-one"]', 'aria-pressed');
-      const secCount = await page.$$eval('[data-testid="section-cell"]', (els) => els.length);
-      const noHint = !(await page.$('[data-testid="sec-fit-hint"]'));
-      check('„1 Blatt“ ohne Fortschritt: ohne Rückfrage übernommen, je Abschnitt ein Blatt, Hinweis weg', nDialogs.n === 0 && pressed === 'true' && secCount === sheetsOne && noHint, `${secCount} Abschnitte = ${sheetsOne} Blätter`);
-      await shot(page, 'p3-presets.png');
+      await shot(page, 'p3a-presets-before.png');
 
       // Fortschritt anlegen, dann Rückfrage
       await page.click('[data-testid="section-cell"] >> nth=0');
       await page.click('[data-testid="section-done"]');
       await wait(600);
       const dlgText = { v: '' };
-      page.removeAllListeners('dialog');
       page.once('dialog', (d) => {
         dlgText.v = d.message();
         d.dismiss();
       });
-      await page.click('[data-testid="sec-preset-two"]');
+      await page.click('[data-testid="sec-preset-one"]');
       await wait(600);
-      const stillOne = await page.getAttribute('[data-testid="sec-preset-one"]', 'aria-pressed');
-      check('mit Verlegefortschritt: Rückfrage nennt Abschnitts-IDs; Abbrechen ändert nichts', /Abschnitts-IDs/.test(dlgText.v) && /verlegte Steine/.test(dlgText.v) && stillOne === 'true', dlgText.v.slice(0, 100));
+      const notYet = await page.getAttribute('[data-testid="sec-preset-one"]', 'aria-pressed');
+      check('mit Verlegefortschritt: Rückfrage nennt Abschnitts-IDs; Abbrechen ändert nichts', /Abschnitts-IDs/.test(dlgText.v) && /verlegte Steine/.test(dlgText.v) && notYet === 'false', dlgText.v.slice(0, 100));
       page.once('dialog', (d) => d.accept());
-      await page.click('[data-testid="sec-preset-two"]');
+      await page.click('[data-testid="sec-preset-one"]');
       await wait(600);
-      check('Rückfrage bestätigt: „2×2 Blätter“ übernommen', (await page.getAttribute('[data-testid="sec-preset-two"]', 'aria-pressed')) === 'true');
+      const pressed = await page.getAttribute('[data-testid="sec-preset-one"]', 'aria-pressed');
+      const disabled = await page.isDisabled('[data-testid="sec-preset-one"]');
+      const secCount = await page.$$eval('[data-testid="section-cell"]', (els) => els.length);
+      const noHint = !(await page.$('[data-testid="sec-fit-hint"]'));
+      const oneNow = await txt(page, '[data-testid="sec-preset-one"]');
+      check(
+        'Rückfrage bestätigt: „1 Blatt“ übernommen – „aktuell“, nicht noch einmal anwendbar, je Abschnitt ein Blatt, Hinweis weg',
+        pressed === 'true' && disabled && /aktuell/.test(oneNow) && secCount === sheetsOne && noHint,
+        `${secCount} Abschnitte = ${sheetsOne} Blätter`,
+      );
+      await shot(page, 'p3-presets.png');
       check('Desktop: kein seitlicher Überlauf in Schritt 9', (await overflow(page)) <= 0);
       check('Porträt: keine Konsolen- oder Seitenfehler', errors.length === 0, errors.slice(0, 3).join(' | '));
       await ctx.close();
@@ -369,9 +375,24 @@ async function bigExport(browser, label, cols, rows, diagEvery, { cancel = false
       await page.tap('.w4lw-secset > summary');
       await page.locator('[data-testid="sec-presets"]').scrollIntoViewIfNeeded();
       const hs = await page.$$eval('[data-testid^="sec-preset-"]', (els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
-      check('Handy: Vorgaben-Knöpfe ≥ 44 px', hs.length === 2 && hs.every((h) => h >= 44), hs.join(', '));
+      check('Handy: Vorgaben-Knöpfe ≥ 44 px', hs.length >= 1 && hs.every((h) => h >= 44), hs.join(', '));
       check('Handy: kein Überlauf mit geöffneten Abschnittseinstellungen', (await overflow(page)) <= 0);
       await shot(page, 'm3-phone-presets.png');
+      // ohne Verlegefortschritt: Vorgabe ohne Rückfrage übernommen
+      let dialogs = 0;
+      page.on('dialog', (d) => {
+        dialogs++;
+        d.dismiss();
+      });
+      await page.tap('[data-testid="sec-preset-one"]');
+      await wait(600);
+      check(
+        'Handy: „1 Blatt“ ohne Fortschritt ohne Rückfrage übernommen, Hinweis weg',
+        dialogs === 0 && (await page.getAttribute('[data-testid="sec-preset-one"]', 'aria-pressed')) === 'true' && !(await page.$('[data-testid="sec-fit-hint"]')),
+      );
+      check('Handy: kein Überlauf nach der Vorgabe', (await overflow(page)) <= 0);
+      await page.locator('[data-testid="sec-presets"]').scrollIntoViewIfNeeded();
+      await shot(page, 'm4-phone-preset-applied.png');
       await ctx.close();
     }
   } catch (e) {

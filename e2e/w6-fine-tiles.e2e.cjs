@@ -134,8 +134,13 @@ async function putMaterials(page, list) {
   await compute();
   await page.click('[data-testid="step-shapes"]');
   await page.waitForSelector('[data-testid="fine-regions-result"]', { timeout: 30000 });
-  const res = await page.$eval('[data-testid="fine-regions-result"]', (e) => ({ cells: +e.dataset.cells, sub: +e.dataset.sub, tooSmall: +e.dataset.toosmall, text: e.textContent }));
-  check('Ergebnis: ≥ 50 % der Zellen im Feinbereich sind 2 × 2-Feinsteine (exakt gezählt)', res.cells > 10 && res.sub / res.cells >= 0.5 && res.sub + res.tooSmall === res.cells, `${res.sub} von ${res.cells} – ${res.text.trim()}`);
+  const res = await page.$eval('[data-testid="fine-regions-result"]', (e) => ({ cells: +e.dataset.cells, sub: +e.dataset.sub, tooSmall: +e.dataset.toosmall, notFine: +(e.dataset.notfine || 0), text: e.textContent }));
+  // Korrekturen Welle 6: gekürzte Randsteine im Feinbereich werden nicht als Feinsteine erzwungen/gezählt (notFine)
+  check(
+    'Ergebnis: ≥ 50 % der Zellen im Feinbereich sind 2 × 2-Feinsteine (exakt gezählt; gekürzte Randsteine eigens)',
+    res.cells > 10 && res.sub / res.cells >= 0.5 && res.sub + res.tooSmall + res.notFine === res.cells && (res.notFine === 0 || /gekürzte/.test(res.text)),
+    `${res.sub} von ${res.cells}, ${res.notFine} gekürzt – ${res.text.trim()}`,
+  );
   await page.locator('[data-testid="fine-regions-result"]').scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(OUT, 'w6ft-03-result.png') });
 

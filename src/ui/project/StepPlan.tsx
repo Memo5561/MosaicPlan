@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { paletteDisplayName } from '../../core/colorNames';
-import { SPREADSHEET_MAX_ROWS } from '../../core/csv';
+import { COORD_CSV_TEXT, SPREADSHEET_MAX_ROWS } from '../../core/csv';
 import { setRangePlaced, togglePiecePlaced } from '../../core/edits';
 import { bbox } from '../../core/geometry';
 import {
@@ -27,7 +27,7 @@ import { DEFAULT_PDF_OPTIONS, fmtScale } from '../../core/pdfOptions';
 import { analyzeCut, cellPieceCount, cellPieces } from '../../core/pieces';
 import { rulerInsets } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
-import { paperPresets, sheetFit, type SectionPreset } from '../../core/sectionPresets';
+import { paperPresets, presetChoices, sheetFit, type SectionPreset } from '../../core/sectionPresets';
 import { makeRawSizeFn, pieceRawSize, type Range } from '../../core/stats';
 import type { Material, MosaicData, PaletteColor } from '../../core/types';
 import { tCount, useI18n } from '../../i18n';
@@ -140,14 +140,11 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
   useHistoryShortcuts(api);
   // ---- Abschnitte passend zum Papier (Optionen des PDF-Schritts; exakt der Seitenplan des PDFs)
   const pdfO = useMemo(() => ({ ...DEFAULT_PDF_OPTIONS, ...(rec.pdfOptions ?? {}) }), [rec.pdfOptions]);
-  const paper = useMemo(() => paperPresets(pdfO), [pdfO]);
-  const fitInfo = useMemo(() => {
-    if (!c || !G) return null;
-    const L0 = c.layout;
-    const presetFit = (p: SectionPreset) => sheetFit(L0, sectionsFor(L0, { ...s, sectionMode: 'size', sectionWmm: p.wMm, sectionHmm: p.hMm }), pdfO, paper.scale);
-    return { cur: sheetFit(L0, G, pdfO, paper.scale), one: presetFit(paper.one), two: presetFit(paper.two) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c, G, pdfO, paper, s.sectionMode, s.sectionWmm, s.sectionHmm, s.sectionCols, s.sectionRows]);
+  // „2×2 Blätter“ aus dem Raster (Blattgrenzen auf Rasterlinien) – nie mehr als 2 × 2 Blätter je Abschnitt
+  const paper = useMemo(() => paperPresets(pdfO, c?.layout), [pdfO, c?.layout]);
+  // angeboten/aktuell/empfohlen (presetChoices): gleiche Einteilung wie jetzt nicht noch einmal, „2×2“ nur, wenn
+  // es besser ist als „1 Blatt“
+  const fitInfo = useMemo(() => (c && G ? presetChoices(c.layout, G, paper, pdfO) : null), [c, G, pdfO, paper]);
   // Statusmeldung nach einigen Sekunden ausblenden
   useEffect(() => {
     if (!status) return;
@@ -529,7 +526,7 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
         (phase, fraction, info) => patch({ progress: { phase: phase === 'rows' ? 'rows' : 'prepare', fraction, done: info?.done ?? 0, total: info?.total ?? 0 } }),
       );
       const blob = new Blob(['\uFEFF', r.blob], { type: 'text/csv;charset=utf-8' });
-      const save = await downloadBlob(blob, `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_koordinaten.csv`, { announce: false });
+      const save = await downloadBlob(blob, `${safeFileName(rec.meta.name)}${ids ? `_${ids.join('-')}` : ''}_${COORD_CSV_TEXT[lang].fileSuffix}.csv`, { announce: false });
       patch({ job: null, done: { save, rows: r.rows, bytes: blob.size } });
     } catch (e) {
       if (csvCancelled.current) patch({ job: null, done: 'cancelled' });
@@ -955,10 +952,10 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
               </CsvButton>
             </div>
             <CsvStatus ui={csvUi} rowsBefore={api.stats?.pieces ?? 0} onCancel={cancelCsv} />
-            {fitInfo && !paper.fitMode && fitInfo.cur.fill < 0.7 && fitInfo.one.sheets < fitInfo.cur.sheets && (
+            {fitInfo && !paper.fitMode && !fitInfo.presetActive && fitInfo.cur.fill < 0.7 && fitInfo.one.fit.sheets < fitInfo.cur.sheets && (
               <div className="w6pe-fit" data-testid="sec-fit-hint">
                 <p className="small">
-                  {t('w6pe.sec.poorFit', { sheets: n(fitInfo.cur.sheets), fill: n(Math.round(fitInfo.cur.fill * 100)), thin: n(fitInfo.cur.thin), one: n(fitInfo.one.sheets) })}
+                  {t('w6pe.sec.poorFit', { sheets: n(fitInfo.cur.sheets), fill: n(Math.round(fitInfo.cur.fill * 100)), thin: n(fitInfo.cur.thin), one: n(fitInfo.one.fit.sheets) })}
                 </p>
                 <button type="button" className="btn small" disabled={locked} onClick={() => applyPreset(paper.one)} data-testid="sec-fit-apply">
                   {t('w6pe.sec.oneSheet')} ({n(paper.one.wMm / 10, 2)} × {n(paper.one.hMm / 10, 2)} cm)
@@ -1006,34 +1003,33 @@ export function StepPlan({ api, materials }: { api: ProjectApi; materials: Mater
                   })}
                 >
                   <div className="btn-row wrap w6pe-presets" data-testid="sec-presets">
-                    {(
-                      [
-                        ['one', paper.one, fitInfo.one],
-                        ['two', paper.two, fitInfo.two],
-                      ] as const
-                    ).map(([k, p, fit]) => {
-                      const active = (s.sectionMode ?? 'size') === 'size' && Math.abs(s.sectionWmm - p.wMm) < 1e-6 && Math.abs(s.sectionHmm - p.hMm) < 1e-6;
-                      return (
+                    {[fitInfo.one, fitInfo.two]
+                      .filter((ch) => ch.offered)
+                      .map(({ key: k, preset: p, fit, current, recommended }) => (
+                        // gleiche Einteilung wie jetzt: nur als „aktuell“ gezeigt, nicht noch einmal anwendbar
                         <button
                           key={k}
                           type="button"
-                          className={`btn small ${active ? 'primary' : ''}`}
-                          aria-pressed={active}
-                          disabled={locked}
+                          className={`btn small ${current ? 'primary' : ''}`}
+                          aria-pressed={current}
+                          disabled={locked || current}
                           title={t('w6pe.sec.presetTitle', { w: n(p.wMm / 10, 2), h: n(p.hMm / 10, 2), sections: n(fit.sections), sheets: n(fit.sheets) })}
                           onClick={() => applyPreset(p)}
                           data-testid={`sec-preset-${k}`}
                           data-w={p.wMm}
                           data-h={p.hMm}
                           data-sheets={fit.sheets}
+                          data-recommended={recommended ? '1' : undefined}
                         >
-                          <b>{t(k === 'one' ? 'w6pe.sec.oneSheet' : 'w6pe.sec.twoSheets')}</b>
+                          <b>
+                            {t(k === 'one' ? 'w6pe.sec.oneSheet' : 'w6pe.sec.twoSheets')}
+                            {current ? ` · ${t('w6fd.sec.current')}` : recommended ? ` · ${t('w6fd.sec.recommended')}` : ''}
+                          </b>
                           <small>
-                            {n(p.wMm / 10, 2)} × {n(p.hMm / 10, 2)} cm · {t('w6pe.sec.presetSheets', { sheets: n(fit.sheets) })}
+                            {n(p.wMm / 10, 2)} × {n(p.hMm / 10, 2)} cm · {t('w6fd.sec.presetCounts', { sections: n(fit.sections), sheets: n(fit.sheets) })}
                           </small>
                         </button>
-                      );
-                    })}
+                      ))}
                   </div>
                 </Field>
               )}

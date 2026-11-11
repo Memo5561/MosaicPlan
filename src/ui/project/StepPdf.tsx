@@ -13,10 +13,13 @@
  * werden (oder neu berechnen). Wurde das Foto seit der Berechnung ersetzt, fehlt die Seite „Originalfoto“ – nie steht
  * ein fremdes Foto neben dem Mosaik. Speichern wird abgewartet und sein echtes Ergebnis angezeigt; „Abbrechen“
  * beendet den Auftrag; Adressen früherer Dateien werden freigegeben (pdfExportStore.ts).
+ *
+ * Welle 6 (w6-pdf-finish): Nach dem Erzeugen steht die echte Seitenzahl der Datei (vom Generator gezählt, mit Aufteilung
+ * je Teil und Vergleich mit der Schätzung vorab); die Koordinatenart nennt vorab die Seiten jeder Art.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Layout } from '../../core/layout';
-import type { PdfImage } from '../../core/pdf';
+import type { PdfBreakdown, PdfImage } from '../../core/pdf';
 import {
   exportFileName,
   formatSectionRange,
@@ -30,7 +33,7 @@ import {
   type ExportPart,
   type MemoryBudget,
 } from '../../core/pdfExportPlan';
-import { coordModeOf, DEFAULT_PDF_OPTIONS, effectiveSheetScale, fitSheetScale, fmtScale, printableArea, type CodePlanMode, type PdfOptions } from '../../core/pdfOptions';
+import { coordModeOf, DEFAULT_PDF_OPTIONS, effectiveSheetScale, fitSheetScale, fmtScale, printableArea, type CodePlanMode, type CoordMode, type PdfOptions } from '../../core/pdfOptions';
 import { CODE_MIN_CELL, CODE_PLAN_WHOLE_MAX_K, codePlanZoom, planPdfPages, type PlanPart } from '../../core/pdfPlan';
 import { renderFull } from '../../core/render';
 import { packMosaic } from '../../core/serialize';
@@ -256,6 +259,15 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
     [partIds, partFacts, facts, c.layout, G, optsKey, stonesOf],
   );
   const partsPages = partPlans.reduce((a, p) => a + p.total, 0);
+  // Seiten jeder Koordinatenart für diese Auswahl (aus derselben Messung: die kompakte Liste wird immer mitgemessen,
+  // „je Stein“ folgt exakt aus den Steinzahlen) – vor dem Erzeugen mit „ca.“
+  const coordAlt = useMemo(() => {
+    if (!facts) return null;
+    const of = (m: Exclude<CoordMode, 'off'>) => planForSelection(c.layout, G, { ...opts, includeCoords: true, coordMode: m }, sel, (id) => stonesOf(id), facts, sel).coords;
+    return { compact: of('compact'), perStone: of('perStone') };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facts, c.layout, G, optsKey, stonesOf]);
+  const coordPagesLabel = (m: Exclude<CoordMode, 'off'>) => (coordAlt ? t('w6pf.coordPages', { n: n(coordAlt[m]) }) : null);
   const [singleAnyway, setSingleAnyway] = useState(false);
 
   // fertige Dateien gehören zu allem, was im PDF steht – denselben Angaben wie die Seitenmessung (`token`): Optionen,
@@ -345,7 +357,8 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
           [],
           (phase, f) => progress(f, phase),
         );
-        return res.pdf;
+        // echte Seitenzahl und Aufteilung (vom Generator gezählt) mit der Datei speichern
+        return { pdf: res.pdf, report: { pages: res.pages, breakdown: res.breakdown, planMatches: res.planMatches } };
       },
     });
   };
@@ -429,22 +442,57 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
   });
   useEffect(() => () => clearStepAction('pdf'), []);
 
-  const fileLine = (f: PdfFile, testId?: string) => (
-    <div className="w5pe-file" data-testid={testId} data-name={f.name}>
-      <p>✓ {t('w5pe.done', { size: fmtBytes(f.size) })}</p>
-      {f.url && (
-        <div className="btn-row wrap">
-          <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} target="_blank" rel="noreferrer" data-testid="pdf-open">
-            {t('pdfui.open')}
-          </a>
-          <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} download={f.name} data-testid="pdf-download">
-            {t('w5pe.download')}
-          </a>
-        </div>
-      )}
-      <SaveResultNote result={f.save} testId="pdf-save-note" />
-    </div>
-  );
+  /** Seitenzahl der Schätzung vorab für eine fertige Datei (einzelne Datei bzw. gemessener Teil) */
+  const estimateOf = (f: PdfFile): number | null => {
+    if (f.key === 'single') return plan ? plan.total : null;
+    const i = Number(f.key.slice(5));
+    return partFacts[i] && partPlans[i] ? partPlans[i].total : null;
+  };
+  /** Aufteilung der echten Seitenzahl, z. B. „Verlegeblätter: 16 · Schnittvorlagen: 13 · Koordinaten: 8“ */
+  const breakdownText = (bd: PdfBreakdown) =>
+    (
+      [
+        ['w6pf.bd.front', bd.front],
+        ['w6pf.bd.sections', bd.sectionCovers + bd.sectionSummaries],
+        ['w6pf.bd.sheets', bd.sheets],
+        ['w6pf.bd.sheetLegends', bd.sheetLegends],
+        ['w6pf.bd.codePlans', bd.codePlans],
+        ['w6pf.bd.cutLists', bd.cutLists],
+        ['w6pf.bd.templates', bd.templates],
+        ['w6pf.bd.coords', bd.coords],
+      ] as const
+    )
+      .filter(([, v]) => v > 0)
+      .map(([key, v]) => t('w6pf.bd.entry', { label: t(key), n: n(v) }))
+      .join(' · ');
+  const fileLine = (f: PdfFile, testId?: string) => {
+    const r = f.report;
+    const est = r ? estimateOf(f) : null;
+    return (
+      <div className="w5pe-file" data-testid={testId} data-name={f.name} data-pages={r ? r.pages : ''} data-estimate={est ?? ''} data-plan-matches={r ? (r.planMatches ? 'yes' : 'no') : ''}>
+        <p>
+          ✓ {r ? t('w6pf.done', { size: fmtBytes(f.size), pages: tCount(t, 'w5pe.pagesExact', r.pages, { n: n(r.pages) }) }) : t('w5pe.done', { size: fmtBytes(f.size) })}
+          {r && est !== null && <small className="muted"> ({est === r.pages ? t('w6pf.done.same') : t('w6pf.done.differs', { n: n(est) })})</small>}
+        </p>
+        {r && (
+          <p className="muted small" data-testid="pdf-done-breakdown">
+            {breakdownText(r.breakdown)}
+          </p>
+        )}
+        {f.url && (
+          <div className="btn-row wrap">
+            <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} target="_blank" rel="noreferrer" data-testid="pdf-open">
+              {t('pdfui.open')}
+            </a>
+            <a className="btn small" style={{ textDecoration: 'none' }} href={f.url} download={f.name} data-testid="pdf-download">
+              {t('w5pe.download')}
+            </a>
+          </div>
+        )}
+        <SaveResultNote result={f.save} testId="pdf-save-note" />
+      </div>
+    );
+  };
 
   return (
     <div className="two-col w5pe" data-testid="pdf-step">
@@ -545,15 +593,39 @@ function PdfExport({ api, materials, rec, c, G }: { api: ProjectApi; materials: 
         </Field>
         <Toggle checked={opts.includeImages} onChange={(v) => setOpts({ includeImages: v })} label={t('pdfui.images')} hint={opts.includeImages && imagePages > 0 ? tCount(t, 'w5pe.pagesExact', imagePages, { n: imagePages }) : undefined} />
         <Toggle checked={opts.includeTemplates} onChange={(v) => setOpts({ includeTemplates: v })} label={t('pdfui.templates')} hint={pagesHint('templates', opts.includeTemplates)} />
-        <Toggle checked={opts.includeCoords} onChange={(v) => setOpts({ includeCoords: v })} label={t('pdfui.coords')} hint={pagesHint('coords', coordMode !== 'off')} />
+        <Toggle
+          checked={opts.includeCoords}
+          onChange={(v) => setOpts({ includeCoords: v, ...(v && opts.coordMode === 'off' ? { coordMode: 'compact' as const } : {}) })}
+          label={t('pdfui.coords')}
+          hint={
+            coordMode !== 'off'
+              ? pagesHint('coords', true)
+              : coordAlt
+                ? t('w6pf.coordOffHint', { compact: coordPagesLabel('compact') ?? '', perStone: coordPagesLabel('perStone') ?? '' })
+                : undefined
+          }
+        />
         {opts.includeCoords && (
-          <div className="w5pe-sub">
+          <div className="w5pe-sub" data-testid="pdf-coord-modes" data-compact={coordAlt ? coordAlt.compact : ''} data-per-stone={coordAlt ? coordAlt.perStone : ''}>
             <Segmented<'compact' | 'perStone'>
               value={coordMode === 'perStone' ? 'perStone' : 'compact'}
-              options={[
-                { value: 'compact', label: t('w5pe.coordMode.compact') },
-                { value: 'perStone', label: t('w5pe.coordMode.perStone') },
-              ]}
+              options={(['compact', 'perStone'] as const).map((m) => {
+                const pg = coordPagesLabel(m);
+                return {
+                  value: m,
+                  label: (
+                    <>
+                      {t(m === 'compact' ? 'w5pe.coordMode.compact' : 'w5pe.coordMode.perStone')}
+                      {pg && (
+                        <small className="w5pe-fit-scale" data-testid={`pdf-coord-pages-${m}`}>
+                          {' '}
+                          · {pg}
+                        </small>
+                      )}
+                    </>
+                  ),
+                };
+              })}
               onChange={(v) => setOpts({ coordMode: v })}
               testId="pdf-coordmode"
             />

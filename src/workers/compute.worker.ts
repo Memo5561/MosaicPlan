@@ -3,7 +3,7 @@ import { applyAdjustments } from '../core/imageOps';
 import { buildCsv } from '../core/csv';
 import { computeLayout, sectionsFor } from '../core/layout';
 import { computeMosaic } from '../core/mosaic';
-import { generatePdf, pdfLayoutFacts } from '../core/pdf';
+import { generatePdfReport, pdfLayoutFacts } from '../core/pdf';
 import { packMosaic, transferablesOf, unpackMosaic } from '../core/serialize';
 import { computeAllStats } from '../core/stats';
 import type { WorkerRequest, WorkerResponse } from './protocol';
@@ -74,7 +74,8 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           if (params) for (const [k, v] of Object.entries(params)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
           return s;
         };
-        const pdf = await generatePdf(
+        // mit Seitenzahl und Aufteilung je Teil (gezählt beim Erzeugen) – die Oberfläche zeigt die echte Seitenzahl
+        const rep = await generatePdfReport(
           {
             projectName: msg.projectName,
             dateStr: msg.dateStr,
@@ -94,7 +95,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           msg.options,
           (f, label) => post({ type: 'progress', id: msg.id, phase: label, fraction: f }),
         );
-        post({ type: 'pdf', id: msg.id, pdf }, [pdf]);
+        post({ type: 'pdf', id: msg.id, pdf: rep.pdf, pages: rep.pages, breakdown: rep.breakdown, planMatches: rep.planMatches }, [rep.pdf]);
         break;
       }
       case 'pdfPlan': {

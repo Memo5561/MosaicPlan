@@ -161,6 +161,47 @@ export function makeSheetLocator(plan: SheetPlan, grid: SectionGrid, layout: { c
   };
 }
 
+/**
+ * Alle Verlegeblätter als EIN Raster (Paket w6-pdf-finish): Blattgrenzen sind je Abschnittsspalte bzw. -zeile gleich,
+ * also bilden die Blätter aller Abschnitte zusammen ein lückenloses Gitter. Damit liefert computeAllStats die Statistik
+ * jedes Blatts in einem Durchlauf (exakt dieselben Zahlen wie computeStats je Blattbereich). `keys[i]` ist die
+ * Blatt-ID von `grid.sections[i]` (Reihenfolge Blattzeile, dann Blattspalte).
+ */
+export function sheetGridOf(plan: SheetPlan, grid: SectionGrid): { grid: SectionGrid; keys: string[] } {
+  const colStarts: number[] = [];
+  const rowStarts: number[] = [];
+  /** je globaler Blattspalte bzw. -zeile: Abschnittsspalte/-zeile und Blattindex darin */
+  const colOf: { sc: number; tx: number }[] = [];
+  const rowOf: { sr: number; ty: number }[] = [];
+  for (let sc = 0; sc < grid.scols; sc++) {
+    const s = plan.sections[sc];
+    if (!s) continue;
+    s.cx.forEach(([c0], tx) => {
+      colStarts.push(c0);
+      colOf.push({ sc, tx });
+    });
+  }
+  for (let sr = 0; sr < grid.srows; sr++) {
+    const s = plan.sections[sr * grid.scols];
+    if (!s) continue;
+    s.ry.forEach(([r0], ty) => {
+      rowStarts.push(r0);
+      rowOf.push({ sr, ty });
+    });
+  }
+  const sections: Section[] = [];
+  const keys: string[] = [];
+  rowOf.forEach(({ sr, ty }, gr) =>
+    colOf.forEach(({ sc, tx }, gc) => {
+      const ss = plan.sections[sr * grid.scols + sc];
+      const sh = ss.sheets[ty * ss.cx.length + tx];
+      keys.push(sh.key);
+      sections.push({ id: sh.key, sr: gr, sc: gc, c0: sh.c0, c1: sh.c1, r0: sh.r0, r1: sh.r1, x: 0, y: 0, w: 0, h: 0 });
+    }),
+  );
+  return { grid: { srows: rowOf.length, scols: colOf.length, sections, colStarts, rowStarts }, keys };
+}
+
 // ---------------------------------------------------------------- Farbnummern auf den Blättern
 
 /** Kleinste Rasterzelle (Papier-mm), die Farbnummern trägt. */
@@ -621,7 +662,10 @@ export interface PdfLayoutFacts {
   templateGroups: number;
   /** Kastenmaße der gedruckten Schnittvorlagen (templateLayout), in Druckreihenfolge */
   templateBoxes?: TemplateBoxSpec[];
-  /** Seiten der kompakten Koordinatenliste (gemessen) */
+  /**
+   * Seiten der kompakten Koordinatenliste (gemessen) – im Trockenlauf auch, wenn gerade eine andere Koordinatenart
+   * gewählt ist (bis zu einer Größe, siehe pdf.ts), damit die Auswahl die Seiten jeder Art nennen kann
+   */
   coordPages?: number;
   /**
    * je Abschnitt: Steine (= computeStats().pieces) und zugeschnittene Steine (= computeStats().cutPieces = Sonderteile

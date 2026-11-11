@@ -20,6 +20,11 @@
  *    die Kastenhöhe folgt dem Inhalt.
  *  - Koordinaten standardmäßig kompakt und vollständig (coords.ts); die Liste je Stein bleibt als coordMode 'perStone'.
  *  - Gesamtübersicht großer Projekte als Kartenraster; Abschnittsdeckblätter mit Lagekarte.
+ *
+ * Welle 6 (w6-pdf-finish): Statistik für Gesamt, Abschnitte und Blätter aus computeAllStats (ein Durchlauf statt eines
+ * je Abschnitt und Blatt); collectTemplates analysiert ganze Zellen je Geometrieklasse nur einmal; Teil-PDFs tragen
+ * „Teil k/n (Abschnitte …)“ in jeder Kopfzeile; der Trockenlauf misst die kompakte Koordinatenliste auch, wenn eine
+ * andere Art gewählt ist (Seiten jeder Art in der Auswahl).
  */
 import { GState, jsPDF } from 'jspdf';
 import { hexToRgb, textColorFor } from './color';
@@ -48,6 +53,7 @@ import {
   planPdfPages,
   planSheets,
   sectionItems,
+  sheetGridOf,
   sheetLegendGeometry,
   SHEET_LEGEND,
   SUMMARY,
@@ -67,7 +73,7 @@ import {
 } from './pdfPlan';
 import { drawTable, headerAdvance, layoutRow, layoutTable, LINE_FACTOR, PAD_R, PT_MM, wrapWords, type ColSpec, type Measure, type TableCanvas, type TableCell, type TableLayout } from './pdfTable';
 import { cellPieces, cutLineItems, type CutInfo } from './pieces';
-import { CutCache, computeStats, jointAreaValid, makeRawSizeFn, pieceCutInfo, type ColorStat, type Range, type RawSizeFn, type Stats } from './stats';
+import { CutCache, computeAllStats, computeStats, jointAreaValid, makeRawSizeFn, pieceCutInfo, type ColorStat, type Range, type RawSizeFn, type Stats } from './stats';
 import { layoutTemplate, TPL, type TemplateLayout, type TemplateTexts } from './templateLayout';
 import { CellKind, type Material, type MosaicData, type PaletteColor, type ProjectSettings } from './types';
 
@@ -130,32 +136,93 @@ export function collectTemplates(
 } {
   const raw = makeRawSizeFn(layout, palette, materials);
   const bySig = new Map<string, TemplateGroup>();
-  for (let row = 0; row < layout.rows; row++)
+  const add = (ci: CutInfo, color: number, row: number, col: number, id: string) => {
+    let g = bySig.get(ci.signature);
+    if (!g) {
+      g = { no: 0, info: ci, count: 0, color, ids: [], colors: new Set(), sheets: new Map(), sheetColors: new Map() };
+      bySig.set(ci.signature, g);
+    }
+    g.count++;
+    g.colors.add(color);
+    if (g.ids.length < 12) g.ids.push(id);
+    if (locate) {
+      const key = locate(row, col)?.key ?? '';
+      g.sheets.set(key, (g.sheets.get(key) ?? 0) + 1);
+      let cs = g.sheetColors.get(key);
+      if (!cs) g.sheetColors.set(key, (cs = new Set()));
+      cs.add(color);
+    }
+  };
+  // Ganze Zellen (der Großteil): Schnittanalyse je (exakte Spaltenbreite, exakte Zeilenhöhe, Rohsteinmaß der Farbe)
+  // nur einmal – über denselben CutCache wie bisher, also dieselben CutInfo-Objekte; ganze Steine ohne Zuschnitt
+  // kosten damit nur einen Nachschlag (Paket w6-pdf-finish). Alle anderen Zellen wie gehabt über cellPieces.
+  const full = fullCellClasses(layout, raw, palette.length);
+  const fullMemo = new Map<number, CutInfo>();
+  for (let row = 0; row < layout.rows; row++) {
+    const rk = full.rowCls[row] * full.nCol;
     for (let col = 0; col < layout.cols; col++) {
+      const idx = row * layout.cols + col;
+      if (data.kind[idx] === CellKind.FULL) {
+        const color = data.c1[idx];
+        const key = (rk + full.colCls[col]) * full.nRaw + full.rawOf(color);
+        let ci = fullMemo.get(key);
+        if (!ci) {
+          const p = cellPieces(layout, data, row, col)[0];
+          ci = pieceCutInfo(cache, layout, data, row, col, 0, p.poly, raw(color));
+          fullMemo.set(key, ci);
+        }
+        if (ci.needsCut) add(ci, color, row, col, cellId(layout, row, col));
+        continue;
+      }
       const ps = cellPieces(layout, data, row, col);
       ps.forEach((p, i) => {
         const ci = pieceCutInfo(cache, layout, data, row, col, i, p.poly, raw(p.color));
         if (!ci.needsCut) return;
-        let g = bySig.get(ci.signature);
-        if (!g) {
-          g = { no: 0, info: ci, count: 0, color: p.color, ids: [], colors: new Set(), sheets: new Map(), sheetColors: new Map() };
-          bySig.set(ci.signature, g);
-        }
-        g.count++;
-        g.colors.add(p.color);
-        if (g.ids.length < 12) g.ids.push(cellId(layout, row, col) + (ps.length > 1 ? `-${i + 1}` : ''));
-        if (locate) {
-          const key = locate(row, col)?.key ?? '';
-          g.sheets.set(key, (g.sheets.get(key) ?? 0) + 1);
-          let cs = g.sheetColors.get(key);
-          if (!cs) g.sheetColors.set(key, (cs = new Set()));
-          cs.add(p.color);
-        }
+        add(ci, p.color, row, col, cellId(layout, row, col) + (ps.length > 1 ? `-${i + 1}` : ''));
       });
     }
+  }
   const groups = [...bySig.values()].sort((a, b) => b.count - a.count);
   groups.forEach((g, i) => (g.no = i + 1));
   return { groups, bySig };
+}
+
+/**
+ * Klassen ganzer Zellen: exakte Spaltenbreite, exakte Zeilenhöhe und Rohsteinmaß je Farbe (ungültige Farbe wie
+ * makeRawSizeFn). Gleiche Klasse ⇒ gleicher Schlüssel im CutCache ⇒ dieselbe Schnittanalyse.
+ */
+function fullCellClasses(layout: Layout, raw: RawSizeFn, nColors: number): { colCls: Int32Array; rowCls: Int32Array; nCol: number; nRaw: number; rawOf: (c: number) => number } {
+  const axis = (v: ArrayLike<number>) => {
+    const ids = new Map<number, number>();
+    const out = new Int32Array(v.length);
+    for (let i = 0; i < v.length; i++) {
+      let k = ids.get(v[i]);
+      if (k === undefined) ids.set(v[i], (k = ids.size));
+      out[i] = k;
+    }
+    return { out, n: ids.size };
+  };
+  const cc = axis(layout.colW);
+  const rc = axis(layout.rowH);
+  const rawIds = new Map<string, number>();
+  const cls = (c: number) => {
+    const r = raw(c);
+    const k = `${r.w}x${r.h}`;
+    let v = rawIds.get(k);
+    if (v === undefined) rawIds.set(k, (v = rawIds.size));
+    return v;
+  };
+  const byColor = new Int32Array(nColors);
+  for (let c = 0; c < nColors; c++) byColor[c] = cls(c);
+  const invalid = cls(-1);
+  return {
+    colCls: cc.out,
+    rowCls: rc.out,
+    nCol: cc.n,
+    nRaw: rawIds.size,
+    // ungültige Farbe: makeRawSizeFn liefert immer das Rastermaß (wie raw(-1))
+    rawOf: (c: number) => (c >= 0 && c < nColors ? byColor[c] : invalid),
+  };
 }
 
 /**
@@ -521,7 +588,12 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   const palette = input.palette.map((p) => (p.nameKey ? { ...p, name: paletteDisplayName(p, input.locale) } : p));
   const cache = new CutCache();
   const statOpts = { reservePct: settings.reservePct, groutDepthMm: settings.groutDepthMm };
-  const stats = computeStats(layout, data, palette, materials, statOpts, undefined, cache);
+  // EIN Durchlauf für Gesamt- und Abschnittsstatistik (computeAllStats: exakt dieselben Zahlen wie computeStats je
+  // Bereich). Nur bei ungewöhnlich vielen Abschnitts × Farb-Fächern bleibt es bei der Gesamtstatistik, und Abschnitte
+  // werden bei Bedarf einzeln gezählt (Speicher der Zähler).
+  const allSec = input.sections.sections.length * Math.max(1, palette.length) <= ALL_STATS_MAX_BUCKETS;
+  const all = computeAllStats(layout, data, palette, materials, statOpts, allSec ? input.sections : null, cache);
+  const stats = all.total;
   if (maxIdx >= palette.length || stats.invalidColorPieces > 0) {
     const bad = countInvalidColorRefs(layout, data, palette.length);
     const params = { n: num(bad), count: palette.length, max: maxIdx };
@@ -624,6 +696,14 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
 
   // ---------- Seitenverwaltung (Seitenzahlen für Lesezeichen, Verweise und Fußzeilen)
   const pg = () => doc.getNumberOfPages();
+  const partInfo = input.part && input.part.total > 1 ? input.part : null;
+  /** Kopfzeilen-Angabe eines Teils; lange Auswahlen als „erster … letzter“ (vollständig auf dem Deckblatt) */
+  const partHead = (() => {
+    if (!partInfo) return '';
+    let range = opts.sectionIds ? formatSectionRange(opts.sectionIds, input.sections) : t('w5fp.pdf.allSections');
+    if (opts.sectionIds && range.length > 28) range = `${opts.sectionIds[0]} … ${opts.sectionIds[opts.sectionIds.length - 1]}`;
+    return t('w6pf.pdf.partHead', { k: partInfo.index + 1, n: partInfo.total, range });
+  })();
   let first = true;
   const newPage = (header: string) => {
     if (!first) doc.addPage([PW, PH], portrait ? 'portrait' : 'landscape');
@@ -634,8 +714,11 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     const right = safe(header);
     const rw = doc.getTextWidth(right);
     let left = `MosaicPlan · ${input.projectName}`;
-    // nur der dekorative Projektname wird bei Platzmangel gekürzt – nie die Seitenangabe rechts
-    while (left.length > 12 && doc.getTextWidth(safe(left)) + rw + 4 > AW) left = `${left.slice(0, -2).trimEnd()}…`;
+    // Export in Teilen: „Teil k/n (Abschnitte A1–C24)“ in jeder Kopfzeile (Paket w6-pdf-finish)
+    const partW = partHead ? doc.getTextWidth(safe(partHead)) + doc.getTextWidth(' · ') : 0;
+    // nur der dekorative Projektname wird bei Platzmangel gekürzt – nie die Teil- und Seitenangabe
+    while (left.length > 12 && doc.getTextWidth(safe(left)) + partW + rw + 4 > AW) left = `${left.slice(0, -2).trimEnd()}…`;
+    if (partHead) left = doc.getTextWidth(safe(left)) + partW + rw + 4 > AW ? partHead : `${left} · ${partHead}`;
     text(left, M, M - 2);
     doc.text(right, PW - M, M - 2, { align: 'right' });
     setDraw('#BBBBBB');
@@ -794,8 +877,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   font(9);
   text(`${t('pdf.created')}: ${input.dateStr}`, M, y + 7);
   y += 15;
-  // Export in Teilen: „Teil k von n“ gut sichtbar unter dem Projektnamen (und in jeder Fußzeile)
-  const partInfo = input.part && input.part.total > 1 ? input.part : null;
+  // Export in Teilen: „Teil k von n“ gut sichtbar unter dem Projektnamen (und in jeder Kopf- und Fußzeile)
   if (partInfo) {
     font(13, true);
     setText('#B3261E');
@@ -1160,11 +1242,38 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   const topReserve = SHEET_TOP_RESERVE; // Kopf + Spaltennummern + Lineal
   const leftReserve = SHEET_LEFT_RESERVE;
   const secStatsCache = new Map<string, Stats>();
+  if (allSec) input.sections.sections.forEach((sec, i) => secStatsCache.set(sec.id, all.perSection[i]));
   const secStatsOf = (sec: Section) => {
     let v = secStatsCache.get(sec.id);
     if (!v) {
       v = computeStats(layout, data, palette, materials, statOpts, { r0: sec.r0, r1: sec.r1, c0: sec.c0, c1: sec.c1 }, cache);
       secStatsCache.set(sec.id, v);
+    }
+    return v;
+  };
+  // Statistik je Verlegeblatt (Farblegende): werden die meisten Zellen exportiert, alle Blätter in EINEM Durchlauf
+  // (die Blätter bilden ein Gitter, sheetGridOf); bei wenigen exportierten Abschnitten nur deren Blätter einzeln –
+  // beides exakt dieselben Zahlen.
+  let sheetStats: Map<string, Stats> | null = null;
+  const sheetStatsOf = (sh: SheetRange): Stats => {
+    if (!sheetStats) {
+      sheetStats = new Map();
+      let selCells = 0;
+      let nSheets = 0;
+      for (const ss of plan.sections) {
+        nSheets += ss.sheets.length;
+        if (ss.selected) selCells += (ss.section.r1 - ss.section.r0) * (ss.section.c1 - ss.section.c0);
+      }
+      if (selCells * 2 >= layout.rows * layout.cols && nSheets * Math.max(1, palette.length) <= ALL_STATS_MAX_BUCKETS) {
+        const sg = sheetGridOf(plan, input.sections);
+        const st = computeAllStats(layout, data, palette, materials, statOpts, sg.grid, cache);
+        sg.keys.forEach((k, i) => sheetStats!.set(k, st.perSection[i]));
+      }
+    }
+    let v = sheetStats.get(sh.key);
+    if (!v) {
+      v = computeStats(layout, data, palette, materials, statOpts, { r0: sh.r0, r1: sh.r1, c0: sh.c0, c1: sh.c1 }, cache);
+      sheetStats.set(sh.key, v);
     }
     return v;
   };
@@ -1507,7 +1616,7 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
     place: SheetLegendPlace;
   }
   function sheetLegendOf(ss: SectionSheets, sh: SheetRange): SheetLegend {
-    const st = computeStats(layout, data, palette, materials, statOpts, { r0: sh.r0, r1: sh.r1, c0: sh.c0, c1: sh.c1 }, cache);
+    const st = sheetStatsOf(sh);
     const used = st.perColor.filter((c) => c.pieces > 0);
     const place = placeSheetLegend(used.length, sheetLegendGeometry(layout, sh, ss.section, input.sections, sheetScale, PW, PH), PW, PH);
     return { stats: st, used, place };
@@ -2215,7 +2324,12 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   facts.templateBoxes = tplSpecs;
   // ---------- kompakte Koordinaten: Seiten messen (Seitenplan); gezeichnet wird unten mit demselben Layout
   if (dry) {
-    if (coordMode === 'compact') facts.coordPages = compactCoords(false);
+    // die kompakte Liste wird auch gemessen, wenn sie gerade nicht gewählt ist: Die Auswahl der Koordinatenart zeigt
+    // so für jede Art die Seitenzahl (je Stein folgt exakt aus den Steinzahlen, aus = 0). Bei sehr großen Exporten
+    // nur, wenn sie gewählt ist (Messzeit) – sonst bleibt es für diese Art bei der Schätzung („ca.“).
+    let selCells = 0;
+    for (const ss of plan.sections) if (ss.selected) selCells += (ss.section.r1 - ss.section.r0) * (ss.section.c1 - ss.section.c0);
+    if (coordMode === 'compact' || selCells <= COMPACT_MEASURE_MAX_CELLS) facts.coordPages = compactCoords(false);
     return { doc, facts, breakdown: bd, plan };
   }
 
@@ -2637,6 +2751,15 @@ function buildPdf(input: PdfInput, opts: PdfOptions, onProgress: ((f: number, la
   onProgress?.(1, 'done');
   return { doc, facts, breakdown: bd, plan };
 }
+
+/**
+ * Höchstzahl Fächer (Bereiche × Farben) für die Statistik in einem Durchlauf; darüber wird je Bereich gezählt
+ * (gleiche Zahlen, nur ohne die großen Zählerfelder).
+ */
+const ALL_STATS_MAX_BUCKETS = 400_000;
+
+/** Bis zu so vielen exportierten Rasterzellen misst der Trockenlauf die kompakte Koordinatenliste auch, wenn sie nicht gewählt ist. */
+const COMPACT_MEASURE_MAX_CELLS = 600_000;
 
 /** Breite von „00“ in Helvetica je pt (mm) – Ziffern sind 0,556 em breit. */
 function measureHelvetica00(): number {

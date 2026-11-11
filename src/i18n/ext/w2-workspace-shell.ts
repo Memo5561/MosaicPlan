@@ -56,7 +56,7 @@ export const de: Record<string, string> = {
 
   // Rückfrage vor dem Neuberechnen
   'w2ws.guard.title': 'Neu berechnen?',
-  'w2ws.guard.lead': 'Neu berechnen ersetzt das aktuelle Mosaik und verwirft dabei: {list}.',
+  // 'w2ws.guard.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.guard.leadStored': 'Neu berechnen ersetzt das gespeicherte Mosaik (es wird wegen eines Fehlers nicht angezeigt) und verwirft dabei: {list}.',
   'w2ws.guard.placed': '{n} als verlegt markierte Steine ({pct} % des Mosaiks)',
   'w2ws.guard.placed.one': '{n} als verlegt markierter Stein ({pct} % des Mosaiks)',
@@ -78,7 +78,7 @@ export const de: Record<string, string> = {
   'w2ws.backupSuffix': '(vor Neuberechnung {date})',
   'w2ws.backupDone': 'Sicherungskopie „{name}“ angelegt – zu finden unter „Meine Projekte“.',
   'w2ws.backupOpen': 'Kopie öffnen',
-  'w2ws.overwriteCounts': 'Achtung: Neu berechnen verwirft {list}. Vorher wird nachgefragt; eine Sicherungskopie ist möglich.',
+  // 'w2ws.overwriteCounts': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.overwriteNone': 'Neu berechnen ersetzt das aktuelle Mosaik. Bisher sind keine Steine als verlegt markiert und keine Steine manuell geändert; die eigene Palette bleibt erhalten.',
   'w2ws.overwriteNoneAuto':
     'Neu berechnen ersetzt das aktuelle Mosaik und erstellt die Palette neu (Namen, Farbtöne und Materialverknüpfungen). Bisher sind keine Steine als verlegt markiert, keine Steine manuell geändert und keine Palettenfarben bearbeitet.',
@@ -94,7 +94,7 @@ export const de: Record<string, string> = {
 
   // Ergebnis wartet: während der Berechnung wurde am Mosaik gearbeitet
   'w2ws.pending.title': 'Neues Ergebnis übernehmen?',
-  'w2ws.pending.lead': 'Die Berechnung ist fertig. Während sie lief, wurde am bisherigen Mosaik weitergearbeitet. Das neue Ergebnis zu übernehmen verwirft: {list}.',
+  // 'w2ws.pending.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.pending.leadNone': 'Die Berechnung ist fertig. Das neue Ergebnis ersetzt das bisherige Mosaik.',
   'w2ws.pending.info':
     'Die Sicherungskopie enthält den jetzigen Stand mit allem, was während der Berechnung verlegt oder geändert wurde, und erscheint unter „Meine Projekte“. „Ergebnis verwerfen“ behält das bisherige Mosaik samt Fortschritt; Schließen lässt das Ergebnis warten.',
@@ -205,7 +205,7 @@ export const en: Record<string, string> = {
   'w2ws.empty.goPhoto': 'Go to step 1: Choose photo',
 
   'w2ws.guard.title': 'Recompute?',
-  'w2ws.guard.lead': 'Recomputing replaces the current mosaic and discards: {list}.',
+  // 'w2ws.guard.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.guard.leadStored': 'Recomputing replaces the saved mosaic (it is not shown because of an error) and discards: {list}.',
   'w2ws.guard.placed': '{n} stones marked as laid ({pct} % of the mosaic)',
   'w2ws.guard.placed.one': '{n} stone marked as laid ({pct} % of the mosaic)',
@@ -226,7 +226,7 @@ export const en: Record<string, string> = {
   'w2ws.backupSuffix': '(before recompute {date})',
   'w2ws.backupDone': 'Backup copy “{name}” created – you will find it under “My projects”.',
   'w2ws.backupOpen': 'Open copy',
-  'w2ws.overwriteCounts': 'Note: recomputing discards {list}. You will be asked first; a backup copy is possible.',
+  // 'w2ws.overwriteCounts': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.overwriteNone': 'Recomputing replaces the current mosaic. So far no stones are marked as laid and no stones were changed manually; your own palette is kept.',
   'w2ws.overwriteNoneAuto':
     'Recomputing replaces the current mosaic and recreates the palette (names, shades and material links). So far no stones are marked as laid, no stones were changed manually and no palette colours were edited.',
@@ -240,7 +240,7 @@ export const en: Record<string, string> = {
   'w2ws.stale.discardHint': 'Resets to the values of the last computation: {list}.',
 
   'w2ws.pending.title': 'Apply the new result?',
-  'w2ws.pending.lead': 'The computation has finished. While it was running, work continued on the previous mosaic. Applying the new result discards: {list}.',
+  // 'w2ws.pending.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.pending.leadNone': 'The computation has finished. The new result replaces the previous mosaic.',
   'w2ws.pending.info':
     'The backup copy contains the current state including everything laid or changed during the computation and appears under “My projects”. “Discard result” keeps the previous mosaic and its progress; closing keeps the result waiting.',
@@ -349,7 +349,7 @@ export const tr: Record<string, string> = {
   'w2ws.empty.goPhoto': '1. adıma git: Fotoğraf seç',
 
   'w2ws.guard.title': 'Yeniden hesaplansın mı?',
-  'w2ws.guard.lead': 'Yeniden hesaplama mevcut mozaiğin yerini alır ve şunları siler: {list}.',
+  // 'w2ws.guard.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.guard.leadStored': 'Yeniden hesaplama kayıtlı mozaiğin (bir hata nedeniyle gösterilmiyor) yerini alır ve şunları siler: {list}.',
   'w2ws.guard.placed': 'döşendi olarak işaretlenmiş {n} taş (mozaiğin %{pct}’i)',
   'w2ws.guard.placed.one': 'döşendi olarak işaretlenmiş {n} taş (mozaiğin %{pct}’i)',
@@ -370,7 +370,7 @@ export const tr: Record<string, string> = {
   'w2ws.backupSuffix': '(yeniden hesaplamadan önce {date})',
   'w2ws.backupDone': '“{name}” yedek kopyası oluşturuldu – “Projelerim” altında bulabilirsiniz.',
   'w2ws.backupOpen': 'Kopyayı aç',
-  'w2ws.overwriteCounts': 'Dikkat: Yeniden hesaplama şunları siler: {list}. Önce sorulur; yedek kopya oluşturulabilir.',
+  // 'w2ws.overwriteCounts': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.overwriteNone': 'Yeniden hesaplama mevcut mozaiğin yerini alır. Şu ana kadar döşendi olarak işaretlenmiş taş yok ve hiçbir taş elle değiştirilmedi; kendi paletiniz korunur.',
   'w2ws.overwriteNoneAuto':
     'Yeniden hesaplama mevcut mozaiğin yerini alır ve paleti yeniden oluşturur (adlar, tonlar ve malzeme bağlantıları). Şu ana kadar döşendi olarak işaretlenmiş taş yok, hiçbir taş elle değiştirilmedi ve hiçbir palet rengi düzenlenmedi.',
@@ -384,7 +384,7 @@ export const tr: Record<string, string> = {
   'w2ws.stale.discardHint': 'Son hesaplamanın değerlerine geri döner: {list}.',
 
   'w2ws.pending.title': 'Yeni sonuç uygulansın mı?',
-  'w2ws.pending.lead': 'Hesaplama tamamlandı. Hesaplama sürerken önceki mozaik üzerinde çalışıldı. Yeni sonucu uygulamak şunları siler: {list}.',
+  // 'w2ws.pending.lead': Text steht in w4-progress-engine.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w2ws.pending.leadNone': 'Hesaplama tamamlandı. Yeni sonuç önceki mozaiğin yerini alır.',
   'w2ws.pending.info':
     'Yedek kopya, hesaplama sırasında döşenen veya değiştirilen her şey dahil mevcut durumu içerir ve “Projelerim” altında görünür. “Sonucu at” önceki mozaiği ilerlemesiyle birlikte korur; kapatmak sonucu bekletir.',

@@ -23,9 +23,8 @@ export const de: Record<string, string> = {
 
   'w4lw.undo': 'Rückgängig ({n})',
   'w4lw.undoLabel': 'Rückgängig',
-  'w4lw.undoTitle':
-    'Macht die letzte Änderung am Verlegefortschritt rückgängig. Gilt nur in dieser Sitzung (bis zum Verlassen des Projekts oder Neuladen), höchstens 50 Schritte; Farb- und Formänderungen sind nicht enthalten.',
-  'w4lw.undoNote': 'Rückgängig gilt für den Verlegefortschritt, solange das Projekt geöffnet ist – auch nach einem Schrittwechsel (letzte 50 Schritte; Neuladen, Verlassen des Projekts, Neuberechnen oder geänderte Steine leeren den Verlauf).',
+  // 'w4lw.undoTitle': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
+  // 'w4lw.undoNote': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w4lw.undone': 'Rückgängig gemacht: {what}',
 
   'w4lw.st.laidOne': '{id} als verlegt markiert',
@@ -119,9 +118,8 @@ export const en: Record<string, string> = {
 
   'w4lw.undo': 'Undo ({n})',
   'w4lw.undoLabel': 'Undo',
-  'w4lw.undoTitle':
-    'Undoes the last change to the laying progress. Only for this session (until you leave the project or reload), at most 50 steps; colour and shape changes are not included.',
-  'w4lw.undoNote': 'Undo covers the laying progress while the project is open – also after switching steps (last 50 steps; reloading, leaving the project, recomputing or changed tiles clear the history).',
+  // 'w4lw.undoTitle': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
+  // 'w4lw.undoNote': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w4lw.undone': 'Undone: {what}',
 
   'w4lw.st.laidOne': '{id} marked as laid',
@@ -215,9 +213,8 @@ export const tr: Record<string, string> = {
 
   'w4lw.undo': 'Geri al ({n})',
   'w4lw.undoLabel': 'Geri al',
-  'w4lw.undoTitle':
-    'Döşeme ilerlemesindeki son değişikliği geri alır. Yalnızca bu oturumda geçerlidir (projeden çıkana veya sayfa yeniden yüklenene kadar), en fazla 50 adım; renk ve şekil değişiklikleri dahil değildir.',
-  'w4lw.undoNote': 'Geri alma, proje açık kaldığı sürece döşeme ilerlemesini kapsar – adım değiştirildikten sonra da (son 50 adım; yeniden yükleme, projeden çıkma, yeniden hesaplama veya değiştirilen taşlar geçmişi siler).',
+  // 'w4lw.undoTitle': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
+  // 'w4lw.undoNote': Text steht in w5-undo-editing.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'w4lw.undone': 'Geri alındı: {what}',
 
   'w4lw.st.laidOne': '{id} döşendi olarak işaretlendi',

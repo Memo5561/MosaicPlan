@@ -85,7 +85,7 @@ export const de: Record<string, string> = {
     'Danach verlieren die verknüpften Farben ihr Material: Rohsteinmaß = Rastermaß, keine Packungs- und Kostenberechnung für diese Farben; bei einer Neuberechnung steht das Material nicht mehr zur Auswahl. Farben und Verlegeplan bleiben unverändert.',
   'matcsv.del.checkFailed': 'Hinweis: Die Verwendung in Projekten konnte nicht geprüft werden.',
   'matcsv.del.error': 'Löschen fehlgeschlagen: {msg}',
-  'matcsv.colorHintManual': 'HEX-Wert eingeben (z. B. #3A6EA5) oder im Farbfeld wählen. Eine Pipette bietet dieser Browser nicht an.',
+  // 'matcsv.colorHintManual': Text steht in w6-colour-measure.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'matcsv.count': '{shown} von {n} Materialien',
   'matcsv.count.one': '{shown} von {n} Material',
   'mats.dimsUnknown': 'unbekannt – Rastermaß',
@@ -176,7 +176,7 @@ export const en: Record<string, string> = {
     'Afterwards the linked colours lose their material: raw tile size = grid size, no pack or cost calculation for these colours; the material is no longer available when recalculating. Colours and laying plan stay unchanged.',
   'matcsv.del.checkFailed': 'Note: usage in projects could not be checked.',
   'matcsv.del.error': 'Delete failed: {msg}',
-  'matcsv.colorHintManual': 'Enter a HEX value (e.g. #3A6EA5) or pick it in the colour field. This browser offers no eyedropper.',
+  // 'matcsv.colorHintManual': Text steht in w6-colour-measure.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'matcsv.count': '{shown} of {n} materials',
   'matcsv.count.one': '{shown} of {n} material',
   'mats.dimsUnknown': 'unknown – grid size',
@@ -267,7 +267,7 @@ export const tr: Record<string, string> = {
     'Ardından bağlı renkler malzemesini kaybeder: ham taş ölçüsü = ızgara ölçüsü, bu renkler için paket ve maliyet hesabı yapılmaz; yeniden hesaplamada malzeme artık seçilemez. Renkler ve döşeme planı değişmez.',
   'matcsv.del.checkFailed': 'Not: Projelerdeki kullanım kontrol edilemedi.',
   'matcsv.del.error': 'Silme başarısız: {msg}',
-  'matcsv.colorHintManual': 'HEX değerini girin (ör. #3A6EA5) veya renk alanından seçin. Bu tarayıcı damlalık sunmuyor.',
+  // 'matcsv.colorHintManual': Text steht in w6-colour-measure.ts (gilt dort zur Laufzeit; keine Doppeldefinition)
   'matcsv.count': '{n} malzemeden {shown} tanesi',
   'matcsv.count.one': '{n} malzemeden {shown} tanesi',
   'mats.dimsUnknown': 'bilinmiyor – ızgara ölçüsü',

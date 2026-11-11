@@ -21,30 +21,15 @@ Alles, was nötig ist, um weiterzumachen, liegt in diesem Ordner und im Branch `
 | 2 | Neuberechnungs-Schutz, Speicheranzeige, Schritt-Navigation, Android (Zurück-Taste, Speichern, Ränder), ehrliche Farbnamen, Fugen-Vorschau, Design, Foto-Import | ✅ fertig |
 | 3 | Farbqualität, Live-Vorschau, Freiform-Editor, Gesichts-Hinweise, Viewer (Lineale, Vergleich, Malen), PDF-Grundlagen, Projekt-Export mit Materialien | ✅ fertig |
 | 4 | Schnitte gezielt, Akzent-/Pflichtfarben, Konturen, Verlege-Arbeitsplatz, Fortschritts-Engine, PDF-Blattaufteilung, Offline-Gesichtserkennung | ✅ fertig |
-| 5 | Rückgängig/Wiederholen, Statistik-Engine, Viewer-Performance, PDF-Inhalt, Einkaufsliste, Zielfarben, PDF-Export-Schritt | 🟡 **umgesetzt und zusammengeführt, aber noch nicht gegengeprüft** (siehe unten) |
+| 5 | Rückgängig/Wiederholen, Statistik-Engine, Viewer-Performance, PDF-Inhalt, Einkaufsliste, Zielfarben, PDF-Export-Schritt | ✅ fertig (gegengeprüft, 16 Befunde behoben; `plan/wave5c-report.json`) |
 | 6 | Abweichungskarte & Sammelbearbeitung, feine Steine in Kaufgrößen, Farbmessung, Streaming-CSV, PDF-Abschluss | ⏳ offen |
 | 7 | README/Grenzen, Gesamt-E2E | ⏳ offen |
-
-## Welle 5 – was noch fehlt
-
-Der Code aller sieben Pakete ist im Branch. **Noch nicht erledigt:**
-
-1. Vollständiger Browser-Testlauf nach der letzten Zusammenführung (`e2e/run-e2e.cjs` und alle `e2e/w*.e2e.cjs`).
-   Nach „Integration Teil 1“ (5 Pakete) waren alle grün; nach „Integration Teil 2“ (`5548d5b`) wurde der Lauf
-   durch das Nutzungslimit bzw. den Stopp nicht mehr abgeschlossen.
-2. Review der gesamten Welle (Diff `6cc6269..HEAD`, ohne `docs/fortsetzung`) aus 4 Blickwinkeln:
-   Korrektheit, Geometrie/Ehrlichkeit, UX Desktop + Handy, Integration – je Befund ein Gegenprüfer.
-3. Bestätigte Befunde beheben, alle Prüfungen grün, pushen.
-
-Bis dahin gilt Welle 5 als **ungeprüft**: Die Funktionen sind da, aber die Gegenprüfung, die in den Wellen 1–4
-jeweils 17–24 echte Probleme gefunden hat, steht noch aus.
 
 ## So geht es weiter
 
 1. Umgebung vorbereiten (siehe unten).
-2. Welle 5 abschließen (Punkte 1–3 oben).
-3. Welle 6, dann Welle 7 (Briefings `plan/w6-*.json`, `plan/w7-docs-e2e.json`, Wellenliste `plan/waves.json`).
-4. Neue APK bauen (siehe unten).
+2. Welle 6, dann Welle 7 (Briefings `plan/w6-*.json`, `plan/w7-docs-e2e.json`, Wellenliste `plan/waves.json`).
+3. Neue APK bauen (siehe unten).
 
 Automatisiert: `wellen-workflow.js` ist das zuletzt verwendete Workflow-Skript (optional bereits fertige Zweige
 zusammenführen → Umsetzung in parallelen Arbeitskopien → Zusammenführen → Review → Fix). Es erwartet die Briefings

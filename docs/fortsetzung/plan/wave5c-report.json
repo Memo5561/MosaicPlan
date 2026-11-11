@@ -1,0 +1,23 @@
+{
+ "status": "Welle 5 abgeschlossen: 3 Gegenprüfungen (Korrektheit, Geometrie/Ehrlichkeit, UX) fanden 16 Befunde; alle behoben in fix/w5-pdf und fix/w5-ui, zusammengeführt. 973 Unit-Tests, 39/39 E2E-Skripte grün.",
+ "fixes_pdf_export_state": [
+  "StepPdf: Signatur des fertigen PDFs (pdfFileSig in pdfExportStore.ts) umfasst Palette, Materialien, Einstellungen, Projektname, Fotoanpassungen -> kein veraltetes PDF nach Farbänderung/Umbenennen",
+  "pdfExportStore: In-flight-Marker mit Tab-ID + Heartbeat (5 s) + navigator.locks; nur fremde tote Exporte gelten als Absturz",
+  "useProject: nextManualEdits - Rückgängig zählt manualEdits herunter, Wiederholen hoch (>=0)",
+  "pdf.ts: facts.stones speichert {pieces, cutPieces}; Teil-Schätzungen der kompakten Koordinaten stimmen",
+  "'Teil k von n' im PDF (Deckblatt + Fußzeile); unvollständig-Hinweis entfernt",
+  "Dateinamen übersetzt (verlegeplan/laying-plan/doseme-plani), safeFileName nur ASCII",
+  "Einzelabschnitt-/Teil-Export: nur Schnittvorlagen der exportierten Abschnitte, Zählung je Export + 'ganzes Mosaik: N×'; Teile werden einzeln vermessen (usePartFacts)",
+  "Schritt 10: Hauptaktion 'PDF erzeugen · ca. N S.' oben und statt deaktiviertem 'Weiter' in der unteren Leiste (pdf-nav-action); Öffnen/Erneut herunterladen als Schaltflächen",
+  "PDF-Listen: Steinmaße einheitlich 1 Nachkommastelle; Flächen 4 Stellen; Kostenhinweis abhängig von Materialien/Preisen"
+ ],
+ "fixes_ui": [
+  "Einkauf: Fehlmengen-Summe als 'bei Materialien mit erfasstem Bestand' + unvollständig-Badge; CSV-Summenhinweis",
+  "Druck: Summe-Zeile verdeckt keine Farbe mehr (position: static im Druck)",
+  "Heller/Dunkler: shadeSuggest (gleicher Ton, sonst ähnlichster hellerer/dunklerer mit Hinweis 'etwas anderer Farbton'); widerspricht nie den ▲/▼-Marken",
+  "Material & Einkauf am Handy: kompakte Zeilen, eingeklappte Details, 44-px-Chips, Umschalter unter der Fortschrittskarte (Seite ~2.300 statt ~14.000 px)",
+  "Geräteabhängige Texte (deviceKind.ts, pointer: coarse): antippen/anklicken",
+  "Steinfenster am Handy: beschriftete Rückgängig/Wiederholen, Status als Toast über dem Blatt; doppelte Mini-Knöpfe am Desktop entfernt"
+ ],
+ "notes": "Zeitkritische E2E-Prüfungen (w3-live-preview 'Übernehmen < 300 ms', w4-progress-engine 'long task <= 50 ms') sind unter Parallel-Last gelegentlich instabil; einzeln stabil grün. Am Desktop gibt es in Schritt 10 jetzt zwei primäre 'PDF erzeugen'-Knöpfe (oben + rechte Spalte)."
+}

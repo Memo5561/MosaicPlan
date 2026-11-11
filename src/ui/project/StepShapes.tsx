@@ -125,6 +125,11 @@ export function StepShapes({ api }: { api: ProjectApi }) {
               })}
             </div>
             <div className="field-hint">{t('w6ft.size.hint')}</div>
+            {subOk && fineNow.exact && mats && !mats.some((m) => materialHasSize(m, fineNow.w, fineNow.h)) && (
+              <p className="small w6ft-hint" data-testid="fine-size-add-materials">
+                <a href="#/materials">{t('w6ft.fine.addMats', { w: n(fineNow.w, 2), h: n(fineNow.h, 2) })}</a>
+              </p>
+            )}
             {fineStale && (
               <p className="warn small" data-testid="fine-size-stale">
                 {t('w6ft.size.stale', { mm: n(sh.fineTileMm ?? 0, 2), w: n(s.tileW, 1), g: n(s.joint, 1) })}
@@ -164,11 +169,20 @@ export function StepShapes({ api }: { api: ProjectApi }) {
             </p>
           )}
           {fineDiag && (
-            <p className="small w6ft-hint w6ft-result" data-testid="fine-regions-result" data-cells={fineDiag.cells} data-sub={fineDiag.sub} data-toosmall={fineDiag.tooSmall}>
+            <p
+              className="small w6ft-hint w6ft-result"
+              data-testid="fine-regions-result"
+              data-cells={fineDiag.cells}
+              data-sub={fineDiag.sub}
+              data-toosmall={fineDiag.tooSmall}
+              data-notfine={fineDiag.notFineSize ?? ''}
+            >
               {fineDiag.subdivideOff
                 ? t('w6ft.region.resultOff')
                 : t('w6ft.region.result', { sub: n(fineDiag.sub), cells: n(fineDiag.cells), k: fineDiag.k })}
               {fineDiag.tooSmall > 0 && <> {tCount(t, 'w6ft.region.resultTooSmall', fineDiag.tooSmall, { n: n(fineDiag.tooSmall) })}</>}
+              {/* gekürzte Randsteine: ihre Teilsteine sind keine Feinsteine – weder erzwungen noch als Feinsteine gezählt */}
+              {!fineDiag.subdivideOff && (fineDiag.notFineSize ?? 0) > 0 && <> {tCount(t, 'w6ft.region.resultNotFine', fineDiag.notFineSize!, { n: n(fineDiag.notFineSize!) })}</>}
               {api.stale && <span className="muted"> {t('w6ft.region.resultStale')}</span>}
             </p>
           )}

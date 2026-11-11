@@ -20,7 +20,7 @@
  */
 import type { ColorNameLang } from './color';
 import { paletteDisplayName } from './colorNames';
-import { bbox, type Pt } from './geometry';
+import { bbox, type Pt, type ShapeType } from './geometry';
 import { maxColorIndex } from './integrity';
 import { colDigits, rowLabel, type Layout, type Section, type SectionGrid } from './layout';
 import { cellPieces, type CutInfo } from './pieces';
@@ -29,6 +29,35 @@ import { CellKind, type Material, type MosaicData, type PaletteColor } from './t
 
 export const CSV_HEADER =
   'Position;Abschnitt;Zeile;Spalte;Teil;X_mm;Y_mm;Breite_mm;Hoehe_mm;Flaeche_mm2;Farbcode;Farbname;HEX;Form;Zuschnitt;Rohstein_mm;Verlegt;Kontur_mm';
+
+/**
+ * Texte der Koordinaten-CSV je Sprache (wie SHOPPING_CSV_TEXT): Kopfzeile, ja/nein (Zuschnitt, Verlegt), Formnamen und
+ * Dateiendung. Deutsch ist Byte für Byte die bisherige Ausgabe (Kopfzeile CSV_HEADER, Formen als Kennung wie
+ * „square“) – wer die Datei schon automatisch weiterverarbeitet, bekommt dieselben Spalten und Werte.
+ */
+export const COORD_CSV_TEXT: Record<ColorNameLang, { header: string; yes: string; no: string; shapes: Record<ShapeType, string>; fileSuffix: string }> = {
+  de: {
+    header: CSV_HEADER,
+    yes: 'ja',
+    no: 'nein',
+    shapes: { square: 'square', rectangle: 'rectangle', triangle: 'triangle', rhombus: 'rhombus', trapezoid: 'trapezoid', parallelogram: 'parallelogram', custom: 'custom' },
+    fileSuffix: 'koordinaten',
+  },
+  en: {
+    header: 'Position;Section;Row;Column;Part;X_mm;Y_mm;Width_mm;Height_mm;Area_mm2;Colour_code;Colour_name;HEX;Shape;Cut;Raw_tile_mm;Laid;Contour_mm',
+    yes: 'yes',
+    no: 'no',
+    shapes: { square: 'square', rectangle: 'rectangle', triangle: 'triangle', rhombus: 'rhombus', trapezoid: 'trapezoid', parallelogram: 'parallelogram', custom: 'custom' },
+    fileSuffix: 'coordinates',
+  },
+  tr: {
+    header: 'Konum;Bölüm;Satır;Sütun;Parça;X_mm;Y_mm;Genişlik_mm;Yükseklik_mm;Alan_mm2;Renk_kodu;Renk_adı;HEX;Biçim;Kesim;Ham_taş_mm;Döşendi;Kontur_mm',
+    yes: 'evet',
+    no: 'hayır',
+    shapes: { square: 'kare', rectangle: 'dikdörtgen', triangle: 'üçgen', rhombus: 'eşkenar dörtgen', trapezoid: 'yamuk', parallelogram: 'paralelkenar', custom: 'özel kesim' },
+    fileSuffix: 'koordinatlar',
+  },
+};
 /** Zeilen je Band von buildCsvChunks (je Band ein Text von wenigen MB) */
 export const CSV_BAND_ROWS = 20_000;
 /** Excel und LibreOffice Calc: höchstens so viele Zeilen je Tabellenblatt – einschließlich der Kopfzeile. */
@@ -176,10 +205,14 @@ export function* buildCsvChunks(
   sections: SectionGrid,
   sectionIds: string[] | null,
   decimalComma = true,
-  /** Sprache der Farbnamen: automatische Namen (nameKey) folgen ihr, Material- und Benutzernamen bleiben wörtlich */
+  /**
+   * Sprache der Datei: Kopfzeile, ja/nein und Formnamen (COORD_CSV_TEXT, ohne Angabe Deutsch) und automatische
+   * Farbnamen (nameKey); Material- und Benutzernamen bleiben wörtlich
+   */
   lang?: ColorNameLang,
   opts: CsvChunkOptions = {},
 ): Generator<string, number, void> {
+  const T = COORD_CSV_TEXT[lang ?? 'de'];
   const prep = opts.prep ?? prepareCsv(layout, data, palette, materials, sections, sectionIds);
   const band = Math.max(1, opts.bandRows ?? CSV_BAND_ROWS);
   const { cache, tplNo, fullCut } = prep;
@@ -208,14 +241,14 @@ export function* buildCsvChunks(
   const colLbl = Array.from({ length: layout.cols }, (_, c) => String(c + 1).padStart(digits, '0'));
   const colNo = Array.from({ length: layout.cols }, (_, c) => String(c + 1));
   const cutStr = (needsCut: boolean, sig: string) => {
-    if (!needsCut) return 'nein';
+    if (!needsCut) return T.no;
     const no = tplNo.get(sig);
-    return no ? `ja (T${no})` : 'ja';
+    return no ? `${T.yes} (T${no})` : T.yes;
   };
   /** ganze Steine teilen sich wenige CutInfo-Objekte: deren Spalten nur einmal formatieren */
   const fullMemo = new Map<CutInfo, [string, string]>();
 
-  yield CSV_HEADER;
+  yield T.header;
   let out: string[] = [];
   let done = 0;
   const selRows = selectedBySectionRow(sections, sectionIds);
@@ -235,13 +268,13 @@ export function* buildCsvChunks(
             const ci = fullCut(row, col, c);
             if (ci.invalid) continue;
             let m = fullMemo.get(ci);
-            if (!m) fullMemo.set(ci, (m = [`${f(ci.w)};${f(ci.h)};${f(ci.area)}`, `${ci.shape};${cutStr(ci.needsCut, ci.signature)}`]));
+            if (!m) fullMemo.set(ci, (m = [`${f(ci.w)};${f(ci.h)};${f(ci.area)}`, `${T.shapes[ci.shape] ?? ci.shape};${cutStr(ci.needsCut, ci.signature)}`]));
             const x0 = colA[col];
             const x1 = colB[col];
             const y0 = rowA[row];
             const y1 = rowB[row];
             out.push(
-              `${rowLbl}${colLbl[col]};${sec.id};${rowNo};${colNo[col]};1;${x0};${y0};${m[0]};${colorCols[c]};${m[1]};${rawStr[c]};${data.progress[idx] & 1 ? 'ja' : 'nein'};${x0} ${y0} | ${x1} ${y0} | ${x1} ${y1} | ${x0} ${y1}`,
+              `${rowLbl}${colLbl[col]};${sec.id};${rowNo};${colNo[col]};1;${x0};${y0};${m[0]};${colorCols[c]};${m[1]};${rawStr[c]};${data.progress[idx] & 1 ? T.yes : T.no};${x0} ${y0} | ${x1} ${y0} | ${x1} ${y1} | ${x0} ${y1}`,
             );
           } else {
             const ps = cellPieces(layout, data, row, col);
@@ -265,11 +298,11 @@ export function* buildCsvChunks(
                   f(ci.h),
                   f(ci.area),
                   colorCols[p.color],
-                  ci.shape,
+                  T.shapes[ci.shape] ?? ci.shape,
                   cutStr(ci.needsCut, ci.signature),
                   // tatsächlich verwendetes Rohsteinmaß: bei Feinsteinen das Feinstein-Material (pieceCutInfo)
                   ci.rawW === r.w && ci.rawH === r.h ? rawStr[p.color] : `${f(ci.rawW)}x${f(ci.rawH)}`,
-                  (data.progress[idx] >> i) & 1 ? 'ja' : 'nein',
+                  (data.progress[idx] >> i) & 1 ? T.yes : T.no,
                   polyStr(p.poly),
                 ].join(';'),
               );

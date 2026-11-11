@@ -1738,16 +1738,25 @@ export function useProject(id: string, materials: Material[], lang: Lang) {
    * Farben kommen in den Verlauf (gleiche Farbe kurz hintereinander = ein Eintrag); automatische Namen in einer
    * anderen Sprache nicht. Entfernt/umsortiert ohne paletteOp ändert die Bedeutung der Farbindizes im Raster, ohne
    * dass der Verlauf es nachvollziehen kann – dann wird er geleert (ohne berechnetes Raster gibt es nichts umzurechnen).
+   * Feinstein-Zuordnungen (fineMaterialId) sind Inhaltsänderungen mit eigenem Eintrag. `opts.record === false`: keine
+   * Bearbeitung des Benutzers (z. B. Feinstein-Zuordnung nach einer Neuberechnung übertragen) – kein Eintrag; ältere
+   * Einträge passen dann nicht mehr und werden beim Anwenden verworfen (nie überschrieben).
    */
   const setPalette = useCallback(
-    (palette: PaletteColor[]) => {
+    (palette: PaletteColor[], opts?: { record?: boolean }) => {
       const prev = recRef.current?.palette;
       update((r) => ({ ...r, palette }));
       if (!prev || prev === palette) return;
+      if (opts?.record === false) return;
       const ch = classifyPaletteChange(prev, palette);
       if (ch.kind === 'cosmetic') return;
       // einmalige Übernahme der Namen einer Palette von vor Welle 2 (normalizePaletteNames): keine Bearbeitung
-      if (ch.kind === 'update' && isLegacyPalette(prev) && prev.every((q, i) => q.hex.toUpperCase() === palette[i].hex.toUpperCase() && (q.materialId ?? '') === (palette[i].materialId ?? ''))) return;
+      if (
+        ch.kind === 'update' &&
+        isLegacyPalette(prev) &&
+        prev.every((q, i) => q.hex.toUpperCase() === palette[i].hex.toUpperCase() && (q.materialId ?? '') === (palette[i].materialId ?? '') && (q.fineMaterialId ?? '') === (palette[i].fineMaterialId ?? ''))
+      )
+        return;
       if (ch.kind === 'reorder' && computedRef.current) {
         clearHistory();
         return;

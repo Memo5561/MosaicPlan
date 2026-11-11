@@ -74,6 +74,16 @@ export function referencedMaterialIds(
 }
 
 /**
+ * Materialien der Palette (Grundstein- UND Feinstein-Material, referencedMaterialIds) in der Reihenfolge der
+ * Materialliste – z. B. für die Kennung eines fertigen PDFs: Ändert sich eines davon (Preis, Packung, Bestand, Name,
+ * Maß), passt die Kennung nicht mehr und das PDF gilt nicht mehr als fertig.
+ */
+export function paletteMaterials<M extends { id: string }>(palette: readonly { materialId?: string; fineMaterialId?: string }[] | undefined, materials: readonly M[]): M[] {
+  const used = new Set(referencedMaterialIds(palette, undefined));
+  return materials.filter((m) => used.has(m.id));
+}
+
+/**
  * Materialien, auf die nur die Diagnose einer Berechnung verweist („Fehlende Farben“: nächstes Material des ganzen
  * angebotenen Bestands, oft nicht in der Palette) – ohne die, die schon über Palette/Auswahl exportiert werden.
  */

@@ -25,7 +25,7 @@ export interface CsvWorkerRequest {
   /** null: ganzes Mosaik */
   sectionIds: string[] | null;
   decimalComma: boolean;
-  /** Sprache der automatischen Farbnamen */
+  /** Sprache der Datei: Kopfzeile, ja/nein, Formnamen (COORD_CSV_TEXT) und automatische Farbnamen */
   lang?: 'de' | 'en' | 'tr';
 }
 

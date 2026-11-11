@@ -120,13 +120,15 @@ export function paletteIndexSig(palette: readonly PaletteColor[]): string {
 }
 
 /**
- * Inhalt einer Palettenfarbe, wie er für Rückgängig zählt: Nummer, Farbe, Material und – bei Benutzer- und
- * Materialnamen – der Name. Automatische Namen zählen nur über ihren Schlüssel (sie folgen der Sprache und dürfen
- * sich dabei ändern, ohne dass ein Eintrag ungültig wird).
+ * Inhalt einer Palettenfarbe, wie er für Rückgängig zählt: Nummer, Farbe, Material, Feinstein-Material und – bei
+ * Benutzer- und Materialnamen – der Name. Automatische Namen zählen nur über ihren Schlüssel (sie folgen der Sprache
+ * und dürfen sich dabei ändern, ohne dass ein Eintrag ungültig wird). Das Feinstein-Material (fineMaterialId) zählt
+ * mit: Zuordnen/Entfernen ist eine eigene, rückgängig machbare Änderung, und ein älterer Paletteneintrag passt danach
+ * nicht mehr (statt beim Rückgängigmachen die Feinstein-Zuordnung aller Farben zu überschreiben).
  */
 export function paletteEntryKey(p: PaletteColor): string {
   const name = p.userNamed || !p.nameKey ? `n:${p.name}` : `k:${p.nameKey}|${p.nameSuffix ?? ''}`;
-  return JSON.stringify([p.code, p.hex.toUpperCase(), p.materialId ?? '', name]);
+  return JSON.stringify([p.code, p.hex.toUpperCase(), p.materialId ?? '', p.fineMaterialId ?? '', name]);
 }
 
 /** Gleiche Palette im Sinne von paletteEntryKey (Reihenfolge zählt)? */
@@ -445,7 +447,7 @@ export function undoRemoveSteps(data: MosaicData, steps: readonly RemoveStep[]):
 /**
  * Art einer Palettenänderung ohne bekannte Rasteränderung (api.setPalette):
  *  - 'cosmetic': nur automatische Namen in anderer Sprache/Schreibweise – kein Verlaufseintrag
- *  - 'update': gleiche Farben an gleicher Stelle, Inhalt geändert (HEX, Name, Material) – Indizes bleiben gültig
+ *  - 'update': gleiche Farben an gleicher Stelle, Inhalt geändert (HEX, Name, Material, Feinstein-Material) – Indizes bleiben gültig
  *  - 'add': Farben nur hinten angehängt – Indizes bleiben gültig
  *  - 'reorder': Farben entfernt/umsortiert – Farbindizes im Raster bedeuten danach etwas anderes
  * `codes`: Farbnummern der geänderten (update) bzw. angehängten (add) bzw. entfernten (reorder) Farben.

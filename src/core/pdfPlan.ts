@@ -20,6 +20,8 @@ import type { Layout, Section, SectionGrid } from './layout';
 import { coordModeOf, effectiveSheetScale, printableArea, SHEET_RESERVES, type PdfOptions } from './pdfOptions';
 
 const EPS = 1e-6;
+/** Toleranz der Blattaufteilung (Papier-mm) – auch für die Abschnittsvorgaben (sectionPresets) */
+export const PLAN_EPS = EPS;
 
 // ---------------------------------------------------------------- Blattaufteilung
 

@@ -6,8 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import { hexToLab, type ColorNameLang } from '../src/core/color';
 import { paletteDisplayName } from '../src/core/colorNames';
-import { buildCsv, buildCsvChunks, CSV_HEADER, CsvPaletteError, prepareCsv, SPREADSHEET_MAX_ROWS } from '../src/core/csv';
-import { bbox, type Pt } from '../src/core/geometry';
+import { buildCsv, buildCsvChunks, COORD_CSV_TEXT, CSV_HEADER, CsvPaletteError, prepareCsv, SPREADSHEET_MAX_ROWS } from '../src/core/csv';
+import { bbox, type Pt, type ShapeType } from '../src/core/geometry';
 import { cellId, computeLayout, sectionOfCell, sectionsFor, type Layout, type SectionGrid } from '../src/core/layout';
 import { computeMosaic } from '../src/core/mosaic';
 import { collectTemplates } from '../src/core/pdf';
@@ -83,21 +83,43 @@ function legacyBuildCsv(
 
 const ZU = 14; // Spalte „Zuschnitt“
 const POS = 0;
+const FORM = 13; // Spalte „Form“
+const LAID = 16; // Spalte „Verlegt“
+
+/**
+ * Die alte (deutsche) Fassung in eine andere Sprache übertragen (Korrekturen Welle 6: Koordinaten-CSV übersetzt):
+ * Kopfzeile, ja/nein in „Zuschnitt“ und „Verlegt“, Formnamen – sonst Byte für Byte gleich. Für 'de' unverändert.
+ */
+function legacyIn(legacy: string, lang: ColorNameLang): string {
+  const T = COORD_CSV_TEXT[lang];
+  const yn = (v: string) => (v === 'ja' ? T.yes : v === 'nein' ? T.no : v);
+  return legacy
+    .split('\r\n')
+    .map((l, i) => {
+      if (i === 0) return T.header;
+      const cols = l.split(';');
+      cols[ZU] = yn(cols[ZU]);
+      cols[LAID] = yn(cols[LAID]);
+      cols[FORM] = T.shapes[cols[FORM] as ShapeType] ?? cols[FORM];
+      return cols.join(';');
+    })
+    .join('\r\n');
+}
 
 /**
  * Einzige beabsichtigte Änderung gegenüber der alten Fassung: „ja“ → „ja (T#)“ in der Spalte Zuschnitt (Farbnamen
  * sind unverändert paletteDisplayName in der übergebenen Sprache). Liefert die Zeilen der neuen Fassung mit
  * zurückgesetztem „ja“, um den Rest Byte für Byte zu vergleichen.
  */
-function stripTpl(csv: string): { text: string; tnos: (number | null)[] } {
+function stripTpl(csv: string, yes = 'ja'): { text: string; tnos: (number | null)[] } {
   const tnos: (number | null)[] = [];
   const lines = csv.split('\r\n').map((l, i) => {
     if (i === 0) return l;
     const cols = l.split(';');
     // Farbname steht in Anführungszeichen und kann kein „;“ enthalten (Testpaletten) – Spalten zählen direkt
-    const m = /^ja \(T(\d+)\)$/.exec(cols[ZU]);
+    const m = new RegExp(`^${yes} \\(T(\\d+)\\)$`).exec(cols[ZU]);
     tnos.push(m ? Number(m[1]) : null);
-    if (m) cols[ZU] = 'ja';
+    if (m) cols[ZU] = yes;
     return cols.join(';');
   });
   return { text: lines.join('\r\n'), tnos };
@@ -123,17 +145,21 @@ describe('Koordinaten-CSV in Bändern (buildCsvChunks)', () => {
     it(`${key}: zusammengefügte Bänder = alte buildCsv-Ausgabe bis auf „ja (T#)“; Zeilen = Statistik; Positionen eindeutig`, () => {
       const { layout, data, palette } = sample(key);
       const grid = sectionsFor(layout, DEFAULT_SETTINGS);
-      for (const lang of ['de', 'en'] as const) {
+      // Deutsch: Byte für Byte die alte Fassung (bis auf T#); en/tr: dieselbe Datei mit übersetzter Kopfzeile,
+      // ja/nein und Formnamen (Korrekturen Welle 6 – vorher waren diese auch in en/tr deutsch)
+      for (const lang of ['de', 'en', 'tr'] as const) {
         const comma = lang !== 'en';
-        const old = legacyBuildCsv(layout, data, palette, [], grid, null, comma, lang);
+        const T = COORD_CSV_TEXT[lang];
+        const old = legacyIn(legacyBuildCsv(layout, data, palette, [], grid, null, comma, lang), lang);
         const chunks = [...buildCsvChunks(layout, data, palette, [], grid, null, comma, lang, { bandRows: 997 })];
-        expect(chunks[0]).toBe(CSV_HEADER);
+        expect(chunks[0]).toBe(lang === 'de' ? CSV_HEADER : T.header);
         expect(chunks.length).toBeGreaterThan(2);
         for (const c of chunks.slice(1)) expect(c.startsWith('\r\n')).toBe(true);
         const joined = chunks.join('');
         expect(joined).toBe(buildCsv(layout, data, palette, [], grid, null, comma, lang));
-        const { text, tnos } = stripTpl(joined);
+        const { text, tnos } = stripTpl(joined, T.yes);
         expect(text).toBe(old);
+        if (lang === 'de') expect(text).toBe(legacyBuildCsv(layout, data, palette, [], grid, null, comma, lang));
 
         // T# genau die Nummern von collectTemplates (PDF-Schnittvorlagen)
         const tpl = collectTemplates(layout, data, palette, []);
@@ -152,7 +178,7 @@ describe('Koordinaten-CSV in Bändern (buildCsvChunks)', () => {
         const stats = computeStats(layout, data, palette, [], { reservePct: 10, groutDepthMm: 3 });
         const rows = joined.split('\r\n').slice(1);
         expect(rows.length).toBe(stats.pieces);
-        expect(rows.filter((r) => /;ja \(T\d+\);/.test(r)).length).toBe(stats.cutPieces);
+        expect(rows.filter((r) => r.split(';')[ZU].startsWith(`${T.yes} (T`)).length).toBe(stats.cutPieces);
         expect(new Set(rows.map((r) => r.split(';')[POS])).size).toBe(rows.length);
       }
     });
